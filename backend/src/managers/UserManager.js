@@ -78,3 +78,16 @@ export function completeSetup(userId, config) {
   writeUsers(db)
   return getUserById(userId)
 }
+
+export function resetSetup(userId) {
+  const db = readUsers()
+  const user = db.users.find(u => u.id === userId)
+  if (!user) throw new Error('User not found')
+
+  user.setupCompleted = false
+  delete user.setupCompletedAt
+  delete user.setupConfig
+
+  writeUsers(db)
+  return getUserById(userId)
+}

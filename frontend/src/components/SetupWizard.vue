@@ -145,30 +145,48 @@
             </div>
 
             <!-- Model list -->
-            <div v-else-if="!fetchFailed && models.length > 0" class="space-y-2 max-h-52 overflow-y-auto pr-1">
-              <button v-for="m in models" :key="m" @click="selectedModel = m"
-                class="w-full flex items-center justify-between p-3.5 rounded-xl border-2 text-left text-sm transition-all duration-150"
-                :class="selectedModel === m
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
-                  : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 hover:bg-slate-50 dark:hover:bg-slate-800'">
-                <div class="flex items-center gap-3">
-                  <Cpu class="w-4 h-4 text-slate-400 shrink-0" />
-                  <span class="font-medium">{{ m }}</span>
-                </div>
-                <div v-if="selectedModel === m" class="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center shrink-0">
-                  <Check class="w-3 h-3 text-white" />
-                </div>
-              </button>
+            <div v-else-if="!fetchFailed && models.length > 0" class="space-y-3">
+              <div class="relative">
+                <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input v-model="modelSearch" type="search" placeholder="搜尋模型關鍵字..."
+                  class="w-full pl-10 pr-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+              </div>
+              <div v-if="filteredModels.length > 0" class="space-y-2 max-h-52 overflow-y-auto pr-1">
+                <button v-for="m in filteredModels" :key="m" @click="selectedModel = m"
+                  class="w-full flex items-center justify-between p-3.5 rounded-xl border-2 text-left text-sm transition-all duration-150"
+                  :class="selectedModel === m
+                    ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                    : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 hover:bg-slate-50 dark:hover:bg-slate-800'">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <Cpu class="w-4 h-4 text-slate-400 shrink-0" />
+                    <span class="font-medium break-all">{{ m }}</span>
+                  </div>
+                  <div v-if="selectedModel === m" class="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center shrink-0">
+                    <Check class="w-3 h-3 text-white" />
+                  </div>
+                </button>
+              </div>
+              <div v-else class="p-4 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-center text-sm text-slate-500">
+                找不到符合「{{ modelSearch }}」的模型
+              </div>
+              <div v-if="modelSearch.trim()" class="text-xs text-slate-400">
+                顯示 {{ filteredModels.length }} / {{ models.length }} 個模型
+              </div>
+            </div>
+
+            <div v-else-if="fetchFailed" class="p-3.5 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl flex items-start gap-3">
+              <AlertTriangle class="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />
+              <p class="text-xs text-yellow-700 dark:text-yellow-400">{{ fetchErrorMsg }}</p>
             </div>
 
             <!-- Manual input -->
-            <div v-else class="space-y-4">
-              <div class="p-3.5 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl flex items-start gap-3">
-                <AlertTriangle class="w-4 h-4 text-yellow-600 mt-0.5 shrink-0" />
-                <p class="text-xs text-yellow-700 dark:text-yellow-400">{{ fetchErrorMsg }}</p>
-              </div>
+            <div v-if="!isFetchingModels" class="mt-4 space-y-4">
               <div>
-                <label class="block text-sm font-medium mb-1.5">模型名稱 <span class="text-red-500">*</span></label>
+                <label class="block text-sm font-medium mb-1.5">
+                  手動輸入模型 ID
+                  <span v-if="fetchFailed || !selectedModel" class="text-red-500">*</span>
+                </label>
                 <div class="relative">
                   <Cpu class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input v-model="manualModel" type="text"
@@ -177,8 +195,9 @@
                   />
                 </div>
                 <p class="text-xs text-slate-400 mt-1.5">
-                  <span v-if="provider === 'gemini'">例如：gemini-1.5-pro、gemini-1.5-flash、gemini-2.0-flash-exp</span>
-                  <span v-else>請輸入您的模型 ID</span>
+                  <span v-if="selectedModel && !manualModel.trim()">已選取清單模型；也可以在這裡改填其他模型 ID。</span>
+                  <span v-else-if="provider === 'gemini'">例如：gemini-1.5-pro、gemini-1.5-flash、gemini-2.0-flash-exp</span>
+                  <span v-else>若清單中沒有適用模型，請在這裡輸入模型 ID。</span>
                 </p>
               </div>
             </div>
@@ -386,7 +405,7 @@
 import { ref, computed, nextTick } from 'vue'
 import {
   BrainCircuit, Check, Sparkles, Server, Key, Globe, Eye, EyeOff,
-  Cpu, AlertTriangle, AlertCircle, User, ChevronLeft, ChevronRight,
+  Cpu, AlertTriangle, AlertCircle, User, Search, ChevronLeft, ChevronRight,
   Rocket, Terminal as TerminalIcon, CheckCircle, XCircle, ArrowRight, Copy
 } from 'lucide-vue-next'
 
@@ -419,6 +438,7 @@ const fetchErrorMsg = ref('')
 const models = ref([])
 const selectedModel = ref('')
 const manualModel = ref('')
+const modelSearch = ref('')
 
 // userId state
 const userId = ref('')
@@ -453,8 +473,14 @@ const providerLabel = computed(() =>
 )
 
 const effectiveModel = computed(() =>
-  fetchFailed.value ? manualModel.value : selectedModel.value
+  manualModel.value.trim() || selectedModel.value
 )
+
+const filteredModels = computed(() => {
+  const keyword = modelSearch.value.trim().toLowerCase()
+  if (!keyword) return models.value
+  return models.value.filter(model => String(model).toLowerCase().includes(keyword))
+})
 
 const userIdBorderClass = computed(() => {
   if (userIdAvailable.value === true) return 'border-green-500 focus:ring-green-500 bg-slate-50 dark:bg-slate-800'
@@ -470,7 +496,7 @@ const isNextDisabled = computed(() => {
   }
   if (step.value === 2) {
     if (isFetchingModels.value) return true
-    return fetchFailed.value ? !manualModel.value.trim() : !selectedModel.value
+    return !effectiveModel.value
   }
   if (step.value === 3) {
     return !userId.value.trim() || !!userIdError.value || userIdChecking.value || userIdAvailable.value !== true
@@ -520,6 +546,7 @@ async function fetchModels() {
   fetchFailed.value = false
   models.value = []
   selectedModel.value = ''
+  modelSearch.value = ''
 
   try {
     if (provider.value === 'gemini') {

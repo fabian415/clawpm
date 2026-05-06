@@ -69,7 +69,9 @@
 
         <SettingsView
           v-else-if="currentPage === 'settings'"
+          :container-config="containerConfig"
           @restart="showRestartConfirm = true"
+          @destroy="showDestroyConfirm = true"
           @save="saveSettings"
         />
       </div>
@@ -91,6 +93,14 @@
     @confirm="handleRestart"
   />
 
+  <DestroyModal
+    :show="showDestroyConfirm"
+    :is-destroying="isDestroying"
+    :container-config="containerConfig"
+    @close="showDestroyConfirm = false"
+    @confirm="handleDestroy"
+  />
+
   <!-- Toast -->
   <ToastNotification :toast="toast" />
 </template>
@@ -102,6 +112,7 @@ import AppTopbar from './components/AppTopbar.vue'
 import ToastNotification from './components/ToastNotification.vue'
 import NewProjectModal from './components/NewProjectModal.vue'
 import RestartModal from './components/RestartModal.vue'
+import DestroyModal from './components/DestroyModal.vue'
 import SetupWizard from './components/SetupWizard.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
@@ -114,10 +125,11 @@ import SettingsView from './views/SettingsView.vue'
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
   showNewProjectModal, showRestartConfirm, isRestarting, restartProgress,
+  showDestroyConfirm, isDestroying, containerConfig,
   toast, containerStatus, containerStatusColor, containerStatusTextColor,
   isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
   breadcrumb, authError, isAuthLoading, currentUser,
-  toggleTheme, selectProject, handleAuth, logout, saveSettings, handleRestart, showToast,
+  toggleTheme, selectProject, handleAuth, logout, saveSettings, handleRestart, handleDestroy, showToast,
   completeSetup
 } = useApp()
 

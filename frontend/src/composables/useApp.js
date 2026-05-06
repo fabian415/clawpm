@@ -1,7 +1,17 @@
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+
+function getStoredUser() {
+  try {
+    return JSON.parse(localStorage.getItem('clawpm_user') ?? 'null')
+  } catch {
+    return null
+  }
+}
 
 export function useApp() {
-  const currentPage = ref('login')
+  const storedUser = getStoredUser()
+  const hasStoredSession = Boolean(localStorage.getItem('clawpm_token') && storedUser)
+  const currentPage = ref(hasStoredSession ? 'dashboard' : 'login')
   const sidebarCollapsed = ref(false)
   const isDark = ref(false)
   const password = ref('')
@@ -18,13 +28,16 @@ export function useApp() {
 
   const reviewerMode = ref('split')
   const showKeys = ref(false)
-  const isNewUser = ref(false)
+  const isNewUser = ref(hasStoredSession ? !storedUser.setupCompleted : false)
   const authError = ref('')
   const isAuthLoading = ref(false)
-  const currentUser = ref(JSON.parse(localStorage.getItem('clawpm_user') ?? 'null'))
+  const currentUser = ref(storedUser)
   const showRestartConfirm = ref(false)
   const isRestarting = ref(false)
   const restartProgress = ref(0)
+  const showDestroyConfirm = ref(false)
+  const isDestroying = ref(false)
+  const containerConfig = ref(null)
   const showNewProjectModal = ref(false)
   const toast = ref({ show: false, message: '', icon: 'CheckCircle' })
   const containerStatus = ref('Running')
@@ -63,6 +76,35 @@ export function useApp() {
     if (containerStatus.value === 'Stopped') return 'text-red-500'
     return 'text-yellow-500'
   })
+
+  function syncContainerStatus(config) {
+    if (!config) {
+      containerStatus.value = 'Stopped'
+      return
+    }
+
+    if (config.containerStatus === 'running') {
+      containerStatus.value = 'Running'
+      return
+    }
+
+    if (config.containerStatus === 'restarting') {
+      containerStatus.value = 'Restarting'
+      return
+    }
+
+    if (config.containerHealth === 'starting') {
+      containerStatus.value = 'Provisioning'
+      return
+    }
+
+    if (config.containerStatus === 'exited' || config.containerStatus === 'dead') {
+      containerStatus.value = 'Stopped'
+      return
+    }
+
+    containerStatus.value = config.containerStatus || 'Stopped'
+  }
 
   const breadcrumb = computed(() => {
     const map = {
@@ -219,34 +261,111 @@ export function useApp() {
     showToast('設定已更新，重啟 container 以套用')
   }
 
-  function handleRestart() {
+  async function fetchContainerConfig() {
+    const token = localStorage.getItem('clawpm_token')
+    if (!token) return
+    try {
+      const res = await fetch('/api/container/config', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        containerConfig.value = await res.json()
+        syncContainerStatus(containerConfig.value)
+      } else {
+        containerConfig.value = null
+        syncContainerStatus(null)
+      }
+    } catch {
+      containerConfig.value = null
+      syncContainerStatus(null)
+    }
+  }
+
+  async function handleRestart() {
     isRestarting.value = true
     restartProgress.value = 0
-    containerStatus.value = 'Provisioning'
-    const interval = setInterval(() => {
-      restartProgress.value += 4
-      if (restartProgress.value >= 100) {
-        clearInterval(interval)
-        setTimeout(() => {
-          isRestarting.value = false
-          showRestartConfirm.value = false
-          containerStatus.value = 'Running'
-          showToast('容器重啟成功！', 'Server')
-        }, 500)
+    containerStatus.value = 'Restarting'
+
+    const token = localStorage.getItem('clawpm_token')
+    const progressInterval = setInterval(() => {
+      if (restartProgress.value < 88) restartProgress.value += 3
+    }, 200)
+
+    try {
+      const res = await fetch('/api/container/restart', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      clearInterval(progressInterval)
+      restartProgress.value = 100
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || '重啟失敗')
       }
-    }, 100)
+      setTimeout(async () => {
+        isRestarting.value = false
+        showRestartConfirm.value = false
+        await fetchContainerConfig()
+        showToast('容器重啟成功！', 'Server')
+      }, 500)
+    } catch (err) {
+      clearInterval(progressInterval)
+      isRestarting.value = false
+      showRestartConfirm.value = false
+      containerStatus.value = 'Stopped'
+      showToast(err.message || '重啟失敗', 'AlertTriangle')
+    }
   }
+
+  async function handleDestroy() {
+    isDestroying.value = true
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch('/api/container', {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || '刪除失敗')
+      }
+      const data = await res.json()
+      showDestroyConfirm.value = false
+      containerStatus.value = 'Stopped'
+      containerConfig.value = null
+      isNewUser.value = true
+      currentPage.value = 'dashboard'
+      if (currentUser.value) {
+        currentUser.value = {
+          ...currentUser.value,
+          ...(data.user ?? {}),
+          setupCompleted: false
+        }
+        localStorage.setItem('clawpm_user', JSON.stringify(currentUser.value))
+      }
+      showToast('容器已刪除', 'Trash2')
+    } catch (err) {
+      showToast(err.message || '刪除失敗', 'AlertTriangle')
+    } finally {
+      isDestroying.value = false
+    }
+  }
+
+  watch(currentPage, (page) => {
+    if (page === 'settings') fetchContainerConfig()
+  })
 
   return {
     currentPage, sidebarCollapsed, isDark, password, isConfiguring, configProgress,
     workflowStep, workflowStepLabels, isProcessing, uploadProgress, uploadedDocs,
     tags, newTag, reviewerMode, showKeys, showRestartConfirm, isRestarting,
-    restartProgress, showNewProjectModal, toast, containerStatus, editingProjectInfo,
+    restartProgress, showDestroyConfirm, isDestroying, containerConfig,
+    showNewProjectModal, toast, containerStatus, editingProjectInfo,
     isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
     containerStatusColor, containerStatusTextColor, breadcrumb,
     passwordStrength, passwordStrengthText, passwordStrengthClass,
     authError, isAuthLoading, currentUser,
     toggleTheme, selectProject, handleAuth, logout, simulateUpload, nextWorkflowStep,
-    addTag, saveSettings, handleRestart, showToast, completeSetup
+    addTag, saveSettings, handleRestart, handleDestroy, showToast, completeSetup
   }
 }

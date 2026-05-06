@@ -3,13 +3,15 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'node:fs'
 import path from 'node:path'
-import { register, login, verifyToken, getUserById, completeSetup } from './src/managers/UserManager.js'
+import { register, login, verifyToken, getUserById, completeSetup, resetSetup } from './src/managers/UserManager.js'
 import { allocatePorts, releasePorts, getPortsForUser } from './src/containers/PortManager.js'
 import { initializeWorkspace } from './src/containers/WorkspaceManager.js'
 import {
   createAndStartContainer,
   getContainerStatus,
   startContainer,
+  stopContainer,
+  destroyContainer,
   imageExists,
   pullImage,
 } from './src/containers/ContainerManager.js'
@@ -17,12 +19,16 @@ import {
   pairDevice,
   saveContainerConfig,
   getContainerConfig,
+  deleteContainerConfig,
 } from './src/containers/DevicePairer.js'
+import { getUserPaths } from './src/containers/WorkspaceManager.js'
 
 dotenv.config()
 
 const app = express()
 const PORT = process.env.API_PORT || 3000
+const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
+const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
 app.use(cors({
   origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
@@ -137,6 +143,15 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
       gateway,
       session: { dmScope: 'per-channel-peer' },
       tools: { profile: 'coding' },
+      plugins: {
+        entries: {
+          google: { enabled: true },
+        },
+      },
+      meta: {
+        lastTouchedVersion: OPENCLAW_VERSION,
+        lastTouchedAt: new Date().toISOString(),
+      },
     }
   }
 
@@ -174,6 +189,10 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     gateway,
     session: { dmScope: 'per-channel-peer' },
     tools: { profile: 'coding' },
+    meta: {
+      lastTouchedVersion: OPENCLAW_VERSION,
+      lastTouchedAt: new Date().toISOString(),
+    },
   }
 }
 
@@ -183,6 +202,20 @@ function applyEnvKey(envPath, key, value) {
   const regex = new RegExp(`^${key}=.*$`, 'm')
   content = regex.test(content) ? content.replace(regex, line) : content + `\n${line}`
   fs.writeFileSync(envPath, content, 'utf8')
+}
+
+function getProvisionUserId(authUserId) {
+  const user = getUserById(authUserId)
+  return user?.setupConfig?.workspaceFolder || authUserId
+}
+
+function readGatewayToken(paths) {
+  try {
+    const raw = fs.readFileSync(paths.openclawJson, 'utf8')
+    return JSON.parse(raw)?.gateway?.auth?.token || null
+  } catch {
+    return null
+  }
 }
 
 // ── Provision routes ──────────────────────────────────────────────────────────
@@ -331,6 +364,63 @@ app.post('/api/provision', requireAuth, async (req, res) => {
     try { releasePorts(userId) } catch {}
     res.write(`data: ${JSON.stringify({ type: 'error', text: err.message })}\n\n`)
     res.end()
+  }
+})
+
+// ── Container management routes ───────────────────────────────────────────────
+
+app.get('/api/container/config', requireAuth, async (req, res) => {
+  const userId = getProvisionUserId(req.user.userId)
+  const config = getContainerConfig(userId)
+  const paths = getUserPaths(userId)
+  let status = { exists: false }
+  try {
+    status = await getContainerStatus(userId)
+  } catch {}
+
+  if (!config && !status.exists) return res.status(404).json({ error: '尚未建立容器' })
+
+  res.json({
+    userId,
+    workspacePath: config?.workspacePath || paths.workspace,
+    gatewayConfigPath: paths.config,
+    gatewayWorkspacePath: paths.base,
+    gatewayToken: config?.gatewayToken || readGatewayToken(paths),
+    operatorToken: config?.operatorToken,
+    deviceId: config?.deviceId,
+    gatewayPort: config?.gatewayPort || status.gatewayPort,
+    bridgePort: config?.bridgePort || status.bridgePort,
+    containerId: config?.containerId || status.id,
+    containerStatus: status.status,
+    containerHealth: status.health,
+    provisionedAt: config?.provisionedAt,
+  })
+})
+
+app.post('/api/container/restart', requireAuth, async (req, res) => {
+  const userId = getProvisionUserId(req.user.userId)
+  try {
+    const status = await getContainerStatus(userId)
+    if (!status.exists) return res.status(404).json({ error: '容器不存在，請先建立容器' })
+    if (status.running) await stopContainer(userId)
+    await startContainer(userId)
+    res.json({ success: true, userId })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.delete('/api/container', requireAuth, async (req, res) => {
+  const userId = getProvisionUserId(req.user.userId)
+  try {
+    const status = await getContainerStatus(userId)
+    if (status.exists) await destroyContainer(userId)
+    releasePorts(userId)
+    deleteContainerConfig(userId)
+    const user = resetSetup(req.user.userId)
+    res.json({ success: true, userId, user })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
 })
 
