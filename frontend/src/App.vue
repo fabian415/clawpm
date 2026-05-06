@@ -4,6 +4,8 @@
     <LoginView
       :is-configuring="isConfiguring"
       :config-progress="configProgress"
+      :auth-error="authError"
+      :is-loading="isAuthLoading"
       @auth="handleAuth"
     />
   </div>
@@ -24,7 +26,7 @@
     />
 
     <main class="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-950 transition-colors">
-      <AppTopbar :breadcrumb="breadcrumb" @navigate="currentPage = $event" />
+      <AppTopbar :breadcrumb="breadcrumb" :current-user="currentUser" @navigate="currentPage = $event" @logout="logout" />
 
       <div class="flex-1 overflow-y-auto p-8">
         <SetupWizard
@@ -114,7 +116,8 @@ const {
   showNewProjectModal, showRestartConfirm, isRestarting, restartProgress,
   toast, containerStatus, containerStatusColor, containerStatusTextColor,
   isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
-  breadcrumb, toggleTheme, selectProject, handleAuth, saveSettings, handleRestart, showToast,
+  breadcrumb, authError, isAuthLoading, currentUser,
+  toggleTheme, selectProject, handleAuth, logout, saveSettings, handleRestart, showToast,
   completeSetup
 } = useApp()
 

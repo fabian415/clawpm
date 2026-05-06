@@ -319,7 +319,7 @@
           </div>
         </div>
 
-        <button @click="$emit('complete')"
+        <button @click="handleComplete"
           class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center justify-center gap-2">
           進入 ClawPM <ArrowRight class="w-4 h-4" />
         </button>
@@ -338,6 +338,16 @@ import {
 
 defineProps({ isDark: Boolean })
 const emit = defineEmits(['complete'])
+
+function handleComplete() {
+  emit('complete', {
+    provider: provider.value,
+    apiKey: provider.value === 'gemini' ? geminiApiKey.value : customApiKey.value,
+    baseUrl: provider.value === 'custom' ? customBaseUrl.value : null,
+    model: effectiveModel.value,
+    workspaceFolder: folderName.value
+  })
+}
 
 const phase = ref('steps')
 const step = ref(1)

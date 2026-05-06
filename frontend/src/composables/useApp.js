@@ -19,6 +19,9 @@ export function useApp() {
   const reviewerMode = ref('split')
   const showKeys = ref(false)
   const isNewUser = ref(false)
+  const authError = ref('')
+  const isAuthLoading = ref(false)
+  const currentUser = ref(JSON.parse(localStorage.getItem('clawpm_user') ?? 'null'))
   const showRestartConfirm = ref(false)
   const isRestarting = ref(false)
   const restartProgress = ref(0)
@@ -109,27 +112,82 @@ export function useApp() {
     currentPage.value = 'projectDetail'
   }
 
-  function handleAuth(mode) {
-    if (mode === 'register') {
-      isConfiguring.value = true
-      const interval = setInterval(() => {
-        configProgress.value += 5
-        if (configProgress.value >= 100) {
-          clearInterval(interval)
-          setTimeout(() => {
-            isConfiguring.value = false
-            isNewUser.value = true
-            currentPage.value = 'dashboard'
-          }, 500)
-        }
-      }, 100)
-    } else {
-      currentPage.value = 'dashboard'
+  async function handleAuth({ mode, email, password }) {
+    authError.value = ''
+    isAuthLoading.value = true
+    try {
+      const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login'
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        authError.value = data.error ?? '發生錯誤，請稍後再試'
+        return
+      }
+      localStorage.setItem('clawpm_token', data.token)
+      const user = {
+        userId: data.userId,
+        email: data.email,
+        name: data.name ?? data.email.split('@')[0],
+        setupCompleted: data.setupCompleted ?? false
+      }
+      localStorage.setItem('clawpm_user', JSON.stringify(user))
+      currentUser.value = user
+      if (mode === 'register') {
+        isConfiguring.value = true
+        configProgress.value = 0
+        const interval = setInterval(() => {
+          configProgress.value += 5
+          if (configProgress.value >= 100) {
+            clearInterval(interval)
+            setTimeout(() => {
+              isConfiguring.value = false
+              isNewUser.value = !user.setupCompleted
+              currentPage.value = 'dashboard'
+            }, 500)
+          }
+        }, 100)
+      } else {
+        isNewUser.value = !user.setupCompleted
+        currentPage.value = 'dashboard'
+      }
+    } catch {
+      authError.value = '無法連線至伺服器，請確認後端是否已啟動'
+    } finally {
+      isAuthLoading.value = false
     }
   }
 
-  function completeSetup() {
+  function logout() {
+    localStorage.removeItem('clawpm_token')
+    localStorage.removeItem('clawpm_user')
+    currentUser.value = null
+    currentPage.value = 'login'
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
+  }
+
+  async function completeSetup(config) {
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      await fetch('/api/user/setup', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(config)
+      })
+    } catch {
+      // 非阻塞：API 失敗仍繼續進入 dashboard
+    }
     isNewUser.value = false
+    if (currentUser.value) {
+      currentUser.value.setupCompleted = true
+      localStorage.setItem('clawpm_user', JSON.stringify(currentUser.value))
+    }
     containerStatus.value = 'Running'
     showToast('容器設定完成，歡迎使用 ClawPM！', 'Server')
   }
@@ -187,7 +245,8 @@ export function useApp() {
     isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
     containerStatusColor, containerStatusTextColor, breadcrumb,
     passwordStrength, passwordStrengthText, passwordStrengthClass,
-    toggleTheme, selectProject, handleAuth, simulateUpload, nextWorkflowStep,
+    authError, isAuthLoading, currentUser,
+    toggleTheme, selectProject, handleAuth, logout, simulateUpload, nextWorkflowStep,
     addTag, saveSettings, handleRestart, showToast, completeSetup
   }
 }
