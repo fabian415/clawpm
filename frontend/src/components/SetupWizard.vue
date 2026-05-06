@@ -1,4 +1,5 @@
 <template>
+<div>
   <div class="max-w-2xl mx-auto py-4">
     <!-- Header -->
     <div class="text-center mb-8">
@@ -13,7 +14,7 @@
     <template v-if="phase === 'steps'">
       <!-- Stepper -->
       <div class="flex items-start justify-center mb-8">
-        <template v-for="(label, i) in stepLabels" :key="i">
+        <div v-for="(label, i) in stepLabels" :key="i" class="flex items-start">
           <div class="flex flex-col items-center gap-1.5">
             <div
               class="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all duration-300"
@@ -31,7 +32,7 @@
             class="h-0.5 w-16 mx-1 mt-4 transition-all duration-500"
             :class="step > i + 1 ? 'bg-blue-500' : 'bg-slate-200 dark:bg-slate-700'">
           </div>
-        </template>
+        </div>
       </div>
 
       <!-- Step Card -->
@@ -183,20 +184,38 @@
             </div>
           </div>
 
-          <!-- Step 3: Folder -->
+          <!-- Step 3: User ID -->
           <div v-else-if="step === 3" key="step3">
-            <h2 class="text-lg font-bold mb-1">設定工作目錄</h2>
-            <p class="text-slate-500 text-sm mb-6">容器啟動後，您的專案資料將儲存於此資料夾</p>
+            <h2 class="text-lg font-bold mb-1">設定使用者 ID</h2>
+            <p class="text-slate-500 text-sm mb-6">此 ID 將作為容器名稱與工作目錄識別碼，建立後無法變更</p>
 
             <div>
-              <label class="block text-sm font-medium mb-1.5">資料夾名稱 <span class="text-red-500">*</span></label>
+              <label class="block text-sm font-medium mb-1.5">使用者 ID <span class="text-red-500">*</span></label>
               <div class="relative">
-                <FolderOpen class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                <input v-model="folderName" type="text" placeholder="clawpm-workspace"
-                  class="w-full pl-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                <User class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input v-model="userId" @input="onUserIdInput" type="text"
+                  placeholder="user001"
+                  class="w-full pl-10 pr-10 py-2.5 rounded-xl border text-sm focus:outline-none focus:ring-2 focus:border-transparent transition"
+                  :class="userIdBorderClass"
                 />
+                <div class="absolute right-3 top-1/2 -translate-y-1/2">
+                  <svg v-if="userIdChecking" class="animate-spin w-4 h-4 text-slate-400" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                  </svg>
+                  <CheckCircle v-else-if="userIdAvailable === true" class="w-4 h-4 text-green-500" />
+                  <XCircle v-else-if="userIdAvailable === false" class="w-4 h-4 text-red-500" />
+                </div>
               </div>
-              <p class="text-xs text-slate-400 mt-1.5">只允許英文字母、數字、連字號 (-) 與底線 (_)</p>
+              <p v-if="userIdError" class="text-xs text-red-500 mt-1.5 flex items-center gap-1">
+                <AlertCircle class="w-3.5 h-3.5 shrink-0" /> {{ userIdError }}
+              </p>
+              <p v-else-if="userIdAvailable === true" class="text-xs text-green-600 dark:text-green-400 mt-1.5">
+                此 ID 可以使用
+              </p>
+              <p v-else class="text-xs text-slate-400 mt-1.5">
+                只允許英文字母、數字、連字號 (-) 與底線 (_)，例如：user001、my-user
+              </p>
             </div>
 
             <!-- Summary -->
@@ -212,8 +231,16 @@
                   <span class="font-mono text-xs font-medium">{{ effectiveModel || '—' }}</span>
                 </div>
                 <div class="flex justify-between text-sm">
+                  <span class="text-slate-500">容器名稱</span>
+                  <span class="font-mono text-xs text-blue-600 dark:text-blue-400">
+                    {{ userId ? `clawpm-openclaw-${userId}` : '—' }}
+                  </span>
+                </div>
+                <div class="flex justify-between text-sm">
                   <span class="text-slate-500">工作目錄</span>
-                  <span class="font-mono text-xs text-blue-600 dark:text-blue-400">{{ folderName || '—' }}</span>
+                  <span class="font-mono text-xs text-blue-600 dark:text-blue-400">
+                    {{ userId ? `~/.openclaw/users/${userId}` : '—' }}
+                  </span>
                 </div>
               </div>
             </div>
@@ -257,7 +284,7 @@
           </div>
           <div class="flex items-center gap-2 ml-2">
             <TerminalIcon class="w-3.5 h-3.5 text-slate-400" />
-            <span class="text-xs text-slate-400 font-mono">clawpm — container startup</span>
+            <span class="text-xs text-slate-400 font-mono">clawpm — provisioning {{ userId }}</span>
           </div>
         </div>
         <!-- Log body -->
@@ -268,6 +295,7 @@
               'text-green-400': line.type === 'success',
               'text-red-400':   line.type === 'error',
               'text-blue-400':  line.type === 'info',
+              'text-yellow-400': line.type === 'warn',
               'text-slate-300': line.type === 'normal',
             }">{{ line.text }}</span>
           </div>
@@ -287,7 +315,10 @@
         <div class="bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
           <div class="h-full bg-blue-600 transition-all duration-300 rounded-full" :style="{ width: startProgress + '%' }"></div>
         </div>
-        <p v-if="!isStarting" class="text-center text-sm text-green-600 dark:text-green-400 font-medium mt-2 flex items-center justify-center gap-1.5">
+        <p v-if="provisionError" class="text-center text-sm text-red-500 font-medium mt-2 flex items-center justify-center gap-1.5">
+          <AlertCircle class="w-4 h-4" /> {{ provisionError }}
+        </p>
+        <p v-else-if="!isStarting && startProgress === 100" class="text-center text-sm text-green-600 dark:text-green-400 font-medium mt-2 flex items-center justify-center gap-1.5">
           <CheckCircle class="w-4 h-4" /> 啟動完成！
         </p>
       </div>
@@ -314,9 +345,31 @@
             <span class="font-mono text-xs font-medium">{{ effectiveModel }}</span>
           </div>
           <div class="flex justify-between text-sm">
-            <span class="text-slate-500">工作目錄</span>
-            <span class="font-mono text-xs text-blue-600 dark:text-blue-400">{{ folderName }}</span>
+            <span class="text-slate-500">使用者 ID</span>
+            <span class="font-mono text-xs font-medium">{{ userId }}</span>
           </div>
+          <template v-if="provisionResult?.gatewayPort">
+            <div class="border-t border-slate-200 dark:border-slate-700 pt-2.5 space-y-2.5">
+              <div class="flex justify-between text-sm">
+                <span class="text-slate-500">Dashboard</span>
+                <a :href="`http://localhost:${provisionResult.gatewayPort}`" target="_blank"
+                  class="font-mono text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                  localhost:{{ provisionResult.gatewayPort }}
+                </a>
+              </div>
+              <div v-if="provisionResult?.gatewayToken" class="space-y-1.5">
+                <div class="flex items-center justify-between text-sm">
+                  <span class="text-slate-500">Gateway Token</span>
+                  <button @click="copyToken" class="text-xs text-slate-400 hover:text-blue-500 transition-colors flex items-center gap-1">
+                    <Copy class="w-3 h-3" />{{ tokenCopied ? '已複製' : '複製' }}
+                  </button>
+                </div>
+                <div class="bg-slate-100 dark:bg-slate-700 rounded-lg px-3 py-2 font-mono text-xs break-all select-all text-slate-700 dark:text-slate-200">
+                  {{ provisionResult.gatewayToken }}
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <button @click="handleComplete"
@@ -326,14 +379,15 @@
       </div>
     </div>
   </Transition>
+</div>
 </template>
 
 <script setup>
 import { ref, computed, nextTick } from 'vue'
 import {
   BrainCircuit, Check, Sparkles, Server, Key, Globe, Eye, EyeOff,
-  Cpu, AlertTriangle, AlertCircle, FolderOpen, ChevronLeft, ChevronRight,
-  Rocket, Terminal as TerminalIcon, CheckCircle, ArrowRight
+  Cpu, AlertTriangle, AlertCircle, User, ChevronLeft, ChevronRight,
+  Rocket, Terminal as TerminalIcon, CheckCircle, XCircle, ArrowRight, Copy
 } from 'lucide-vue-next'
 
 defineProps({ isDark: Boolean })
@@ -345,13 +399,13 @@ function handleComplete() {
     apiKey: provider.value === 'gemini' ? geminiApiKey.value : customApiKey.value,
     baseUrl: provider.value === 'custom' ? customBaseUrl.value : null,
     model: effectiveModel.value,
-    workspaceFolder: folderName.value
+    workspaceFolder: userId.value,
   })
 }
 
 const phase = ref('steps')
 const step = ref(1)
-const stepLabels = ['LLM Provider', '選擇模型', '工作目錄']
+const stepLabels = ['LLM Provider', '選擇模型', '使用者 ID']
 
 const provider = ref(null)
 const geminiApiKey = ref('')
@@ -366,7 +420,13 @@ const models = ref([])
 const selectedModel = ref('')
 const manualModel = ref('')
 
-const folderName = ref('clawpm-workspace')
+// userId state
+const userId = ref('')
+const userIdError = ref('')
+const userIdChecking = ref(false)
+const userIdAvailable = ref(null) // null=unchecked, true=ok, false=taken/invalid
+let userIdCheckTimer = null
+
 const stepError = ref('')
 
 const terminalRef = ref(null)
@@ -374,6 +434,18 @@ const terminalLines = ref([])
 const isStarting = ref(false)
 const startProgress = ref(0)
 const showSuccess = ref(false)
+const provisionError = ref('')
+const provisionResult = ref(null)
+const tokenCopied = ref(false)
+
+function copyToken() {
+  const token = provisionResult.value?.gatewayToken
+  if (!token) return
+  navigator.clipboard.writeText(token).then(() => {
+    tokenCopied.value = true
+    setTimeout(() => { tokenCopied.value = false }, 2000)
+  })
+}
 const currentTime = ref(new Date().toTimeString().slice(0, 8))
 
 const providerLabel = computed(() =>
@@ -383,6 +455,12 @@ const providerLabel = computed(() =>
 const effectiveModel = computed(() =>
   fetchFailed.value ? manualModel.value : selectedModel.value
 )
+
+const userIdBorderClass = computed(() => {
+  if (userIdAvailable.value === true) return 'border-green-500 focus:ring-green-500 bg-slate-50 dark:bg-slate-800'
+  if (userIdAvailable.value === false || userIdError.value) return 'border-red-400 focus:ring-red-400 bg-slate-50 dark:bg-slate-800'
+  return 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:ring-blue-500'
+})
 
 const isNextDisabled = computed(() => {
   if (step.value === 1) {
@@ -394,7 +472,9 @@ const isNextDisabled = computed(() => {
     if (isFetchingModels.value) return true
     return fetchFailed.value ? !manualModel.value.trim() : !selectedModel.value
   }
-  if (step.value === 3) return !folderName.value.trim()
+  if (step.value === 3) {
+    return !userId.value.trim() || !!userIdError.value || userIdChecking.value || userIdAvailable.value !== true
+  }
   return false
 })
 
@@ -402,6 +482,37 @@ function stepBubbleClass(n) {
   if (step.value > n) return 'bg-blue-600 border-blue-600 text-white'
   if (step.value === n) return 'border-blue-500 text-blue-600 bg-blue-50 dark:bg-blue-950/50 dark:text-blue-400'
   return 'border-slate-300 dark:border-slate-600 text-slate-400'
+}
+
+function onUserIdInput() {
+  userIdAvailable.value = null
+  userIdError.value = ''
+  clearTimeout(userIdCheckTimer)
+
+  const val = userId.value.trim()
+  if (!val) return
+
+  if (!/^[\w-]+$/.test(val)) {
+    userIdError.value = '只允許英文字母、數字、連字號與底線'
+    return
+  }
+
+  userIdChecking.value = true
+  userIdCheckTimer = setTimeout(async () => {
+    try {
+      const token = localStorage.getItem('clawpm_token')
+      const res = await fetch(`/api/provision/check-userid/${encodeURIComponent(val)}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
+      const data = await res.json()
+      userIdAvailable.value = data.available
+      if (!data.available) userIdError.value = data.reason ?? '此 ID 已被使用'
+    } catch {
+      userIdAvailable.value = null
+    } finally {
+      userIdChecking.value = false
+    }
+  }, 400)
 }
 
 async function fetchModels() {
@@ -423,7 +534,7 @@ async function fetchModels() {
         .map(m => m.name.replace('models/', ''))
     } else {
       const base = customBaseUrl.value.replace(/\/+$/, '')
-      const res = await fetch(`${base}/v1/models`, {
+      const res = await fetch(`${base}/models`, {
         headers: { Authorization: `Bearer ${customApiKey.value}` },
         signal: AbortSignal.timeout(8000)
       })
@@ -456,10 +567,6 @@ function nextStep() {
   } else if (step.value === 2) {
     step.value = 3
   } else {
-    if (!/^[\w-]+$/.test(folderName.value.trim())) {
-      stepError.value = '資料夾名稱只能包含英文字母、數字、連字號與底線'
-      return
-    }
     startContainerSetup()
   }
 }
@@ -469,72 +576,93 @@ function prevStep() {
   step.value--
 }
 
-function startContainerSetup() {
+function addLine(type, text) {
+  currentTime.value = new Date().toTimeString().slice(0, 8)
+  terminalLines.value.push({ time: currentTime.value, type, text })
+  nextTick(() => {
+    if (terminalRef.value) terminalRef.value.scrollTop = terminalRef.value.scrollHeight
+  })
+}
+
+async function startContainerSetup() {
   phase.value = 'terminal'
   isStarting.value = true
   startProgress.value = 0
+  terminalLines.value = []
+  provisionError.value = ''
+  provisionResult.value = null
 
-  const model = effectiveModel.value
-  const folder = folderName.value
-  const provider_ = providerLabel.value
+  const token = localStorage.getItem('clawpm_token')
+  const body = { userId: userId.value, provider: provider.value }
 
-  const logs = [
-    { type: 'info',    text: 'Initializing ClawPM container...' },
-    { type: 'normal',  text: 'Loading configuration from environment...' },
-    { type: 'normal',  text: `  Provider    : ${provider_}` },
-    { type: 'normal',  text: `  Model       : ${model}` },
-    { type: 'normal',  text: `  Workspace   : /${folder}` },
-    { type: 'normal',  text: '' },
-    { type: 'normal',  text: 'Checking prerequisites...' },
-    { type: 'success', text: '  ✓ Python 3.11.4 detected' },
-    { type: 'success', text: '  ✓ Required packages verified' },
-    { type: 'normal',  text: '' },
-    { type: 'normal',  text: `Creating workspace directory: /${folder}` },
-    { type: 'success', text: '  ✓ Workspace initialized' },
-    { type: 'normal',  text: '' },
-    { type: 'normal',  text: 'Initializing SQLite database...' },
-    { type: 'success', text: '  ✓ Schema migration v1.4.2 applied' },
-    { type: 'normal',  text: '' },
-    { type: 'normal',  text: `Connecting to ${provider_} API...` },
-    { type: 'normal',  text: '  Validating credentials...' },
-    { type: 'success', text: '  ✓ API connection established' },
-    { type: 'normal',  text: `  Loading model: ${model}` },
-    { type: 'success', text: '  ✓ LLM client ready' },
-    { type: 'normal',  text: '' },
-    { type: 'normal',  text: 'Initializing transcription engine (Whisper)...' },
-    { type: 'success', text: '  ✓ Whisper base model loaded' },
-    { type: 'normal',  text: '' },
-    { type: 'normal',  text: 'Starting HTTP server on :8080...' },
-    { type: 'success', text: '  ✓ Listening on http://localhost:8080' },
-    { type: 'normal',  text: '' },
-    { type: 'success', text: '  ┌───────────────────────────────────┐' },
-    { type: 'success', text: '  │  ClawPM is running — ready!         │' },
-    { type: 'success', text: '  └───────────────────────────────────┘' },
-  ]
-
-  let i = 0
-  const total = logs.length
-
-  const addLine = () => {
-    if (i >= total) {
-      isStarting.value = false
-      startProgress.value = 100
-      setTimeout(() => { showSuccess.value = true }, 700)
-      return
-    }
-    const entry = logs[i]
-    currentTime.value = new Date().toTimeString().slice(0, 8)
-    terminalLines.value.push({ time: currentTime.value, ...entry })
-    startProgress.value = Math.round(((i + 1) / total) * 95)
-    i++
-    nextTick(() => {
-      if (terminalRef.value) terminalRef.value.scrollTop = terminalRef.value.scrollHeight
-    })
-    const delay = entry.text === '' ? 80 : entry.type === 'success' ? 180 : 140
-    setTimeout(addLine, delay)
+  if (provider.value === 'gemini') {
+    body.geminiApiKey = geminiApiKey.value
+  } else {
+    body.baseUrl = customBaseUrl.value
+    body.apiKey = customApiKey.value
+    body.modelId = effectiveModel.value
   }
 
-  setTimeout(addLine, 300)
+  // Track progress by counting log events
+  let eventCount = 0
+
+  try {
+    const response = await fetch('/api/provision', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify(body)
+    })
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      addLine('error', err.error || `HTTP ${response.status}`)
+      isStarting.value = false
+      provisionError.value = err.error || '初始化失敗'
+      return
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop() ?? ''
+
+      for (const part of parts) {
+        const line = part.trim()
+        if (!line.startsWith('data: ')) continue
+        let data
+        try { data = JSON.parse(line.slice(6)) } catch { continue }
+
+        if (data.type === 'done') {
+          startProgress.value = 100
+          isStarting.value = false
+          provisionResult.value = data
+          setTimeout(() => { showSuccess.value = true }, 700)
+        } else if (data.type === 'error') {
+          addLine('error', data.text)
+          isStarting.value = false
+          provisionError.value = data.text
+        } else {
+          addLine(data.type, data.text)
+          eventCount++
+          startProgress.value = Math.min(92, Math.round((eventCount / 22) * 92))
+        }
+      }
+    }
+  } catch (err) {
+    addLine('error', `連線失敗: ${err.message}`)
+    isStarting.value = false
+    provisionError.value = err.message
+  }
 }
 </script>
 
