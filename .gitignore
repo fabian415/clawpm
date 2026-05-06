@@ -3,3 +3,4 @@ frontend/node_modules
 .env
 frontend/dist
 backend/data
+frontend/vite-dev*.log
