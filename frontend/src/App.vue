@@ -27,8 +27,13 @@
       <AppTopbar :breadcrumb="breadcrumb" @navigate="currentPage = $event" />
 
       <div class="flex-1 overflow-y-auto p-8">
+        <SetupWizard
+          v-if="currentPage === 'dashboard' && isNewUser"
+          :is-dark="isDark"
+          @complete="completeSetup"
+        />
         <DashboardView
-          v-if="currentPage === 'dashboard'"
+          v-else-if="currentPage === 'dashboard'"
           :recent-projects="recentProjects"
           :container-status="containerStatus"
           :container-status-color="containerStatusColor"
@@ -95,6 +100,7 @@ import AppTopbar from './components/AppTopbar.vue'
 import ToastNotification from './components/ToastNotification.vue'
 import NewProjectModal from './components/NewProjectModal.vue'
 import RestartModal from './components/RestartModal.vue'
+import SetupWizard from './components/SetupWizard.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import ProjectListView from './views/ProjectListView.vue'
@@ -107,8 +113,9 @@ const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
   showNewProjectModal, showRestartConfirm, isRestarting, restartProgress,
   toast, containerStatus, containerStatusColor, containerStatusTextColor,
-  projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
-  breadcrumb, toggleTheme, selectProject, handleAuth, saveSettings, handleRestart, showToast
+  isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
+  breadcrumb, toggleTheme, selectProject, handleAuth, saveSettings, handleRestart, showToast,
+  completeSetup
 } = useApp()
 
 function createProject(data) {

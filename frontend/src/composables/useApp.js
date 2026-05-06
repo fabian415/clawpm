@@ -18,6 +18,7 @@ export function useApp() {
 
   const reviewerMode = ref('split')
   const showKeys = ref(false)
+  const isNewUser = ref(false)
   const showRestartConfirm = ref(false)
   const isRestarting = ref(false)
   const restartProgress = ref(0)
@@ -108,8 +109,8 @@ export function useApp() {
     currentPage.value = 'projectDetail'
   }
 
-  function handleAuth() {
-    if (currentPage.value === 'register') {
+  function handleAuth(mode) {
+    if (mode === 'register') {
       isConfiguring.value = true
       const interval = setInterval(() => {
         configProgress.value += 5
@@ -117,6 +118,7 @@ export function useApp() {
           clearInterval(interval)
           setTimeout(() => {
             isConfiguring.value = false
+            isNewUser.value = true
             currentPage.value = 'dashboard'
           }, 500)
         }
@@ -124,6 +126,12 @@ export function useApp() {
     } else {
       currentPage.value = 'dashboard'
     }
+  }
+
+  function completeSetup() {
+    isNewUser.value = false
+    containerStatus.value = 'Running'
+    showToast('容器設定完成，歡迎使用 ClawPM！', 'Server')
   }
 
   function simulateUpload() {
@@ -176,10 +184,10 @@ export function useApp() {
     workflowStep, workflowStepLabels, isProcessing, uploadProgress, uploadedDocs,
     tags, newTag, reviewerMode, showKeys, showRestartConfirm, isRestarting,
     restartProgress, showNewProjectModal, toast, containerStatus, editingProjectInfo,
-    projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
+    isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
     containerStatusColor, containerStatusTextColor, breadcrumb,
     passwordStrength, passwordStrengthText, passwordStrengthClass,
     toggleTheme, selectProject, handleAuth, simulateUpload, nextWorkflowStep,
-    addTag, saveSettings, handleRestart, showToast
+    addTag, saveSettings, handleRestart, showToast, completeSetup
   }
 }
