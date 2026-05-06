@@ -12,8 +12,6 @@ const WORKSPACE_BASE = process.env.CLAWPM_WORKSPACE_BASE
 const SKILLS_SOURCE = process.env.OPENCLAW_SKILLS_SOURCE_PATH
   || path.join(__dirname, '..', '..', '..', 'skills')
 
-const SYSTEM_ENV_PATH = process.env.CLAWPM_SYSTEM_ENV_PATH
-  || path.join(__dirname, '..', '..', '..', '.env')
 
 const SKILL_NAMES = [
   'meeting-transcription',
@@ -159,38 +157,16 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     }
   }
 
-  // Create config/.env (maps to ~/.openclaw/.env inside container — OpenClaw reads API keys from here)
+  // Create config/.env (maps to ~/.openclaw/.env inside container — API keys written here by provision)
   const configEnvPath = path.join(paths.config, '.env')
   if (!fs.existsSync(configEnvPath)) {
-    let configEnvContent = `# OpenClaw gateway env — user: ${userId}\n# Maps to ~/.openclaw/.env inside the container\n\n`
-
-    if (fs.existsSync(SYSTEM_ENV_PATH)) {
-      // Extract only AI provider keys (not SMTP, local server IPs, etc.)
-      const systemEnv = fs.readFileSync(SYSTEM_ENV_PATH, 'utf8')
-      const aiKeyLines = systemEnv
-        .split('\n')
-        .filter(line => /^(GEMINI_API_KEY|GOOGLE_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KEY|AZURE_OPENAI_API_KEY|AZURE_OPENAI_ENDPOINT|AZURE_OPENAI_API_VERSION)=/.test(line))
-      configEnvContent += aiKeyLines.join('\n') + '\n'
-    }
-    else {
-      warnings.push(`System .env not found — config/.env will be empty (add API keys manually)`)
-    }
-
+    const configEnvContent = `# OpenClaw gateway env — user: ${userId}\n# Maps to ~/.openclaw/.env inside the container\n`
     fs.writeFileSync(configEnvPath, configEnvContent, 'utf8')
   }
 
-  // Create workspace .env (inherit from system default, skip if already exists)
+  // Create workspace .env (empty placeholder, skip if already exists)
   if (!fs.existsSync(paths.workspaceEnv)) {
-    let envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n\n`
-
-    if (fs.existsSync(SYSTEM_ENV_PATH)) {
-      envContent += fs.readFileSync(SYSTEM_ENV_PATH, 'utf8')
-    }
-    else {
-      warnings.push(`System .env not found at: ${SYSTEM_ENV_PATH}`)
-      envContent += '# (no system default .env found)\n'
-    }
-
+    const envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
     fs.writeFileSync(paths.workspaceEnv, envContent, 'utf8')
   }
 

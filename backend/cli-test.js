@@ -23,7 +23,9 @@
  */
 
 import 'dotenv/config'
+import fs from 'node:fs'
 import path from 'node:path'
+import readline from 'node:readline'
 import { fileURLToPath } from 'node:url'
 
 // ── Resolve .env from same directory ────────────────────────────────────────
@@ -66,6 +68,137 @@ function fail(msg) { console.error(`${RED}✗${RESET} ${msg}`) }
 function info(msg) { console.log(`${CYAN}→${RESET} ${msg}`) }
 function header(msg) { console.log(`\n${BOLD}${msg}${RESET}`) }
 
+function askQuestion(prompt) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  return new Promise(resolve => rl.question(prompt, answer => { rl.close(); resolve(answer.trim()) }))
+}
+
+async function promptLlmConfig() {
+  console.log(`\n${BOLD}LLM Provider 設定${RESET}`)
+  console.log(`  ${CYAN}1${RESET}  Gemini (Google)`)
+  console.log(`  ${CYAN}2${RESET}  Custom Provider (OpenAI-compatible)`)
+
+  let choice
+  while (!choice) {
+    const raw = await askQuestion('請選擇 (1/2): ')
+    if (raw === '1' || raw === '2') choice = raw
+    else warn('請輸入 1 或 2')
+  }
+
+  if (choice === '1') {
+    let apiKey
+    while (!apiKey) {
+      apiKey = await askQuestion('請輸入 GEMINI_API_KEY: ')
+      if (!apiKey) warn('GEMINI_API_KEY 不能為空')
+    }
+    return { provider: 'gemini', geminiApiKey: apiKey }
+  }
+
+  let baseUrl
+  while (!baseUrl) {
+    baseUrl = await askQuestion('請輸入 Base URL (e.g. https://xxx.cognitiveservices.azure.com/openai/v1): ')
+    if (!baseUrl) warn('Base URL 不能為空')
+  }
+  let apiKey
+  while (!apiKey) {
+    apiKey = await askQuestion('請輸入 API Key: ')
+    if (!apiKey) warn('API Key 不能為空')
+  }
+  let modelId
+  while (!modelId) {
+    modelId = await askQuestion('請輸入 Model ID (例如 gpt-4o): ')
+    if (!modelId) warn('Model ID 不能為空')
+  }
+  return { provider: 'custom', baseUrl, apiKey, modelId }
+}
+
+function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = {}) {
+  const allowedOrigins = [
+    'http://localhost:18789',
+    'http://127.0.0.1:18789',
+  ]
+  if (hostPort && hostPort !== 18789) {
+    allowedOrigins.push(`http://localhost:${hostPort}`)
+    allowedOrigins.push(`http://127.0.0.1:${hostPort}`)
+  }
+
+  const gateway = {
+    mode: 'local',
+    auth: { mode: 'token', token: gatewayToken },
+    port: 18789,
+    bind: 'lan',
+    tailscale: { mode: 'off', resetOnExit: false },
+    controlUi: { allowInsecureAuth: true, allowedOrigins },
+    nodes: {
+      denyCommands: [
+        'camera.snap', 'camera.clip', 'screen.record',
+        'contacts.add', 'calendar.add', 'reminders.add',
+        'sms.send', 'sms.search',
+      ],
+    },
+  }
+
+  if (llmConfig.provider === 'gemini') {
+    return {
+      agents: {
+        defaults: {
+          workspace: '/home/node/.openclaw/workspace',
+          sandbox: { mode: 'off' },
+          models: { 'google/gemini-2.5-flash': {} },
+          model: { primary: 'google/gemini-2.5-flash' },
+        },
+      },
+      gateway,
+      session: { dmScope: 'per-channel-peer' },
+      tools: { profile: 'coding' },
+    }
+  }
+
+  const { baseUrl, apiKey, modelId } = llmConfig
+  const modelRef = `custom/${modelId}`
+  return {
+    agents: {
+      defaults: {
+        workspace: '/home/node/.openclaw/workspace',
+        model: { primary: modelRef },
+        models: { [modelRef]: {} },
+      },
+    },
+    models: {
+      mode: 'merge',
+      providers: {
+        custom: {
+          baseUrl,
+          apiKey,
+          api: 'openai-completions',
+          models: [
+            {
+              id: modelId,
+              name: modelId,
+              reasoning: false,
+              input: ['text'],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
+          ],
+        },
+      },
+    },
+    gateway,
+    session: { dmScope: 'per-channel-peer' },
+    tools: { profile: 'coding' },
+  }
+}
+
+function applyEnvKey(envPath, key, value) {
+  let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
+  const line = `${key}=${value}`
+  const regex = new RegExp(`^${key}=.*$`, 'm')
+  content = regex.test(content) ? content.replace(regex, line) : content + `\n${line}`
+  fs.writeFileSync(envPath, content, 'utf8')
+}
+
 function printStatus(status) {
   if (!status.exists) {
     fail(`Container does not exist: ${status.name}`)
@@ -92,6 +225,9 @@ function printStatus(status) {
 async function cmdProvision(userId) {
   header(`Provisioning OpenClaw container for user: ${userId}`)
 
+  // 0. Prompt for LLM provider
+  const llmConfig = await promptLlmConfig()
+
   // 1. Allocate ports
   info('Allocating ports...')
   const ports = allocatePorts(userId)
@@ -105,7 +241,19 @@ async function cmdProvision(userId) {
   if (skillsCopied.length > 0) ok(`Skills copied: ${skillsCopied.join(', ')}`)
   for (const w of warnings) warn(w)
 
-  // 3. Check if container already exists
+  // 3. Apply LLM config to openclaw.json (always overwrite at provision time)
+  const openclawConfig = buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort: ports.gatewayPort })
+  fs.writeFileSync(paths.openclawJson, JSON.stringify(openclawConfig, null, 2), 'utf8')
+  if (llmConfig.provider === 'gemini') {
+    ok('LLM provider: Gemini (google/gemini-2.5-flash)')
+    applyEnvKey(path.join(paths.config, '.env'), 'GEMINI_API_KEY', llmConfig.geminiApiKey)
+    ok('GEMINI_API_KEY written to config/.env')
+  }
+  else {
+    ok(`LLM provider: Custom (custom/${llmConfig.modelId}) → ${llmConfig.baseUrl}`)
+  }
+
+  // 4. Check if container already exists
   const existing = await getContainerStatus(userId)
   if (existing.exists) {
     warn(`Container already exists (${existing.status}). Skipping create.`)
@@ -116,7 +264,7 @@ async function cmdProvision(userId) {
     }
   }
   else {
-    // 4. Check image
+    // 5. Check image
     info(`Checking for image: ${process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'}`)
     const hasImage = await imageExists()
     if (!hasImage) {
@@ -132,7 +280,7 @@ async function cmdProvision(userId) {
       ok('Image found locally.')
     }
 
-    // 5. Create and start container
+    // 6. Create and start container
     info('Creating and starting container...')
     const containerId = await createAndStartContainer(userId, {
       gatewayPort: ports.gatewayPort,
@@ -154,7 +302,7 @@ async function cmdProvision(userId) {
     })
   }
 
-  // 6. Device pairing (optional — skip on failure so provision still completes)
+  // 7. Device pairing (optional — skip on failure so provision still completes)
   info('Starting device pairing (waiting for healthy gateway)...')
   try {
     const { deviceId, operatorToken } = await pairDevice(userId, { healthTimeoutMs: 90_000 })

@@ -1,40 +1,40 @@
 {
   "containers": {
     "user001": {
-      "containerId": "1c4160ff219b5fc65ecbb2c81ce3b4e09730a7c7c8b6a4701e60afb585a1994e",
+      "containerId": "5e36f1a1b74df71d6dc2d3df895d28d42e1d40e7425ce20bc9ae03f8ae2eac77",
       "gatewayPort": 18800,
       "bridgePort": 18801,
       "workspacePath": "C:\\Users\\fabian.chung\\.openclaw\\users\\user001\\workspace",
-      "provisionedAt": "2026-05-06T01:23:18.476Z",
-      "updatedAt": "2026-05-06T01:25:47.523Z",
-      "gatewayToken": "6005a5a6399c05979a99874ee2bc2f5bf67ec785301f44104a2ba279830d818c",
-      "deviceId": "9956c1803aae402c53b7f4eb66c553f6328d16c4867935fc15dd8b05b9841051",
-      "operatorToken": "lm-FGbRXPINhPLSawxTBc3RxQ21oFsrocQiUr51tuPA",
-      "pairedAt": "2026-05-06T01:25:47.522Z"
+      "provisionedAt": "2026-05-06T05:16:00.764Z",
+      "updatedAt": "2026-05-06T05:16:55.028Z",
+      "gatewayToken": "4cb13784431e72e01cf29b25bc17672235d52e5ae53c9b11005975f8e5d40597",
+      "deviceId": "3b44ea5cc661f4ee0c904964c1e8dbfb481a497eaf842e2ff58311144414c0a2",
+      "operatorToken": "Mkd0AlW8iVMICS3ndjzuLItSXF_MD8iJi1_2b2rmjc0",
+      "pairedAt": "2026-05-06T05:16:55.028Z"
     },
     "user002": {
-      "containerId": "24161a765bb1005038b54736610d3295dd2f0c8749882802f1272be2be48338a",
+      "containerId": "041495ec5d6f007872d7a1cae127f1c3d33d5bc131a9b41d230f5036194de3aa",
       "gatewayPort": 18802,
       "bridgePort": 18803,
-      "gatewayToken": "202af01809d19115484feba22b9901737825074a588082c595224e1f59d1d637",
+      "gatewayToken": "97d877f0eed519f6ee38ed9887622a6c20d1588870bbad51574c4143f17911bf",
       "workspacePath": "C:\\Users\\fabian.chung\\.openclaw\\users\\user002\\workspace",
-      "provisionedAt": "2026-05-06T01:50:59.926Z",
-      "updatedAt": "2026-05-06T01:52:00.789Z",
-      "deviceId": "45d3912c32e1edb2807b421053d914f73c5af828d340810dfecb898264ec71db",
-      "operatorToken": "rdZ0HQVSt0ZVFaT4jIYUWto9M9mfk5BO1ZNFphvHfRo",
-      "pairedAt": "2026-05-06T01:52:00.789Z"
+      "provisionedAt": "2026-05-06T05:22:54.584Z",
+      "updatedAt": "2026-05-06T05:23:56.980Z",
+      "deviceId": "c2efc34ac4819e5648554bd1a8d5272baabfac2f5a3616a1d41a124f6282a203",
+      "operatorToken": "2rbLhLtSUf6M5GkiIRMHSZ3e6zlCniXK4ihXdKXKvTk",
+      "pairedAt": "2026-05-06T05:23:56.980Z"
     },
     "user003": {
-      "containerId": "5da926784628734cba420d5e2fe4fef88900dadb3918b537f1607aed89eb84ca",
+      "containerId": "b119e10c5ff4b55e2f85f097ad867fd73772ee521814573af6a71c90cdd1e387",
       "gatewayPort": 18804,
       "bridgePort": 18805,
-      "gatewayToken": "e7a3ae729bfa72a89af250880d44540b54a8ad2616a636afa6a2085690f0dd39",
+      "gatewayToken": "1a70b998e646cc2779fb2f907f2df74036ae70c68f8a9a284a9ec39d251652b0",
       "workspacePath": "C:\\Users\\fabian.chung\\.openclaw\\users\\user003\\workspace",
-      "provisionedAt": "2026-05-06T02:17:34.957Z",
-      "updatedAt": "2026-05-06T02:18:33.223Z",
-      "deviceId": "feda748a1ace84d38a4e06ff381f64dc685b77b41134ebf12ec881007702dd1c",
-      "operatorToken": "EmL3Oy8G4jutKp67IX4zuAj4kQgUd-7Xuk7-aLhjVkU",
-      "pairedAt": "2026-05-06T02:18:33.223Z"
+      "provisionedAt": "2026-05-06T05:31:11.804Z",
+      "updatedAt": "2026-05-06T05:32:09.548Z",
+      "deviceId": "2b5c57c760a5a2bc030922ad290e9c6ac68263be78eaeb0cb8f1c2abab3bde40",
+      "operatorToken": "fMQkLXdeLIoFgYLX-TUZ5Ae_tM1udXgH__e48v_zTlM",
+      "pairedAt": "2026-05-06T05:32:09.548Z"
     }
   }
 }
