@@ -1,0 +1,19 @@
+{
+  "allocations": {
+    "user001": {
+      "gatewayPort": 18800,
+      "bridgePort": 18801,
+      "allocatedAt": "2026-05-05T09:04:40.011Z"
+    },
+    "user002": {
+      "gatewayPort": 18802,
+      "bridgePort": 18803,
+      "allocatedAt": "2026-05-06T01:50:59.599Z"
+    },
+    "user003": {
+      "gatewayPort": 18804,
+      "bridgePort": 18805,
+      "allocatedAt": "2026-05-06T02:17:34.567Z"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "clawpm-backend",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ClawPM backend - OpenClaw Container Manager (M3)",
+  "scripts": {
+    "cli": "node cli-test.js"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.2",
+    "dotenv": "^16.4.5"
+  }
+}
