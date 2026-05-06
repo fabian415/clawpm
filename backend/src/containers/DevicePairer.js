@@ -101,7 +101,15 @@ async function listDevices(userId, { gatewayToken } = {}) {
  * Returns the new operator token string, or null on failure.
  */
 async function rotateDeviceToken(userId, deviceId, { gatewayToken } = {}) {
-  const cmd = ['node', 'dist/index.js', 'devices', 'rotate', '--device', deviceId, '--role', 'operator', '--json']
+  const cmd = [
+    'node', 'dist/index.js', 'devices', 'rotate',
+    '--device', deviceId,
+    '--role', 'operator',
+    '--scope', 'operator.read',
+    '--scope', 'operator.write',
+    '--scope', 'operator.approvals',
+    '--json',
+  ]
   if (gatewayToken) cmd.push('--token', gatewayToken)
 
   const { stdout } = await execInContainer(userId, cmd)

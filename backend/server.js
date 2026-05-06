@@ -3,7 +3,17 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createServer } from 'node:http'
+import { randomUUID } from 'node:crypto'
+import { WebSocketServer } from 'ws'
 import { register, login, verifyToken, getUserById, completeSetup, resetSetup } from './src/managers/UserManager.js'
+import { getHistory as getChatHistory, appendMessage, createMessage } from './src/managers/ChatManager.js'
+import {
+  getClientForUser, disconnectClientForUser,
+  getDefaultSessionKey, makeScopedSessionKey,
+  sendAndStream, getHistory as getGatewayHistory,
+  normalizeHistory,
+} from './src/managers/OpenClawClient.js'
 import { allocatePorts, releasePorts, getPortsForUser } from './src/containers/PortManager.js'
 import { initializeWorkspace } from './src/containers/WorkspaceManager.js'
 import {
@@ -100,6 +110,13 @@ app.patch('/api/user/setup', requireAuth, (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
+})
+
+// ── Chat history REST endpoint ────────────────────────────────────────────────
+
+app.get('/api/chat/history', requireAuth, (req, res) => {
+  const history = getHistory(req.user.userId)
+  res.json({ messages: history })
 })
 
 // ── Provision helpers ─────────────────────────────────────────────────────────
@@ -424,6 +441,120 @@ app.delete('/api/container', requireAuth, async (req, res) => {
   }
 })
 
-app.listen(PORT, () => {
+// ── WebSocket chat ────────────────────────────────────────────────────────────
+
+/**
+ * Send a user message to OpenClaw via the gateway WebSocket protocol
+ * and stream incremental history updates back to the frontend WebSocket.
+ *
+ * Protocol: WebSocket JSON-RPC (not REST/SSE).
+ * We call chat.send, then poll chat.history until the reply stabilises.
+ */
+async function handleChatMessage(ws, authUserId, sessionKey, content) {
+  const provisionUserId = getProvisionUserId(authUserId)
+
+  const send = (obj) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)) }
+
+  let client
+  try {
+    client = getClientForUser(provisionUserId)
+    await client.ensureConnected()
+  } catch (err) {
+    send({ type: 'error', message: `無法連線至 OpenClaw Gateway：${err.message}` })
+    return
+  }
+
+  const messageId = randomUUID()
+  send({ type: 'message_start', messageId, sessionKey })
+
+  let lastSentText = ''
+
+  try {
+    await sendAndStream(client, sessionKey, content, ({ messages, reply, done }) => {
+      // Send only the new portion of the assistant's text as chunks
+      if (reply && reply.length > lastSentText.length) {
+        const newText = reply.slice(lastSentText.length)
+        send({ type: 'chunk', text: newText })
+        lastSentText = reply
+      }
+
+      // Identify process/tool entries that appeared since last update
+      const processEntries = messages.filter(m => m.isProcess && !m.isThought)
+      if (processEntries.length > 0) {
+        send({ type: 'process_entries', entries: processEntries })
+      }
+
+      if (done) {
+        const assistantMsg = createMessage('assistant', reply, {
+          messageId,
+          sessionKey,
+          processEntries,
+        })
+        appendMessage(authUserId, assistantMsg)
+        send({ type: 'message_complete', message: assistantMsg })
+      }
+    })
+
+  } catch (err) {
+    console.error('[chat] OpenClaw error:', err.message)
+    send({ type: 'error', message: err.message })
+  }
+}
+
+// ── HTTP + WebSocket server ───────────────────────────────────────────────────
+
+const server = createServer(app)
+const wss = new WebSocketServer({ server, path: '/ws/chat' })
+
+wss.on('connection', (ws) => {
+  let authUserId = null
+  let sessionKey = getDefaultSessionKey()
+
+  const send = (obj) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj))
+  }
+
+  ws.on('message', async (raw) => {
+    let msg
+    try { msg = JSON.parse(raw) } catch { return }
+
+    if (msg.type === 'auth') {
+      try {
+        const decoded = verifyToken(msg.token)
+        authUserId = decoded.userId
+        // Load stored local history (already-saved messages)
+        const history = getChatHistory(authUserId)
+        send({ type: 'auth_ok', history, sessionKey })
+      } catch {
+        send({ type: 'auth_error', message: 'Token 無效' })
+        ws.close()
+      }
+      return
+    }
+
+    if (!authUserId) {
+      send({ type: 'auth_error', message: '請先驗證身份' })
+      return
+    }
+
+    if (msg.type === 'message' && typeof msg.content === 'string' && msg.content.trim()) {
+      const userMsg = createMessage('user', msg.content.trim(), { sessionKey })
+      appendMessage(authUserId, userMsg)
+      send({ type: 'user_message', message: userMsg })
+      await handleChatMessage(ws, authUserId, sessionKey, msg.content.trim())
+    }
+
+    if (msg.type === 'new_session') {
+      sessionKey = makeScopedSessionKey('chat')
+      send({ type: 'session_changed', sessionKey })
+    }
+  })
+
+  ws.on('error', (err) => {
+    console.error('[ws] error:', err.message)
+  })
+})
+
+server.listen(PORT, () => {
   console.log(`ClawPM API server running on http://localhost:${PORT}`)
 })

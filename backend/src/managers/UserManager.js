@@ -17,6 +17,7 @@ function readUsers() {
 }
 
 function writeUsers(data) {
+  fs.mkdirSync(path.dirname(USERS_DB_PATH), { recursive: true })
   fs.writeFileSync(USERS_DB_PATH, JSON.stringify(data, null, 2))
 }
 

@@ -4,3 +4,5 @@ frontend/node_modules
 frontend/dist
 backend/data
 frontend/vite-dev*.log
+reference
+.claude
