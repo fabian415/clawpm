@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocket } from 'ws'
 import { getUserPaths } from '../containers/WorkspaceManager.js'
-import { getContainerConfig } from '../containers/DevicePairer.js'
+import { getContainerConfig, pairDevice } from '../containers/DevicePairer.js'
 
 const PROTOCOL_VERSION = 3
 const CONNECT_CHALLENGE_TIMEOUT_MS = 5000
@@ -22,6 +22,15 @@ const POLL_INTERVAL_MS = 800
 const POLL_STABLE_COUNT = 2          // consecutive unchanged polls before declaring done
 const POLL_TIMEOUT_MS = 120_000
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
+
+function resolveClientPlatform() {
+  const configured = process.env.OPENCLAW_GATEWAY_CLIENT_PLATFORM?.trim()
+  if (configured) return configured
+
+  // The approved device identity is generated inside the OpenClaw container,
+  // so its registered platform is linux even when this backend runs on macOS.
+  return 'linux'
+}
 
 // ── Crypto helpers ────────────────────────────────────────────────────────────
 
@@ -67,26 +76,51 @@ function buildDeviceAuthPayloadV3({ deviceId, clientId, clientMode, role, scopes
 // ── Identity / auth helpers ───────────────────────────────────────────────────
 
 function loadDeviceIdentity(userId) {
-  try {
-    const paths = getUserPaths(userId)
-    const identityFile = path.join(paths.identity, 'device.json')
-    const parsed = JSON.parse(fs.readFileSync(identityFile, 'utf8'))
-    if (
-      typeof parsed?.deviceId === 'string'
-      && typeof parsed?.publicKeyPem === 'string'
-      && typeof parsed?.privateKeyPem === 'string'
-    ) {
-      return parsed
+  const paths = getUserPaths(userId)
+  const identityFiles = [
+    path.join(paths.identity, 'device.json'),
+    path.join(paths.base, 'identity', 'device.json'), // legacy pre-mount-fix path
+  ]
+
+  for (const identityFile of identityFiles) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(identityFile, 'utf8'))
+      if (
+        typeof parsed?.deviceId === 'string'
+        && typeof parsed?.publicKeyPem === 'string'
+        && typeof parsed?.privateKeyPem === 'string'
+      ) {
+        return parsed
+      }
     }
-  } catch {}
+    catch {}
+  }
   return null
+}
+
+async function ensureOperatorCredentials(userId) {
+  let config = getContainerConfig(userId)
+  let identity = loadDeviceIdentity(userId)
+
+  if (config?.operatorToken?.trim() && identity) {
+    return { config, identity }
+  }
+
+  if (identity && config?.gatewayToken?.trim()) {
+    console.log(`[OpenClaw] Pairing device for user ${userId}: operator token missing`)
+    await pairDevice(userId, { healthTimeoutMs: 30_000 })
+    config = getContainerConfig(userId)
+    identity = loadDeviceIdentity(userId)
+  }
+
+  return { config, identity }
 }
 
 function buildConnectParams({ nonce, config, identity, userId }) {
   const operatorToken = config.operatorToken?.trim() || null
   const gatewayToken = config.gatewayToken?.trim() || null
   const scopes = ['operator.read', 'operator.write']
-  const client = { id: 'cli', version: '1.0.0', platform: process.platform, mode: 'cli' }
+  const client = { id: 'cli', version: '1.0.0', platform: resolveClientPlatform(), mode: 'cli' }
 
   const params = {
     minProtocol: PROTOCOL_VERSION,
@@ -174,8 +208,14 @@ class OpenClawGatewayClient {
 
   async _connect() {
     const url = this.gatewayUrl
-    const config = getContainerConfig(this.userId)
-    const identity = loadDeviceIdentity(this.userId)
+    const { config, identity } = await ensureOperatorCredentials(this.userId)
+
+    if (!config?.operatorToken?.trim()) {
+      throw new Error('OpenClaw operator token 尚未建立，請先完成 device pairing 或重新啟動容器配對流程')
+    }
+    if (!identity) {
+      throw new Error('OpenClaw device identity 不存在，請確認 gateway 已產生 config/identity/device.json')
+    }
 
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(url)

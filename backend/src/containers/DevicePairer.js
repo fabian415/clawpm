@@ -55,20 +55,25 @@ export function listContainerConfigs() {
  */
 export function readDeviceIdentity(userId) {
   const paths = getUserPaths(userId)
-  const identityFile = path.join(paths.identity, 'device.json')
+  const identityFiles = [
+    path.join(paths.identity, 'device.json'),
+    path.join(paths.base, 'identity', 'device.json'), // legacy pre-mount-fix path
+  ]
 
-  try {
-    const raw = fs.readFileSync(identityFile, 'utf8')
-    const parsed = JSON.parse(raw)
+  for (const identityFile of identityFiles) {
+    try {
+      const raw = fs.readFileSync(identityFile, 'utf8')
+      const parsed = JSON.parse(raw)
 
-    if (
-      typeof parsed?.deviceId === 'string'
-      && typeof parsed?.publicKeyPem === 'string'
-    ) {
-      return parsed
+      if (
+        typeof parsed?.deviceId === 'string'
+        && typeof parsed?.publicKeyPem === 'string'
+      ) {
+        return parsed
+      }
     }
+    catch {}
   }
-  catch {}
 
   return null
 }
@@ -151,7 +156,11 @@ export async function pairDevice(userId, { healthTimeoutMs = 60_000 } = {}) {
 
   console.log(`  [DevicePairer] Running 'devices list --json' in container...`)
   const devices = await listDevices(userId, { gatewayToken })
-  const deviceId = devices[0]?.deviceId
+  const identity = readDeviceIdentity(userId)
+  const identityDevice = identity?.deviceId
+    ? devices.find(device => device?.deviceId === identity.deviceId)
+    : null
+  const deviceId = identityDevice?.deviceId || devices[0]?.deviceId
 
   if (!deviceId) {
     throw new Error(

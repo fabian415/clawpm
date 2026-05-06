@@ -36,7 +36,9 @@ export function getUserPaths(userId) {
     ftpData: path.join(base, 'workspace', 'ftp_data'),
     properNounInput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'input'),
     properNounOutput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'output'),
-    identity: path.join(base, 'identity'),
+    // The container mounts config/ to /home/node/.openclaw, so the gateway
+    // writes its approved device identity under config/identity on the host.
+    identity: path.join(base, 'config', 'identity'),
     workspaceEnv: path.join(base, 'workspace', '.env'),
   }
 }

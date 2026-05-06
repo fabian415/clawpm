@@ -115,7 +115,7 @@ app.patch('/api/user/setup', requireAuth, (req, res) => {
 // ── Chat history REST endpoint ────────────────────────────────────────────────
 
 app.get('/api/chat/history', requireAuth, (req, res) => {
-  const history = getHistory(req.user.userId)
+  const history = getChatHistory(req.user.userId)
   res.json({ messages: history })
 })
 
