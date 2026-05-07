@@ -1,0 +1,19 @@
+services:
+  openclaw-ftp-server:
+    image: fauria/vsftpd
+    container_name: openclaw-ftp-server
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    volumes:
+      - ${CLAWPM_WORKSPACE_BASE}:/home/vsftpd/${FTP_USER}
+    environment:
+      FTP_USER: ${FTP_USER}
+      FTP_PASS: ${FTP_PASS}
+      PASV_ADDRESS: ${FTP_SERVER_IP}
+      PASV_MIN_PORT: 21100
+      PASV_MAX_PORT: 21110
+      LOCAL_UMASK: "022"
+      FILE_OPEN_MODE: "0666"
+      REVERSE_LOOKUP_ENABLE: "NO"
+    restart: always

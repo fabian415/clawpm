@@ -19,19 +19,69 @@
 
     <!-- Step 1: Upload -->
     <div v-if="step === 1" class="space-y-6">
-      <div @click="simulateUpload" class="bg-white dark:bg-slate-900 border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-2xl p-12 text-center hover:border-blue-500 transition-colors group cursor-pointer">
-        <div class="w-16 h-16 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
-          <UploadCloud class="w-8 h-8" />
-        </div>
-        <h3 class="text-lg font-bold mb-2">上傳會議音訊檔</h3>
-        <p class="text-sm text-slate-500 mb-6">支援 MP3, WAV, M4A, WebM (上限 500MB)</p>
-        <div v-if="uploadProgress > 0" class="max-w-xs mx-auto">
-          <div class="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mb-2">
-            <div class="h-full bg-blue-600 transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
+      <!-- Hidden file input -->
+      <input
+        ref="fileInputRef"
+        type="file"
+        accept=".mp3,.wav,.m4a,.webm"
+        class="hidden"
+        @change="handleFileChange"
+      />
+
+      <!-- Upload area -->
+      <div
+        @click="openFileDialog"
+        class="bg-white dark:bg-slate-900 border-2 border-dashed rounded-2xl p-12 text-center transition-colors group cursor-pointer"
+        :class="uploadError
+          ? 'border-red-400 dark:border-red-600'
+          : uploadDone
+            ? 'border-green-400 dark:border-green-600'
+            : 'border-slate-300 dark:border-slate-700 hover:border-blue-500'"
+      >
+        <!-- Idle state -->
+        <template v-if="!selectedFile && !uploadError">
+          <div class="w-16 h-16 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
+            <UploadCloud class="w-8 h-8" />
           </div>
-          <p class="text-xs text-blue-500 font-medium">{{ uploadProgress }}% 上傳中...</p>
-        </div>
-        <button v-else class="bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 transition-colors">選擇檔案</button>
+          <h3 class="text-lg font-bold mb-2">上傳會議音訊檔</h3>
+          <p class="text-sm text-slate-500 mb-6">支援 MP3, WAV, M4A, WebM (上限 500MB)</p>
+          <button class="bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 transition-colors">選擇檔案</button>
+        </template>
+
+        <!-- Uploading state -->
+        <template v-else-if="selectedFile && !uploadDone && !uploadError">
+          <div class="w-16 h-16 bg-blue-50 dark:bg-blue-900/30 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+            <UploadCloud class="w-8 h-8 animate-bounce" />
+          </div>
+          <h3 class="text-lg font-bold mb-1">{{ selectedFile.name }}</h3>
+          <p class="text-xs text-slate-400 mb-6">{{ formatFileSize(selectedFile.size) }}</p>
+          <div class="max-w-xs mx-auto">
+            <div class="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mb-2">
+              <div class="h-full bg-blue-600 transition-all duration-300" :style="{ width: uploadProgress + '%' }"></div>
+            </div>
+            <p class="text-xs text-blue-500 font-medium">{{ uploadProgress }}% 上傳中...</p>
+          </div>
+        </template>
+
+        <!-- Success state -->
+        <template v-else-if="uploadDone">
+          <div class="w-16 h-16 bg-green-50 dark:bg-green-900/30 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Check class="w-8 h-8" />
+          </div>
+          <h3 class="text-lg font-bold mb-1 text-green-700 dark:text-green-400">上傳完成</h3>
+          <p class="text-sm text-slate-500 mb-4">{{ selectedFile.name }}</p>
+          <p class="text-xs text-slate-400">點擊重新選擇檔案</p>
+        </template>
+
+        <!-- Error state -->
+        <template v-else>
+          <div class="w-16 h-16 bg-red-50 dark:bg-red-900/30 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4">
+            <X class="w-8 h-8" />
+          </div>
+          <h3 class="text-lg font-bold mb-1 text-red-600">上傳失敗</h3>
+          <p class="text-sm text-red-500 mb-4">{{ uploadError }}</p>
+          <button class="bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 transition-colors">重新選擇</button>
+        </template>
       </div>
 
       <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8">
@@ -43,7 +93,7 @@
               <span class="text-sm font-medium">{{ file.name }}</span>
               <span class="text-[10px] text-slate-400">{{ file.size }}</span>
             </div>
-            <button @click="uploadedDocs.splice(idx, 1)" class="text-red-500 hover:text-red-700"><X class="w-4 h-4" /></button>
+            <button @click.stop="uploadedDocs.splice(idx, 1)" class="text-red-500 hover:text-red-700"><X class="w-4 h-4" /></button>
           </div>
           <button class="w-full py-3 border-2 border-dotted border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 hover:text-blue-500 hover:border-blue-500 transition-all text-sm font-medium">+ 點擊或拖放文件 (PDF, Docx, TXT)</button>
         </div>
@@ -155,7 +205,14 @@
         <ArrowLeft class="w-4 h-4" /> 上一步
       </button>
       <div v-else></div>
-      <button v-if="step < 4" @click="nextStep" class="bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 flex items-center gap-2">
+      <button
+        v-if="step < 4"
+        @click="nextStep"
+        :disabled="step === 1 && !uploadDone"
+        :class="step === 1 && !uploadDone
+          ? 'bg-blue-300 dark:bg-blue-900 cursor-not-allowed text-white px-8 py-2.5 rounded-xl font-bold flex items-center gap-2'
+          : 'bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 flex items-center gap-2'"
+      >
         繼續下一步 <ArrowRight class="w-4 h-4" />
       </button>
     </div>
@@ -175,20 +232,82 @@ const emit = defineEmits(['navigate'])
 const step = ref(1)
 const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '洞見生成']
 const isProcessing = ref(false)
-const uploadProgress = ref(0)
 const uploadedDocs = ref([{ name: '需求規格書.pdf', size: '2.4MB' }])
 const tags = ref(['ClawPM', 'Vue 3', 'Tailwind', 'AI 專案管理', 'GPU 加速', '前端架構'])
 const newTag = ref('')
 
-function simulateUpload() {
+const fileInputRef = ref(null)
+const selectedFile = ref(null)
+const uploadProgress = ref(0)
+const uploadDone = ref(false)
+const uploadError = ref('')
+
+function openFileDialog() {
+  if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
+  uploadDone.value = false
+  uploadError.value = ''
+  selectedFile.value = null
   uploadProgress.value = 0
-  const interval = setInterval(() => {
-    uploadProgress.value += 10
-    if (uploadProgress.value >= 100) clearInterval(interval)
-  }, 200)
+  fileInputRef.value?.click()
+}
+
+function handleFileChange(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  selectedFile.value = file
+  event.target.value = ''
+  uploadFile(file)
+}
+
+function uploadFile(file) {
+  uploadProgress.value = 0
+  uploadDone.value = false
+  uploadError.value = ''
+
+  const token = localStorage.getItem('clawpm_token')
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const xhr = new XMLHttpRequest()
+
+  xhr.upload.addEventListener('progress', (e) => {
+    if (e.lengthComputable) {
+      uploadProgress.value = Math.min(99, Math.round(e.loaded / e.total * 100))
+    }
+  })
+
+  xhr.addEventListener('load', () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      uploadProgress.value = 100
+      uploadDone.value = true
+    } else {
+      let msg = 'FTP 上傳失敗'
+      try { msg = JSON.parse(xhr.responseText).error || msg } catch {}
+      uploadError.value = msg
+      selectedFile.value = null
+    }
+  })
+
+  xhr.addEventListener('error', () => {
+    uploadError.value = '網路錯誤，請重試'
+    selectedFile.value = null
+  })
+
+  xhr.open('POST', '/api/workflow/upload-media')
+  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+  xhr.send(formData)
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 function nextStep() {
+  if (step.value === 1) {
+    step.value++
+    return
+  }
   isProcessing.value = true
   setTimeout(() => {
     isProcessing.value = false

@@ -36,6 +36,7 @@ export function getUserPaths(userId) {
     ftpData: path.join(base, 'workspace', 'ftp_data'),
     properNounInput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'input'),
     properNounOutput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'output'),
+    media: path.join(base, 'workspace', 'ftp_data', 'media'),
     // The container mounts config/ to /home/node/.openclaw, so the gateway
     // writes its approved device identity under config/identity on the host.
     identity: path.join(base, 'config', 'identity'),
@@ -135,7 +136,7 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
   const skillsCopied = []
 
   // Create all directories (skip file-path entries)
-  const dirKeys = ['base', 'config', 'workspace', 'skills', 'ftpData', 'properNounInput', 'properNounOutput', 'identity']
+  const dirKeys = ['base', 'config', 'workspace', 'skills', 'ftpData', 'properNounInput', 'properNounOutput', 'media', 'identity']
   for (const key of dirKeys) {
     if (!fs.existsSync(paths[key])) fs.mkdirSync(paths[key], { recursive: true })
   }
