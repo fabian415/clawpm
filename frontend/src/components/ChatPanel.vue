@@ -8,7 +8,7 @@
   <Transition name="slide-up">
     <div
       v-if="show"
-      class="fixed z-50 bottom-24 left-4 sm:left-6 w-[calc(100vw-2rem)] sm:w-[420px] max-h-[70vh] flex flex-col bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden"
+      class="fixed z-50 bottom-24 right-4 sm:right-6 w-[calc(100vw-2rem)] sm:w-[420px] max-h-[70vh] flex flex-col bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden"
     >
       <!-- Header -->
       <div class="flex items-center justify-between px-4 py-3 border-b border-slate-100 dark:border-slate-800 shrink-0">
@@ -37,7 +37,7 @@
       <!-- Messages -->
       <div ref="scrollEl" class="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
         <!-- Empty state -->
-        <div v-if="messages.length === 0" class="flex flex-col items-center justify-center h-full py-12 text-center">
+        <div v-if="messages.length === 0 && streamingMessages.length === 0 && !isLoading" class="flex flex-col items-center justify-center h-full py-12 text-center">
           <div class="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center mb-3">
             <Bot class="w-6 h-6 text-blue-600 dark:text-blue-400" />
           </div>
@@ -45,7 +45,7 @@
           <p class="text-xs text-slate-400 dark:text-slate-500 mt-1">輸入訊息開始對話</p>
         </div>
 
-        <!-- Message list -->
+        <!-- Message list (completed messages only) -->
         <template v-for="msg in messages" :key="msg.id">
           <!-- User message -->
           <div v-if="msg.role === 'user'" class="flex justify-end">
@@ -61,33 +61,46 @@
             </div>
           </div>
 
-          <!-- Assistant message -->
+          <!-- Assistant message (completed) -->
           <div v-else class="flex gap-2 items-start">
             <div class="w-7 h-7 rounded-lg bg-slate-800 dark:bg-slate-700 flex items-center justify-center shrink-0 mt-0.5">
               <Bot class="w-4 h-4 text-white" />
             </div>
             <div class="flex-1 min-w-0 space-y-1.5">
-              <!-- Tool-use events (collapsed) -->
               <ToolEventGroup
                 v-if="msg.events && msg.events.length > 0"
                 :events="msg.events"
-                :is-streaming="msg.isStreaming"
+                :is-streaming="false"
               />
-
-              <!-- Text content -->
-              <div
-                v-if="msg.content || msg.isStreaming"
-                class="prose prose-sm max-w-none text-sm text-slate-700 dark:text-slate-300 leading-relaxed"
-              >
-                <span v-if="msg.content" class="whitespace-pre-wrap">{{ msg.content }}</span>
-                <!-- Typing cursor while streaming -->
-                <span v-if="msg.isStreaming" class="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-0.5 align-middle" />
+              <div v-if="msg.content" class="prose prose-sm max-w-none text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+                <span class="whitespace-pre-wrap">{{ msg.content }}</span>
               </div>
             </div>
           </div>
         </template>
 
-        <!-- Loading indicator (before message_start arrives) -->
+        <!-- Streaming messages — always pinned at the bottom while in-flight -->
+        <div v-for="msg in streamingMessages" :key="msg.id" class="flex gap-2 items-start">
+            <div class="w-7 h-7 rounded-lg bg-slate-800 dark:bg-slate-700 flex items-center justify-center shrink-0 mt-0.5">
+              <Bot class="w-4 h-4 text-white" />
+            </div>
+            <div class="flex-1 min-w-0 space-y-1.5">
+              <ToolEventGroup
+                v-if="msg.events && msg.events.length > 0"
+                :events="msg.events"
+                :is-streaming="true"
+              />
+              <div
+                v-if="msg.content || msg.isStreaming"
+                class="prose prose-sm max-w-none text-sm text-slate-700 dark:text-slate-300 leading-relaxed"
+              >
+                <span v-if="msg.content" class="whitespace-pre-wrap">{{ msg.content }}</span>
+                <span v-if="msg.isStreaming" class="inline-block w-2 h-4 bg-slate-400 animate-pulse ml-0.5 align-middle" />
+              </div>
+            </div>
+          </div>
+
+        <!-- Loading indicator (before first message_start arrives) -->
         <div v-if="isLoading && !hasStreamingMsg" class="flex gap-2 items-center">
           <div class="w-7 h-7 rounded-lg bg-slate-800 dark:bg-slate-700 flex items-center justify-center shrink-0">
             <Bot class="w-4 h-4 text-white" />
@@ -110,13 +123,13 @@
             @keydown.enter.shift.exact="addNewline"
             placeholder="輸入訊息… (Enter 送出, Shift+Enter 換行)"
             rows="1"
-            :disabled="!isConnected || isLoading"
+            :disabled="!isConnected"
             class="flex-1 resize-none bg-transparent text-sm text-slate-800 dark:text-slate-200 placeholder-slate-400 outline-none max-h-32 leading-relaxed disabled:opacity-50"
             @input="autoResize"
           />
           <button
             @click="submit"
-            :disabled="!inputText.trim() || !isConnected || isLoading"
+            :disabled="!inputText.trim() || !isConnected"
             class="p-1.5 rounded-lg bg-blue-600 text-white disabled:opacity-40 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors shrink-0"
           >
             <SendHorizontal class="w-4 h-4" />
@@ -136,6 +149,7 @@ import ToolEventGroup from './ToolEventGroup.vue'
 const props = defineProps({
   show: Boolean,
   messages: { type: Array, default: () => [] },
+  streamingMessages: { type: Array, default: () => [] },
   isConnected: Boolean,
   isLoading: Boolean,
 })
@@ -146,11 +160,11 @@ const inputText = ref('')
 const scrollEl = ref(null)
 const inputEl = ref(null)
 
-const hasStreamingMsg = computed(() => props.messages.some(m => m.isStreaming))
+const hasStreamingMsg = computed(() => props.streamingMessages.length > 0)
 
 function submit() {
   const text = inputText.value.trim()
-  if (!text || !props.isConnected || props.isLoading) return
+  if (!text || !props.isConnected) return
   emit('send', text)
   inputText.value = ''
   nextTick(() => {
@@ -172,8 +186,9 @@ function autoResize(e) {
 
 // Auto-scroll to bottom on new messages
 watch(() => props.messages.length, () => scrollToBottom())
+watch(() => props.streamingMessages.length, () => scrollToBottom())
 watch(() => {
-  const streaming = props.messages.find(m => m.isStreaming)
+  const streaming = props.streamingMessages[props.streamingMessages.length - 1]
   return streaming?.content
 }, () => scrollToBottom())
 

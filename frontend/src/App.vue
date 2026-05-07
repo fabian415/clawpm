@@ -114,6 +114,7 @@
     <ChatPanel
       :show="chat.isOpen.value"
       :messages="chat.messages.value"
+      :streaming-messages="chat.streamingMessages.value"
       :is-connected="chat.isConnected.value"
       :is-loading="chat.isLoading.value"
       @close="chat.closePanel()"

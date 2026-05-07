@@ -1,7 +1,7 @@
 <template>
   <button
     @click="$emit('click')"
-    class="fixed bottom-6 left-6 z-50 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95"
+    class="fixed bottom-6 right-6 z-50 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl flex items-center justify-center transition-all duration-200 hover:scale-110 active:scale-95"
     :title="isConnected ? 'OpenClaw 對話' : '正在連線...'"
   >
     <MessageCircle class="w-6 h-6" />

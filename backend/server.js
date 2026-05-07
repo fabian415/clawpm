@@ -464,39 +464,67 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
     return
   }
 
-  const messageId = randomUUID()
-  send({ type: 'message_start', messageId, sessionKey })
+  // Send an early placeholder so the UI shows the typing indicator immediately.
+  const initialFrontendMsgId = randomUUID()
+  send({ type: 'message_start', messageId: initialFrontendMsgId, sessionKey })
 
+  // Per-turn state: track the current gateway message being streamed.
+  let currentGatewayMsgId = null   // id of the gateway assistant message we're currently streaming
+  let frontendMsgId = initialFrontendMsgId
   let lastSentText = ''
+  let latestProcessEntries = []
 
   try {
-    await sendAndStream(client, sessionKey, content, ({ messages, reply, done }) => {
-      // Send only the new portion of the assistant's text as chunks
-      if (reply && reply.length > lastSentText.length) {
-        const newText = reply.slice(lastSentText.length)
-        send({ type: 'chunk', text: newText })
-        lastSentText = reply
+    await sendAndStream(client, sessionKey, content, ({ lastAssistantMsg, processEntries, done }) => {
+      latestProcessEntries = processEntries
+
+      // Detect a new (or first) assistant message from the gateway.
+      if (lastAssistantMsg && lastAssistantMsg.id !== currentGatewayMsgId) {
+        if (currentGatewayMsgId !== null) {
+          // A second (or later) assistant message appeared — complete the previous one.
+          const prevMsg = createMessage('assistant', lastSentText, {
+            messageId: frontendMsgId, sessionKey, events: processEntries,
+          })
+          appendMessage(authUserId, prevMsg)
+          send({ type: 'message_complete', messageId: frontendMsgId, message: prevMsg })
+
+          frontendMsgId = randomUUID()
+          lastSentText = ''
+          send({ type: 'message_start', messageId: frontendMsgId, sessionKey })
+        }
+        currentGatewayMsgId = lastAssistantMsg.id
       }
 
-      // Identify process/tool entries that appeared since last update
-      const processEntries = messages.filter(m => m.isProcess && !m.isThought)
+      // Stream new characters of the current assistant message.
+      if (lastAssistantMsg && lastAssistantMsg.content.length > lastSentText.length) {
+        const delta = lastAssistantMsg.content.slice(lastSentText.length)
+        send({ type: 'chunk', messageId: frontendMsgId, text: delta })
+        lastSentText = lastAssistantMsg.content
+      }
+
       if (processEntries.length > 0) {
         send({ type: 'process_entries', entries: processEntries })
       }
 
       if (done) {
-        const assistantMsg = createMessage('assistant', reply, {
-          messageId,
-          sessionKey,
-          processEntries,
-        })
-        appendMessage(authUserId, assistantMsg)
-        send({ type: 'message_complete', message: assistantMsg })
+        if (lastSentText) {
+          const assistantMsg = createMessage('assistant', lastSentText, {
+            messageId: frontendMsgId,
+            sessionKey,
+            events: latestProcessEntries,
+          })
+          appendMessage(authUserId, assistantMsg)
+          send({ type: 'message_complete', messageId: frontendMsgId, message: assistantMsg })
+        } else {
+          // Gateway returned nothing — cancel the placeholder bubble.
+          send({ type: 'message_complete', messageId: frontendMsgId, message: null })
+        }
       }
     })
 
   } catch (err) {
     console.error('[chat] OpenClaw error:', err.message)
+    send({ type: 'message_complete', messageId: frontendMsgId, message: null })
     send({ type: 'error', message: err.message })
   }
 }
@@ -510,8 +538,29 @@ wss.on('connection', (ws) => {
   let authUserId = null
   let sessionKey = getDefaultSessionKey()
 
+  // Per-connection message queue: allows the user to send multiple messages
+  // without waiting for each response. Messages are forwarded to OpenClaw in
+  // order so the conversation context is preserved.
+  const msgQueue = []
+  let queueRunning = false
+
   const send = (obj) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj))
+  }
+
+  async function drainQueue() {
+    if (queueRunning) return
+    queueRunning = true
+    while (msgQueue.length > 0) {
+      const { content, sk } = msgQueue.shift()
+      try {
+        await handleChatMessage(ws, authUserId, sk, content)
+      } catch (err) {
+        console.error('[ws queue] error:', err.message)
+        send({ type: 'error', message: err.message })
+      }
+    }
+    queueRunning = false
   }
 
   ws.on('message', async (raw) => {
@@ -522,7 +571,6 @@ wss.on('connection', (ws) => {
       try {
         const decoded = verifyToken(msg.token)
         authUserId = decoded.userId
-        // Load stored local history (already-saved messages)
         const history = getChatHistory(authUserId)
         send({ type: 'auth_ok', history, sessionKey })
       } catch {
@@ -541,13 +589,21 @@ wss.on('connection', (ws) => {
       const userMsg = createMessage('user', msg.content.trim(), { sessionKey })
       appendMessage(authUserId, userMsg)
       send({ type: 'user_message', message: userMsg })
-      await handleChatMessage(ws, authUserId, sessionKey, msg.content.trim())
+      // Enqueue and process in background — caller returns immediately.
+      msgQueue.push({ content: msg.content.trim(), sk: sessionKey })
+      drainQueue()
     }
 
     if (msg.type === 'new_session') {
+      // Discard any queued messages for the old session.
+      msgQueue.length = 0
       sessionKey = makeScopedSessionKey('chat')
       send({ type: 'session_changed', sessionKey })
     }
+  })
+
+  ws.on('close', () => {
+    msgQueue.length = 0
   })
 
   ws.on('error', (err) => {

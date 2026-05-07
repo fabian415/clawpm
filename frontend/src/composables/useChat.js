@@ -3,6 +3,7 @@ import { ref, watch, onUnmounted } from 'vue'
 export function useChat() {
   const isOpen = ref(false)
   const messages = ref([])
+  const streamingMessages = ref([]) // in-flight messages, always rendered at bottom
   const unreadCount = ref(0)
   const isConnected = ref(false)
   const isLoading = ref(false)
@@ -10,7 +11,8 @@ export function useChat() {
 
   let ws = null
   let reconnectTimer = null
-  let streamingMsg = null  // reactive ref inside messages array
+  // Map from messageId → reactive message proxy (supports concurrent streams).
+  const streamingMsgs = new Map()
 
   function buildWsUrl() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -34,7 +36,14 @@ export function useChat() {
 
     ws.onclose = () => {
       isConnected.value = false
-      streamingMsg = null
+      // Flush any cut-short streaming messages into the completed list.
+      for (const m of streamingMessages.value) {
+        m.isStreaming = false
+        if (m.content || m.events?.length) messages.value.push({ ...m })
+      }
+      streamingMessages.value = []
+      streamingMsgs.clear()
+      isLoading.value = false
       scheduleReconnect()
     }
 
@@ -66,51 +75,78 @@ export function useChat() {
         replaceOptimistic(msg.message)
         break
 
-      case 'message_start':
+      case 'message_start': {
         isLoading.value = true
-        messages.value.push({
+        const newMsg = {
           id: msg.messageId,
           role: 'assistant',
           content: '',
           events: [],
           timestamp: new Date().toISOString(),
           isStreaming: true,
-        })
-        // Keep reference to the reactive proxy (not the plain object we just pushed)
-        streamingMsg = messages.value[messages.value.length - 1]
+        }
+        streamingMessages.value.push(newMsg)
+        // Keep reference to the reactive proxy so we can mutate it later.
+        streamingMsgs.set(msg.messageId, streamingMessages.value[streamingMessages.value.length - 1])
         break
+      }
 
-      case 'chunk':
-        if (streamingMsg) streamingMsg.content += msg.text
+      case 'chunk': {
+        const target = msg.messageId
+          ? streamingMsgs.get(msg.messageId)
+          : streamingMsgs.size > 0 ? streamingMsgs.values().next().value : null
+        if (target) target.content += msg.text
         break
+      }
 
-      case 'process_entries':
-        if (streamingMsg && Array.isArray(msg.entries)) {
-          streamingMsg.events = msg.entries
+      case 'process_entries': {
+        if (streamingMsgs.size > 0 && Array.isArray(msg.entries)) {
+          const last = [...streamingMsgs.values()].at(-1)
+          if (last) last.events = msg.entries
         }
         break
+      }
 
       case 'message_complete': {
-        isLoading.value = false
-        if (streamingMsg) {
-          streamingMsg.isStreaming = false
-          // Use authoritative content from server if stream was empty
-          if (!streamingMsg.content && msg.message?.content) {
-            streamingMsg.content = msg.message.content
-          }
-          if (msg.message?.events?.length) streamingMsg.events = msg.message.events
-        }
-        streamingMsg = null
+        const completing = msg.messageId
+          ? streamingMsgs.get(msg.messageId)
+          : streamingMsgs.size > 0 ? streamingMsgs.values().next().value : null
 
-        if (!isOpen.value) {
-          unreadCount.value++
+        if (completing) {
+          if (!completing.content && msg.message?.content) {
+            completing.content = msg.message.content
+          }
+          if (msg.message?.events?.length) completing.events = msg.message.events
+
+          // Always remove from the streaming list first.
+          const sIdx = streamingMessages.value.findIndex(m => m.id === completing.id)
+          if (sIdx !== -1) streamingMessages.value.splice(sIdx, 1)
+
+          if (completing.content || completing.events?.length) {
+            // Settle the completed message into the history list.
+            messages.value.push({
+              id: completing.id,
+              role: completing.role,
+              content: completing.content,
+              events: completing.events,
+              timestamp: completing.timestamp,
+              isStreaming: false,
+            })
+            if (!isOpen.value) unreadCount.value++
+          }
+          // If nothing to display, the bubble is simply dropped.
+
+          streamingMsgs.delete(msg.messageId ?? completing.id)
         }
+
+        if (streamingMsgs.size === 0) isLoading.value = false
         break
       }
 
       case 'error':
         isLoading.value = false
-        streamingMsg = null
+        streamingMessages.value = []
+        streamingMsgs.clear()
         messages.value.push({
           id: Date.now().toString(),
           role: 'system',
@@ -135,7 +171,6 @@ export function useChat() {
     }
   }
 
-  // Replace the optimistic placeholder (no real id yet) with the server-assigned message
   function replaceOptimistic(serverMsg) {
     const idx = messages.value.findLastIndex(m => m.role === 'user' && m._optimistic)
     if (idx !== -1) {
@@ -145,7 +180,7 @@ export function useChat() {
 
   function sendMessage(content) {
     const text = content?.trim()
-    if (!text || !isConnected.value || isLoading.value) return
+    if (!text || !isConnected.value) return
 
     messages.value.push({
       id: `opt-${Date.now()}`,
@@ -173,6 +208,8 @@ export function useChat() {
       ws.send(JSON.stringify({ type: 'new_session' }))
     }
     messages.value = []
+    streamingMessages.value = []
+    streamingMsgs.clear()
     unreadCount.value = 0
   }
 
@@ -188,14 +225,13 @@ export function useChat() {
 
   onUnmounted(disconnect)
 
-  // Update <title> badge when unread count changes
   watch(unreadCount, (n) => {
     const base = document.title.replace(/^\(\d+\)\s*/, '')
     document.title = n > 0 ? `(${n}) ${base}` : base
   })
 
   return {
-    isOpen, messages, unreadCount, isConnected, isLoading, sessionKey,
+    isOpen, messages, streamingMessages, unreadCount, isConnected, isLoading, sessionKey,
     connect, disconnect, sendMessage, openPanel, closePanel, newSession,
   }
 }

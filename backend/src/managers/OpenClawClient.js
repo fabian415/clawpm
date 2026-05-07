@@ -119,7 +119,7 @@ async function ensureOperatorCredentials(userId) {
 function buildConnectParams({ nonce, config, identity, userId }) {
   const operatorToken = config.operatorToken?.trim() || null
   const gatewayToken = config.gatewayToken?.trim() || null
-  const scopes = ['operator.read', 'operator.write']
+  const scopes = ['operator.read', 'operator.write', 'operator.approvals']
   const client = { id: 'cli', version: '1.0.0', platform: resolveClientPlatform(), mode: 'cli' }
 
   const params = {
@@ -481,17 +481,29 @@ function conversationSignature(messages) {
   return messages.map(m => `${m.role}:${m.content}`).join('|')
 }
 
-function getLastAssistantText(messages) {
-  return [...messages].reverse().find(m => m.role === 'assistant' && !m.isThought && !m.isProcess)?.content || ''
+function getLastNewAssistantEntry(messages, prevIdSet) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!prevIdSet.has(m.id) && m.role === 'assistant' && !m.isThought && !m.isProcess && m.content) {
+      return m
+    }
+  }
+  return null
 }
 
 /**
  * Send a message and stream incremental updates via onUpdate callback.
  * Resolves when the assistant has finished replying.
+ *
+ * onUpdate receives { lastAssistantMsg, processEntries, done }
+ *   lastAssistantMsg — the most-recent new assistant message {id, content, …}, or null
+ *   processEntries   — all new tool/process entries since the send
+ *   done             — true on final stable call
  */
 export async function sendAndStream(client, sessionKey, userMessage, onUpdate) {
   const prevMessages = await getHistory(client, sessionKey).catch(() => [])
   const prevSig = conversationSignature(prevMessages)
+  const prevIdSet = new Set(prevMessages.map(m => m.id))
 
   await client.call('chat.send', {
     sessionKey,
@@ -499,7 +511,6 @@ export async function sendAndStream(client, sessionKey, userMessage, onUpdate) {
     idempotencyKey: randomUUID(),
   }, POLL_TIMEOUT_MS)
 
-  // Poll until the assistant replies and stops updating
   const startedAt = Date.now()
   let prevContentSig = prevSig
   let stableCount = 0
@@ -516,17 +527,19 @@ export async function sendAndStream(client, sessionKey, userMessage, onUpdate) {
     }
 
     const currentSig = conversationSignature(current)
-    const assistantReply = getLastAssistantText(current)
+    const newMessages = current.filter(m => !prevIdSet.has(m.id))
+    const lastAssistantMsg = getLastNewAssistantEntry(current, prevIdSet)
+    const processEntries = newMessages.filter(m => m.isProcess && !m.isThought)
 
     if (currentSig !== prevContentSig) {
       prevContentSig = currentSig
       latestMessages = current
       stableCount = 0
-      if (assistantReply) onUpdate({ messages: current, reply: assistantReply, done: false })
+      onUpdate({ lastAssistantMsg, processEntries, done: false })
     } else {
       stableCount++
-      if (assistantReply && stableCount >= POLL_STABLE_COUNT) {
-        onUpdate({ messages: current, reply: assistantReply, done: true })
+      if (lastAssistantMsg && stableCount >= POLL_STABLE_COUNT) {
+        onUpdate({ lastAssistantMsg, processEntries, done: true })
         break
       }
     }
