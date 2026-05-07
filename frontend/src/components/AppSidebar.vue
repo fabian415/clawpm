@@ -54,15 +54,15 @@
           </div>
         </div>
       </div>
-      <div class="flex items-center justify-between gap-2">
-        <button @click="$emit('navigate', 'settings')" class="flex-1 flex items-center justify-center p-2 rounded-md hover:bg-slate-800">
+      <div :class="collapsed ? 'flex-col' : 'flex-row justify-between gap-2'" class="flex items-center">
+        <button @click="$emit('navigate', 'settings')" class="flex items-center justify-center p-2 rounded-md hover:bg-slate-800" :class="collapsed ? 'w-full' : 'flex-1'">
           <Settings class="w-5 h-5" />
         </button>
-        <button @click="$emit('toggle-theme')" class="flex-1 flex items-center justify-center p-2 rounded-md hover:bg-slate-800">
+        <button @click="$emit('toggle-theme')" class="flex items-center justify-center p-2 rounded-md hover:bg-slate-800" :class="collapsed ? 'w-full' : 'flex-1'">
           <Sun v-if="isDark" class="w-5 h-5" />
           <Moon v-else class="w-5 h-5" />
         </button>
-        <button @click="$emit('update:collapsed', !collapsed)" class="p-2 rounded-md hover:bg-slate-800">
+        <button @click="$emit('update:collapsed', !collapsed)" class="flex items-center justify-center p-2 rounded-md hover:bg-slate-800" :class="collapsed ? 'w-full' : ''">
           <ChevronRight v-if="collapsed" class="w-5 h-5" />
           <ChevronLeft v-else class="w-5 h-5" />
         </button>

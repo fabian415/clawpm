@@ -200,9 +200,12 @@ function scrollToBottom() {
   })
 }
 
-// Focus input when panel opens
+// Focus input and scroll to bottom when panel opens
 watch(() => props.show, (v) => {
-  if (v) nextTick(() => inputEl.value?.focus())
+  if (v) nextTick(() => {
+    inputEl.value?.focus()
+    scrollToBottom()
+  })
 })
 </script>
 

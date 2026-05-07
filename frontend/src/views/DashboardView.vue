@@ -3,7 +3,7 @@
     <!-- Hero Banner -->
     <section class="bg-blue-600 rounded-2xl p-8 text-white flex justify-between items-center relative overflow-hidden shadow-lg shadow-blue-500/20">
       <div class="relative z-10">
-        <h2 class="text-3xl font-bold mb-2">午安，Jason 👋</h2>
+        <h2 class="text-3xl font-bold mb-2">{{ greeting }}，{{ displayName }} 👋</h2>
         <p class="text-blue-100 mb-6">歡迎回到 ClawPM，今日有 3 場會議待處理。</p>
         <button @click="$emit('navigate', 'workflow')" class="bg-white text-blue-600 px-6 py-2.5 rounded-xl font-bold hover:bg-blue-50 transition-colors flex items-center gap-2 shadow-sm">
           <PlusCircle class="w-5 h-5" /> 上傳新會議
@@ -70,13 +70,26 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { PlusCircle, BrainCircuit, Clock, Calendar, Plus, ChevronRight, Settings2 } from 'lucide-vue-next'
 
-defineProps({
+const props = defineProps({
   recentProjects: Array,
   containerStatus: String,
-  containerStatusColor: String
+  containerStatusColor: String,
+  currentUser: Object,
 })
 
 defineEmits(['navigate', 'select-project', 'new-project'])
+
+const displayName = computed(() =>
+  props.currentUser?.name ?? props.currentUser?.email?.split('@')[0] ?? '使用者'
+)
+
+const greeting = computed(() => {
+  const h = new Date().getHours()
+  if (h < 12) return '早安'
+  if (h < 18) return '午安'
+  return '晚安'
+})
 </script>

@@ -359,6 +359,19 @@ app.post('/api/provision', requireAuth, async (req, res) => {
       send('warn', `  Reason: ${err.message}`)
     }
 
+    // 8. Link auth user → workspace so getProvisionUserId resolves correctly
+    try {
+      completeSetup(req.user.userId, {
+        provider,
+        apiKey: provider === 'gemini' ? geminiApiKey : (apiKey ?? ''),
+        baseUrl: baseUrl ?? null,
+        model: provider === 'gemini' ? 'google/gemini-2.5-flash' : (modelId ?? ''),
+        workspaceFolder: userId,
+      })
+    } catch (e) {
+      console.warn('[provision] Could not link user to workspace:', e.message)
+    }
+
     // Done
     const finalStatus = await getContainerStatus(userId)
     const savedConfig = getContainerConfig(userId)
@@ -454,7 +467,6 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
   const provisionUserId = getProvisionUserId(authUserId)
 
   const send = (obj) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)) }
-
   let client
   try {
     client = getClientForUser(provisionUserId)
