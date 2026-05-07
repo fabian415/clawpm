@@ -66,10 +66,10 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
         '-e',
         "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
       ],
-      Interval: 30_000_000_000,  // nanoseconds
+      Interval: 15_000_000_000,  // 15s between checks
       Timeout: 5_000_000_000,
-      Retries: 5,
-      StartPeriod: 20_000_000_000,
+      Retries: 3,
+      StartPeriod: 150_000_000_000,  // 150s grace — gateway takes ~100s to start
     },
   })
 

@@ -8,6 +8,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const WORKSPACE_BASE = process.env.CLAWPM_WORKSPACE_BASE
   || path.join(os.homedir(), '.openclaw', 'users')
+const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
+const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
 const SKILLS_SOURCE = process.env.OPENCLAW_SKILLS_SOURCE_PATH
   || path.join(__dirname, '..', '..', '..', 'skills')
@@ -34,7 +36,9 @@ export function getUserPaths(userId) {
     ftpData: path.join(base, 'workspace', 'ftp_data'),
     properNounInput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'input'),
     properNounOutput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'output'),
-    identity: path.join(base, 'identity'),
+    // The container mounts config/ to /home/node/.openclaw, so the gateway
+    // writes its approved device identity under config/identity on the host.
+    identity: path.join(base, 'config', 'identity'),
     workspaceEnv: path.join(base, 'workspace', '.env'),
   }
 }
@@ -88,6 +92,15 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
     },
     session: { dmScope: 'per-channel-peer' },
     tools: { profile: 'coding' },
+    plugins: {
+      entries: {
+        google: { enabled: true },
+      },
+    },
+    meta: {
+      lastTouchedVersion: OPENCLAW_VERSION,
+      lastTouchedAt: new Date().toISOString(),
+    },
   }
 }
 
