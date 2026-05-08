@@ -341,13 +341,32 @@
           <CheckCircle class="w-4 h-4" /> 啟動完成！
         </p>
       </div>
+
+      <!-- Re-enter button shown when modal was dismissed -->
+      <Transition enter-active-class="transition duration-200 ease-out" enter-from-class="opacity-0 translate-y-2" leave-active-class="transition duration-150 ease-in" leave-to-class="opacity-0">
+        <div v-if="showSuccess && !successModalOpen" class="mt-4">
+          <button @click="successModalOpen = true"
+            class="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all active:scale-95">
+            <Rocket class="w-4 h-4" /> 進入 ClawPM
+          </button>
+        </div>
+      </Transition>
     </template>
   </div>
 
   <!-- Success Modal -->
   <Transition enter-active-class="transition duration-200 ease-out" enter-from-class="opacity-0" leave-active-class="transition duration-150 ease-in" leave-to-class="opacity-0">
-    <div v-if="showSuccess" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+    <div v-if="showSuccess && successModalOpen" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
       <div class="bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl shadow-2xl p-8 text-center animate-modal-in">
+        <!-- Close button -->
+        <div class="flex justify-end -mt-2 -mr-2 mb-3">
+          <button @click="successModalOpen = false"
+            class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            title="關閉，返回查看 logs">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+
         <div class="w-20 h-20 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center mx-auto mb-5 ring-8 ring-green-50 dark:ring-green-900/10">
           <CheckCircle class="w-10 h-10 text-green-600" />
         </div>
@@ -406,7 +425,7 @@ import { ref, computed, nextTick } from 'vue'
 import {
   BrainCircuit, Check, Sparkles, Server, Key, Globe, Eye, EyeOff,
   Cpu, AlertTriangle, AlertCircle, User, Search, ChevronLeft, ChevronRight,
-  Rocket, Terminal as TerminalIcon, CheckCircle, XCircle, ArrowRight, Copy
+  Rocket, Terminal as TerminalIcon, CheckCircle, XCircle, ArrowRight, Copy, X
 } from 'lucide-vue-next'
 
 defineProps({ isDark: Boolean })
@@ -454,6 +473,7 @@ const terminalLines = ref([])
 const isStarting = ref(false)
 const startProgress = ref(0)
 const showSuccess = ref(false)
+const successModalOpen = ref(false)
 const provisionError = ref('')
 const provisionResult = ref(null)
 const tokenCopied = ref(false)
@@ -673,7 +693,10 @@ async function startContainerSetup() {
           startProgress.value = 100
           isStarting.value = false
           provisionResult.value = data
-          setTimeout(() => { showSuccess.value = true }, 700)
+          setTimeout(() => {
+            showSuccess.value = true
+            successModalOpen.value = true
+          }, 700)
         } else if (data.type === 'error') {
           addLine('error', data.text)
           isStarting.value = false

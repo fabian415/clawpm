@@ -3,9 +3,12 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
+import multer from 'multer'
+import { Client as FtpClient } from 'basic-ftp'
 import { register, login, verifyToken, getUserById, completeSetup, resetSetup } from './src/managers/UserManager.js'
 import { getHistory as getChatHistory, appendMessage, createMessage } from './src/managers/ChatManager.js'
 import {
@@ -117,6 +120,57 @@ app.patch('/api/user/setup', requireAuth, (req, res) => {
 app.get('/api/chat/history', requireAuth, (req, res) => {
   const history = getChatHistory(req.user.userId)
   res.json({ messages: history })
+})
+
+// ── Media upload via FTP ──────────────────────────────────────────────────────
+
+const ALLOWED_AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.webm'])
+
+const mediaUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase()
+      cb(null, `clawpm-media-${Date.now()}${ext}`)
+    },
+  }),
+  limits: { fileSize: 500 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (ALLOWED_AUDIO_EXTS.has(ext)) return cb(null, true)
+    cb(new Error('不支援的檔案格式，請上傳 MP3、WAV、M4A 或 WebM'))
+  },
+})
+
+app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
+  mediaUpload.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message })
+    next()
+  })
+}, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '未收到檔案' })
+
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const ftpUser = process.env.FTP_USER || 'advantech'
+  const ftpPass = process.env.FTP_PASS || 'changeme'
+  const remoteDir = `/${provisionUserId}/workspace/ftp_data/media`
+  const originalName = req.file.originalname
+
+  const client = new FtpClient()
+  try {
+    await client.access({ host: '127.0.0.1', port: 21, user: ftpUser, password: ftpPass, secure: false })
+    // Override PASV address so data channel also connects to localhost
+    client.ftp.pasvIpReplace = '127.0.0.1'
+    await client.ensureDir(remoteDir)
+    await client.uploadFrom(req.file.path, originalName)
+    res.json({ success: true, fileName: originalName, remotePath: `${remoteDir}/${originalName}` })
+  } catch (err) {
+    console.error('[upload-media] FTP error:', err.message)
+    res.status(500).json({ error: `FTP 上傳失敗：${err.message}` })
+  } finally {
+    client.close()
+    fs.unlink(req.file.path, () => {})
+  }
 })
 
 // ── Provision helpers ─────────────────────────────────────────────────────────
