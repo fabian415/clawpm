@@ -3,7 +3,7 @@ services:
     image: fauria/vsftpd
     container_name: openclaw-ftp-server
     ports:
-      - "21:21"
+      - "2121:21"
       - "21100-21110:21100-21110"
     volumes:
       - ${CLAWPM_WORKSPACE_BASE}:/home/vsftpd/${FTP_USER}

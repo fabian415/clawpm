@@ -19,13 +19,23 @@
 
     <!-- Step 1: Upload -->
     <div v-if="step === 1" class="space-y-6">
-      <!-- Hidden file input -->
+      <!-- Hidden file input for audio -->
       <input
         ref="fileInputRef"
         type="file"
         accept=".mp3,.wav,.m4a,.webm"
         class="hidden"
         @change="handleFileChange"
+      />
+
+      <!-- Hidden file input for docs -->
+      <input
+        ref="docFileInputRef"
+        type="file"
+        accept=".pdf,.docx,.txt"
+        multiple
+        class="hidden"
+        @change="handleDocFileChange"
       />
 
       <!-- Upload area -->
@@ -89,13 +99,26 @@
         <div class="space-y-4">
           <div v-for="(file, idx) in uploadedDocs" :key="idx" class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
             <div class="flex items-center gap-3">
-              <File class="w-4 h-4 text-blue-500" />
+              <Loader2 v-if="file.uploading" class="w-4 h-4 text-blue-500 animate-spin" />
+              <AlertCircle v-else-if="file.error" class="w-4 h-4 text-red-500" />
+              <File v-else class="w-4 h-4 text-blue-500" />
               <span class="text-sm font-medium">{{ file.name }}</span>
-              <span class="text-[10px] text-slate-400">{{ file.size }}</span>
+              <span v-if="file.uploading" class="text-[10px] text-blue-400">上傳中...</span>
+              <span v-else-if="file.error" class="text-[10px] text-red-400">{{ file.error }}</span>
+              <span v-else class="text-[10px] text-slate-400">{{ file.size }}</span>
             </div>
-            <button @click.stop="uploadedDocs.splice(idx, 1)" class="text-red-500 hover:text-red-700"><X class="w-4 h-4" /></button>
+            <button @click.stop="removeDoc(idx)" class="text-red-500 hover:text-red-700"><X class="w-4 h-4" /></button>
           </div>
-          <button class="w-full py-3 border-2 border-dotted border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 hover:text-blue-500 hover:border-blue-500 transition-all text-sm font-medium">+ 點擊或拖放文件 (PDF, Docx, TXT)</button>
+          <button
+            @click="openDocDialog"
+            @dragover.prevent="isDragOver = true"
+            @dragleave="isDragOver = false"
+            @drop.prevent="handleDocDrop"
+            :class="isDragOver
+              ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-900/20'
+              : 'border-slate-200 dark:border-slate-800 text-slate-400 hover:text-blue-500 hover:border-blue-500'"
+            class="w-full py-3 border-2 border-dotted rounded-xl transition-all text-sm font-medium"
+          >+ 點擊或拖放文件 (PDF, Docx, TXT)</button>
         </div>
       </div>
     </div>
@@ -223,7 +246,7 @@
 import { ref } from 'vue'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
-  ExternalLink, ArrowLeft, ArrowRight
+  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, mockTranscript: Array })
@@ -232,7 +255,9 @@ const emit = defineEmits(['navigate'])
 const step = ref(1)
 const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '洞見生成']
 const isProcessing = ref(false)
-const uploadedDocs = ref([{ name: '需求規格書.pdf', size: '2.4MB' }])
+const uploadedDocs = ref([])
+const docFileInputRef = ref(null)
+const isDragOver = ref(false)
 const tags = ref(['ClawPM', 'Vue 3', 'Tailwind', 'AI 專案管理', 'GPU 加速', '前端架構'])
 const newTag = ref('')
 
@@ -320,5 +345,61 @@ function addTag() {
     tags.value.push(newTag.value.trim())
     newTag.value = ''
   }
+}
+
+function openDocDialog() {
+  docFileInputRef.value?.click()
+}
+
+function handleDocFileChange(event) {
+  const files = Array.from(event.target.files || [])
+  event.target.value = ''
+  files.forEach(uploadDoc)
+}
+
+function handleDocDrop(event) {
+  isDragOver.value = false
+  const allowed = ['.pdf', '.docx', '.txt']
+  const files = Array.from(event.dataTransfer.files)
+    .filter(f => allowed.some(ext => f.name.toLowerCase().endsWith(ext)))
+  files.forEach(uploadDoc)
+}
+
+async function uploadDoc(file) {
+  const sizeStr = formatFileSize(file.size)
+  const idx = uploadedDocs.value.push({ name: file.name, size: sizeStr, uploading: true, error: null }) - 1
+
+  const token = localStorage.getItem('clawpm_token')
+  const formData = new FormData()
+  formData.append('file', file)
+
+  try {
+    const res = await fetch('/api/workflow/upload-doc', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || '上傳失敗')
+    uploadedDocs.value[idx] = { name: file.name, size: sizeStr, uploading: false, error: null, remotePath: data.remotePath }
+  } catch (err) {
+    uploadedDocs.value[idx] = { name: file.name, size: sizeStr, uploading: false, error: err.message, remotePath: null }
+  }
+}
+
+async function removeDoc(idx) {
+  const file = uploadedDocs.value[idx]
+  if (file.uploading) return
+  uploadedDocs.value.splice(idx, 1)
+  if (!file.remotePath) return
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    await fetch('/api/workflow/delete-doc', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remotePath: file.remotePath }),
+    })
+  } catch {}
 }
 </script>

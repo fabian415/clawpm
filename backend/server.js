@@ -153,12 +153,13 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
   const provisionUserId = getProvisionUserId(req.user.userId)
   const ftpUser = process.env.FTP_USER || 'advantech'
   const ftpPass = process.env.FTP_PASS || 'changeme'
-  const remoteDir = `/${provisionUserId}/workspace/ftp_data/media`
+  const dateFolder = new Date().toISOString().slice(0, 10)
+  const remoteDir = `/${provisionUserId}/workspace/ftp_data/media/${dateFolder}`
   const originalName = req.file.originalname
 
   const client = new FtpClient()
   try {
-    await client.access({ host: '127.0.0.1', port: 21, user: ftpUser, password: ftpPass, secure: false })
+    await client.access({ host: '127.0.0.1', port: 2121, user: ftpUser, password: ftpPass, secure: false })
     // Override PASV address so data channel also connects to localhost
     client.ftp.pasvIpReplace = '127.0.0.1'
     await client.ensureDir(remoteDir)
@@ -170,6 +171,86 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
   } finally {
     client.close()
     fs.unlink(req.file.path, () => {})
+  }
+})
+
+// ── Document upload via FTP ───────────────────────────────────────────────────
+
+const ALLOWED_DOC_EXTS = new Set(['.pdf', '.docx', '.txt'])
+
+const docUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase()
+      cb(null, `clawpm-doc-${Date.now()}${ext}`)
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (ALLOWED_DOC_EXTS.has(ext)) return cb(null, true)
+    cb(new Error('不支援的檔案格式，請上傳 PDF、Docx 或 TXT'))
+  },
+})
+
+app.post('/api/workflow/upload-doc', requireAuth, (req, res, next) => {
+  docUpload.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message })
+    next()
+  })
+}, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '未收到檔案' })
+
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const ftpUser = process.env.FTP_USER || 'advantech'
+  const ftpPass = process.env.FTP_PASS || 'changeme'
+  const dateFolder = new Date().toISOString().slice(0, 10)
+  const remoteDir = `/${provisionUserId}/workspace/ftp_data/doc/${dateFolder}`
+  const originalName = req.file.originalname
+
+  const client = new FtpClient()
+  try {
+    await client.access({ host: '127.0.0.1', port: 2121, user: ftpUser, password: ftpPass, secure: false })
+    client.ftp.pasvIpReplace = '127.0.0.1'
+    await client.ensureDir(remoteDir)
+    await client.uploadFrom(req.file.path, originalName)
+    res.json({ success: true, fileName: originalName, remotePath: `${remoteDir}/${originalName}` })
+  } catch (err) {
+    console.error('[upload-doc] FTP error:', err.message)
+    res.status(500).json({ error: `FTP 上傳失敗：${err.message}` })
+  } finally {
+    client.close()
+    fs.unlink(req.file.path, () => {})
+  }
+})
+
+app.delete('/api/workflow/delete-doc', requireAuth, async (req, res) => {
+  const { remotePath } = req.body ?? {}
+  if (!remotePath || typeof remotePath !== 'string') {
+    return res.status(400).json({ error: '缺少 remotePath' })
+  }
+
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const allowedPrefix = `/${provisionUserId}/workspace/ftp_data/doc/`
+  if (!remotePath.startsWith(allowedPrefix)) {
+    return res.status(403).json({ error: '無權限刪除此檔案' })
+  }
+
+  const ftpUser = process.env.FTP_USER || 'advantech'
+  const ftpPass = process.env.FTP_PASS || 'changeme'
+
+  const client = new FtpClient()
+  try {
+    await client.access({ host: '127.0.0.1', port: 2121, user: ftpUser, password: ftpPass, secure: false })
+    client.ftp.pasvIpReplace = '127.0.0.1'
+    await client.remove(remotePath)
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[delete-doc] FTP error:', err.message)
+    res.status(500).json({ error: `FTP 刪除失敗：${err.message}` })
+  } finally {
+    client.close()
   }
 })
 
