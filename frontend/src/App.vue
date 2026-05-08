@@ -62,8 +62,8 @@
         <WorkflowView
           v-else-if="currentPage === 'workflow'"
           :projects="projects"
-          :mock-transcript="mockTranscript"
           @navigate="currentPage = $event"
+          @extraction-ready="handleExtractionReady"
         />
 
         <ReviewerView v-else-if="currentPage === 'reviewer'" />
@@ -171,6 +171,12 @@ watch(currentPage, (page) => {
     chat.isOpen.value = false
   }
 }, { immediate: true })
+
+function handleExtractionReady({ sessionKey, prompt }) {
+  chat.setSession(sessionKey)
+  chat.sendMessage(prompt)
+  chat.openPanel()
+}
 
 function createProject(data) {
   projects.value.push({

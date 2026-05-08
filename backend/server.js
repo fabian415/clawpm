@@ -176,7 +176,7 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
 
 // ── Document upload via FTP ───────────────────────────────────────────────────
 
-const ALLOWED_DOC_EXTS = new Set(['.pdf', '.docx', '.txt'])
+const ALLOWED_DOC_EXTS = new Set(['.pdf', '.docx', '.txt', '.csv', '.xls', '.xlsx', '.pptx'])
 
 const docUpload = multer({
   storage: multer.diskStorage({
@@ -190,7 +190,7 @@ const docUpload = multer({
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase()
     if (ALLOWED_DOC_EXTS.has(ext)) return cb(null, true)
-    cb(new Error('不支援的檔案格式，請上傳 PDF、Docx 或 TXT'))
+    cb(new Error('不支援的檔案格式，請上傳 PDF、Docx、TXT、CSV、XLS、XLSX 或 PPTX'))
   },
 })
 
@@ -251,6 +251,161 @@ app.delete('/api/workflow/delete-doc', requireAuth, async (req, res) => {
     res.status(500).json({ error: `FTP 刪除失敗：${err.message}` })
   } finally {
     client.close()
+  }
+})
+
+// ── Extraction preparation ────────────────────────────────────────────────────
+
+const CONTAINER_WORKSPACE = '/home/node/.openclaw/workspace'
+
+function sanitizeBaseName(value) {
+  return String(value || '')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^a-zA-Z0-9一-龥._-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+}
+
+app.post('/api/workflow/prepare-extraction', requireAuth, (req, res) => {
+  const { sourcePath, originalName } = req.body ?? {}
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const allowedPrefix = `/${provisionUserId}/workspace/`
+
+  if (!sourcePath || typeof sourcePath !== 'string' || !sourcePath.startsWith(allowedPrefix)) {
+    return res.status(400).json({ error: '無效的檔案路徑' })
+  }
+
+  const relativePath = sourcePath.slice(`/${provisionUserId}/workspace`.length)
+  const workspaceFilePath = `${CONTAINER_WORKSPACE}${relativePath}`
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const baseName = sanitizeBaseName(originalName) || `media_${Date.now()}`
+  const outputFileName = `${baseName}_${timestamp}_proper_nouns.csv`
+  const outputPath = `${CONTAINER_WORKSPACE}/ftp_data/proper-noun-imports/output/${outputFileName}`
+
+  const sessionKey = makeScopedSessionKey('extraction')
+  const prompt = [
+    '請透過 meeting-proper-noun-extractor skill，處理我剛上傳的檔案。',
+    `來源檔案路徑：${workspaceFilePath}`,
+    `來源檔案名稱：${originalName || ''}`,
+    `輸出檔案路徑：${outputPath}`,
+    '請產出 UTF-8 CSV 檔案。',
+    '欄位格式固定為：term,count,contexts',
+    '完成後請明確回覆輸出檔案已建立。',
+    'term 裡面不可包含特殊字元，如/或,等。',
+  ].join('\n')
+
+  res.json({ success: true, sessionKey, prompt, outputPath })
+})
+
+app.get('/api/workflow/extraction-tags', requireAuth, (req, res) => {
+  const { outputPath } = req.query
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!outputPath || !outputPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的路徑' })
+  }
+
+  const relPath = outputPath.slice(CONTAINER_WORKSPACE.length)
+  const hostPath = path.join(paths.workspace, relPath)
+
+  if (!hostPath.startsWith(paths.workspace)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  if (!fs.existsSync(hostPath)) {
+    return res.json({ ready: false, tags: [] })
+  }
+
+  try {
+    const lines = fs.readFileSync(hostPath, 'utf8').split('\n').filter(Boolean)
+    const tags = lines.slice(1)
+      .map(line => line.split(',')[0]?.trim())
+      .filter(Boolean)
+    res.json({ ready: true, tags })
+  } catch {
+    res.status(500).json({ error: '讀取結果失敗' })
+  }
+})
+
+// ── Transcription preparation ─────────────────────────────────────────────────
+
+app.post('/api/workflow/prepare-transcription', requireAuth, (req, res) => {
+  const { mediaPath, tags } = req.body ?? {}
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const allowedPrefix = `/${provisionUserId}/workspace/`
+
+  if (!mediaPath || typeof mediaPath !== 'string' || !mediaPath.startsWith(allowedPrefix)) {
+    return res.status(400).json({ error: '無效的媒體檔案路徑' })
+  }
+
+  const relativePath = mediaPath.slice(`/${provisionUserId}/workspace`.length)
+  const containerAudioPath = `${CONTAINER_WORKSPACE}${relativePath}`
+
+  const audioExt = path.extname(containerAudioPath)
+  const audioDir = path.dirname(containerAudioPath)
+  const baseName = path.basename(containerAudioPath, audioExt).replace(/---[0-9a-f-]{36}$/i, '')
+  const transcriptOutputPath = `${audioDir}/${baseName}/${baseName}_逐字稿.md`
+
+  const termsStr = Array.isArray(tags) && tags.length > 0
+    ? tags.join(', ')
+    : ''
+
+  const sessionKey = makeScopedSessionKey('transcription')
+
+  const promptLines = [
+    '我已上傳音檔，請進行逐字轉錄。',
+    `音檔位置：${containerAudioPath}`,
+    `音檔檔名：${path.basename(containerAudioPath)}`,
+    '',
+    '請使用 meeting-transcription 的 skill，以本地模式（local mode）進行轉錄。',
+  ]
+
+  if (termsStr) {
+    promptLines.push(
+      `轉錄時請在執行 python3 meeting_workflow.py 指令時加上 --terms 參數，帶入以下專有名詞以提升辨識準確率：`,
+      `--terms "${termsStr}"`,
+    )
+  }
+
+  const notifyEmail = process.env.OPENCLAW_NOTIFY_EMAIL || 'fabian.chung@advantech.com.tw'
+  promptLines.push(
+    `收件人：${notifyEmail}（不需調整）`,
+    '請直接執行，無需再次確認上述設定。',
+    '這個過程可能需要數分鐘至數十分鐘，請每十分鐘回覆進度，並用 job_id 追蹤轉錄狀況。',
+  )
+
+  res.json({ success: true, sessionKey, prompt: promptLines.join('\n'), transcriptOutputPath })
+})
+
+app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
+  const { outputPath } = req.query
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!outputPath || !outputPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的路徑' })
+  }
+
+  const relPath = outputPath.slice(CONTAINER_WORKSPACE.length)
+  const hostPath = path.join(paths.workspace, relPath)
+
+  if (!hostPath.startsWith(paths.workspace)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  if (!fs.existsSync(hostPath)) {
+    return res.json({ ready: false, content: null })
+  }
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ ready: true, content })
+  } catch {
+    res.status(500).json({ error: '讀取轉錄結果失敗' })
   }
 })
 
@@ -745,6 +900,12 @@ wss.on('connection', (ws) => {
       // Discard any queued messages for the old session.
       msgQueue.length = 0
       sessionKey = makeScopedSessionKey('chat')
+      send({ type: 'session_changed', sessionKey })
+    }
+
+    if (msg.type === 'set_session' && typeof msg.sessionKey === 'string' && msg.sessionKey.trim()) {
+      msgQueue.length = 0
+      sessionKey = msg.sessionKey.trim()
       send({ type: 'session_changed', sessionKey })
     }
   })

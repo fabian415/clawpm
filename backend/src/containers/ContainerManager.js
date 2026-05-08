@@ -1,6 +1,6 @@
 import Docker from 'dockerode'
 
-const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
+const getImage = () => process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
 
 // Build dockerode client — supports Unix socket and Windows named pipe
 function buildDockerClient() {
@@ -41,7 +41,7 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
 
   const container = await docker.createContainer({
     name: containerName,
-    Image: OPENCLAW_IMAGE,
+    Image: getImage(),
     Env: env,
     ExposedPorts: {
       '18789/tcp': {},
@@ -214,7 +214,7 @@ export async function waitForHealthy(userId, timeoutMs = 60_000) {
 /** Pull the OpenClaw image from the registry, streaming progress to a callback. */
 export async function pullImage(onProgress) {
   return new Promise((resolve, reject) => {
-    docker.pull(OPENCLAW_IMAGE, (error, stream) => {
+    docker.pull(getImage(), (error, stream) => {
       if (error) return reject(error)
 
       docker.modem.followProgress(stream, (err, output) => {
@@ -230,7 +230,7 @@ export async function pullImage(onProgress) {
 /** Check whether the OpenClaw image exists locally. */
 export async function imageExists() {
   try {
-    await docker.getImage(OPENCLAW_IMAGE).inspect()
+    await docker.getImage(getImage()).inspect()
     return true
   }
   catch {

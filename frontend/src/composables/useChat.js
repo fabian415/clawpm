@@ -213,6 +213,16 @@ export function useChat() {
     unreadCount.value = 0
   }
 
+  function setSession(sk) {
+    if (ws?.readyState === WebSocket.OPEN && sk) {
+      ws.send(JSON.stringify({ type: 'set_session', sessionKey: sk }))
+      messages.value = []
+      streamingMessages.value = []
+      streamingMsgs.clear()
+      unreadCount.value = 0
+    }
+  }
+
   function disconnect() {
     clearTimeout(reconnectTimer)
     if (ws) {
@@ -232,6 +242,6 @@ export function useChat() {
 
   return {
     isOpen, messages, streamingMessages, unreadCount, isConnected, isLoading, sessionKey,
-    connect, disconnect, sendMessage, openPanel, closePanel, newSession,
+    connect, disconnect, sendMessage, openPanel, closePanel, newSession, setSession,
   }
 }

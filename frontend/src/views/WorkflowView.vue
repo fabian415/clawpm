@@ -32,7 +32,7 @@
       <input
         ref="docFileInputRef"
         type="file"
-        accept=".pdf,.docx,.txt"
+        accept=".pdf,.docx,.txt,.csv,.xls,.xlsx,.pptx"
         multiple
         class="hidden"
         @change="handleDocFileChange"
@@ -118,7 +118,7 @@
               ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-900/20'
               : 'border-slate-200 dark:border-slate-800 text-slate-400 hover:text-blue-500 hover:border-blue-500'"
             class="w-full py-3 border-2 border-dotted rounded-xl transition-all text-sm font-medium"
-          >+ 點擊或拖放文件 (PDF, Docx, TXT)</button>
+          >+ 點擊或拖放文件 (PDF, Docx, TXT, CSV, XLS, XLSX, PPTX)</button>
         </div>
       </div>
     </div>
@@ -162,21 +162,27 @@
           <div class="h-full bg-blue-600 w-1/3 animate-loading"></div>
         </div>
         <h3 class="text-xl font-bold mb-2">AI 語音轉文字中...</h3>
-        <p class="text-slate-500">預計完成時間：約 2 分鐘</p>
-        <p class="text-xs text-slate-400 mt-8">正在處理音軌 #1 (廣播級 Whisper 模型)</p>
+        <p class="text-slate-500">OpenClaw 正在透過本地 Whisper 模型進行語者分離與轉錄</p>
+        <p v-if="tags.length > 0" class="text-xs text-blue-500 mt-3">已帶入 {{ tags.length }} 個專有名詞提升辨識準確率</p>
+        <p class="text-xs text-slate-400 mt-6">轉錄進度可在右下角聊天視窗查看</p>
       </div>
       <div v-else class="space-y-4">
         <div class="flex justify-between items-end">
           <h3 class="text-xl font-bold">逐字稿預覽</h3>
-          <span class="text-xs text-slate-500">共 1,248 字</span>
+          <span class="text-xs text-slate-500">共 {{ transcriptWordCount.toLocaleString() }} 字</span>
         </div>
         <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 h-96 overflow-y-auto leading-relaxed">
-          <div v-for="line in mockTranscript" :key="line.id" class="mb-6">
-            <div class="flex items-center gap-3 mb-1">
-              <span class="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">{{ line.time }}</span>
-              <span class="font-bold text-sm">{{ line.speaker }}</span>
+          <div v-if="transcriptLines.length > 0">
+            <div v-for="line in transcriptLines" :key="line.id" class="mb-6">
+              <div class="flex items-center gap-3 mb-1">
+                <span class="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">{{ line.time }}</span>
+                <span class="font-bold text-sm">{{ line.speaker }}</span>
+              </div>
+              <p class="text-slate-600 dark:text-slate-400 pl-4 border-l-2 border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-colors">{{ line.text }}</p>
             </div>
-            <p class="text-slate-600 dark:text-slate-400 pl-4 border-l-2 border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-colors">{{ line.text }}</p>
+          </div>
+          <div v-else class="flex items-center justify-center h-full text-slate-400 text-sm">
+            尚無逐字稿內容
           </div>
         </div>
       </div>
@@ -231,8 +237,8 @@
       <button
         v-if="step < 4"
         @click="nextStep"
-        :disabled="step === 1 && !uploadDone"
-        :class="step === 1 && !uploadDone
+        :disabled="(step === 1 && !uploadDone) || (step === 3 && isProcessing)"
+        :class="(step === 1 && !uploadDone) || (step === 3 && isProcessing)
           ? 'bg-blue-300 dark:bg-blue-900 cursor-not-allowed text-white px-8 py-2.5 rounded-xl font-bold flex items-center gap-2'
           : 'bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 flex items-center gap-2'"
       >
@@ -243,14 +249,14 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle
 } from 'lucide-vue-next'
 
-const props = defineProps({ projects: Array, mockTranscript: Array })
-const emit = defineEmits(['navigate'])
+const props = defineProps({ projects: Array })
+const emit = defineEmits(['navigate', 'extraction-ready'])
 
 const step = ref(1)
 const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '洞見生成']
@@ -266,6 +272,15 @@ const selectedFile = ref(null)
 const uploadProgress = ref(0)
 const uploadDone = ref(false)
 const uploadError = ref('')
+const uploadedMediaPath = ref(null)
+const uploadedOriginalName = ref(null)
+const extractionOutputPath = ref(null)
+let extractionPollTimer = null
+
+const transcriptLines = ref([])
+const transcriptOutputPath = ref(null)
+const transcriptWordCount = ref(0)
+let transcriptionPollTimer = null
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -303,6 +318,11 @@ function uploadFile(file) {
 
   xhr.addEventListener('load', () => {
     if (xhr.status >= 200 && xhr.status < 300) {
+      try {
+        const data = JSON.parse(xhr.responseText)
+        uploadedMediaPath.value = data.remotePath || null
+        uploadedOriginalName.value = data.fileName || selectedFile.value?.name || null
+      } catch {}
       uploadProgress.value = 100
       uploadDone.value = true
     } else {
@@ -328,9 +348,15 @@ function formatFileSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-function nextStep() {
+async function nextStep() {
   if (step.value === 1) {
     step.value++
+    startExtraction()
+    return
+  }
+  if (step.value === 2) {
+    step.value++
+    startTranscription()
     return
   }
   isProcessing.value = true
@@ -338,6 +364,127 @@ function nextStep() {
     isProcessing.value = false
     step.value++
   }, 2000)
+}
+
+async function startExtraction() {
+  const sourceDoc = uploadedDocs.value.find(d => !d.uploading && !d.error && d.remotePath)
+  if (!sourceDoc) {
+    isProcessing.value = false
+    return
+  }
+  isProcessing.value = true
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/prepare-extraction', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sourcePath: sourceDoc.remotePath, originalName: sourceDoc.name }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '準備萃取失敗')
+
+    extractionOutputPath.value = data.outputPath
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    startExtractionPolling()
+  } catch (err) {
+    console.error('[extraction] prepare error:', err.message)
+    isProcessing.value = false
+  }
+}
+
+async function startTranscription() {
+  if (!uploadedMediaPath.value) {
+    isProcessing.value = false
+    return
+  }
+  isProcessing.value = true
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/prepare-transcription', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mediaPath: uploadedMediaPath.value, tags: tags.value }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '準備轉錄失敗')
+
+    transcriptOutputPath.value = data.transcriptOutputPath
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    startTranscriptionPolling()
+  } catch (err) {
+    console.error('[transcription] prepare error:', err.message)
+    isProcessing.value = false
+  }
+}
+
+function startTranscriptionPolling() {
+  clearTimeout(transcriptionPollTimer)
+  const poll = async () => {
+    if (!transcriptOutputPath.value) return
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch(
+        `/api/workflow/transcription-result?outputPath=${encodeURIComponent(transcriptOutputPath.value)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      const data = await res.json()
+      if (data.ready && data.content) {
+        transcriptLines.value = parseTranscript(data.content)
+        transcriptWordCount.value = countWords(data.content)
+        isProcessing.value = false
+        return
+      }
+    } catch {}
+    transcriptionPollTimer = setTimeout(poll, 15000)
+  }
+  transcriptionPollTimer = setTimeout(poll, 15000)
+}
+
+function parseTranscript(markdown) {
+  const lines = []
+  let id = 0
+  // Match WhisperX format: **[HH:MM:SS → HH:MM:SS] Speaker N:**\ntext
+  const blocks = markdown.split(/\n(?=\*\*\[)/)
+  for (const block of blocks) {
+    const match = block.match(/^\*\*\[([^\]]+)\]\s+([^:*]+):\*\*\s*\n?([\s\S]+)/)
+    if (match) {
+      const time = match[1].trim()
+      const speaker = match[2].trim()
+      const text = match[3].replace(/\n+/g, ' ').trim()
+      if (text) lines.push({ id: id++, time, speaker, text })
+    }
+  }
+  return lines
+}
+
+function countWords(content) {
+  const chinese = (content.match(/[一-龥]/g) || []).length
+  const english = (content.match(/\b[a-zA-Z]+\b/g) || []).length
+  return chinese + english
+}
+
+function startExtractionPolling() {
+  clearTimeout(extractionPollTimer)
+  const poll = async () => {
+    if (!extractionOutputPath.value) return
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch(
+        `/api/workflow/extraction-tags?outputPath=${encodeURIComponent(extractionOutputPath.value)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      const data = await res.json()
+      if (data.ready && data.tags?.length > 0) {
+        tags.value = data.tags
+        isProcessing.value = false
+        return
+      }
+    } catch {}
+    extractionPollTimer = setTimeout(poll, 3000)
+  }
+  extractionPollTimer = setTimeout(poll, 3000)
 }
 
 function addTag() {
@@ -359,7 +506,7 @@ function handleDocFileChange(event) {
 
 function handleDocDrop(event) {
   isDragOver.value = false
-  const allowed = ['.pdf', '.docx', '.txt']
+  const allowed = ['.pdf', '.docx', '.txt', '.csv', '.xls', '.xlsx', '.pptx']
   const files = Array.from(event.dataTransfer.files)
     .filter(f => allowed.some(ext => f.name.toLowerCase().endsWith(ext)))
   files.forEach(uploadDoc)
@@ -386,6 +533,11 @@ async function uploadDoc(file) {
     uploadedDocs.value[idx] = { name: file.name, size: sizeStr, uploading: false, error: err.message, remotePath: null }
   }
 }
+
+onUnmounted(() => {
+  clearTimeout(extractionPollTimer)
+  clearTimeout(transcriptionPollTimer)
+})
 
 async function removeDoc(idx) {
   const file = uploadedDocs.value[idx]

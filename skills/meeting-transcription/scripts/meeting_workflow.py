@@ -235,7 +235,7 @@ def transcribe_azure_openai(audio_path: Path) -> str:
 # Mode B: 本地伺服器轉錄
 # ──────────────────────────────────────────────────────────
 
-def transcribe_local(audio_path: Path, num_speakers: int = None) -> str:
+def transcribe_local(audio_path: Path, num_speakers: int = None, terms: str = None) -> str:
     check_env("LOCAL_SERVER_IP", "LOCAL_SERVER_PORT")
 
     base_url = f"http://{os.environ['LOCAL_SERVER_IP']}:{os.environ['LOCAL_SERVER_PORT']}"
@@ -248,6 +248,9 @@ def transcribe_local(audio_path: Path, num_speakers: int = None) -> str:
         data = {"lang": "zh", "device": "cuda"}
         if num_speakers:
             data["num_speakers"] = str(num_speakers)
+        if terms and terms.strip():
+            data["terms"] = terms.strip()
+            print(f"  專有名詞 terms: {terms.strip()}")
         resp = requests.post(
             f"{base_url}/transcribe",
             headers=headers,
@@ -575,6 +578,8 @@ def main():
                         help="Gemini 模型，僅 gemini 模式使用（default: gemini-2.5-flash）")
     parser.add_argument("--num-speakers", type=int, default=None,
                         help="說話者人數，僅 local 模式使用（不填自動偵測）")
+    parser.add_argument("--terms", default=None,
+                        help="專有名詞，逗號分隔，傳入 WhisperX terms 參數提升辨識準確率（僅 local 模式）")
     args = parser.parse_args()
 
     check_env("SMTP_USER", "SMTP_PASS")
@@ -627,7 +632,7 @@ def main():
         elif args.mode == "openai":
             transcript = transcribe_azure_openai(audio_path)
         else:
-            transcript = transcribe_local(audio_path, args.num_speakers)
+            transcript = transcribe_local(audio_path, args.num_speakers, args.terms)
 
         transcript_path.write_text(transcript, encoding="utf-8")
         archive_info["transcript_txt"].write_text(transcript, encoding="utf-8")
