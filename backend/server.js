@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import { Client as FtpClient } from 'basic-ftp'
+import nodemailer from 'nodemailer'
 import { register, login, verifyToken, getUserById, completeSetup, resetSetup } from './src/managers/UserManager.js'
 import { getHistory as getChatHistory, appendMessage, createMessage } from './src/managers/ChatManager.js'
 import {
@@ -42,6 +43,56 @@ const app = express()
 const PORT = process.env.API_PORT || 3000
 const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
 const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
+const WHISPERX_BASE = `http://${process.env.LOCAL_SERVER_IP || '172.22.12.162'}:${process.env.LOCAL_SERVER_PORT || '8787'}`
+const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
+
+// In-memory store for active transcription jobs
+// jobId → { status, content, error }
+const transcriptionJobs = new Map()
+
+async function pollWhisperXJob(jobId, outputHostPath) {
+  const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+
+  const poll = async () => {
+    try {
+      const res = await fetch(`${WHISPERX_BASE}/jobs/${jobId}`, { headers })
+      if (!res.ok) {
+        transcriptionJobs.set(jobId, { status: 'failed', content: null, error: `WhisperX HTTP ${res.status}` })
+        return
+      }
+      const job = await res.json()
+      const prev = transcriptionJobs.get(jobId) ?? {}
+      transcriptionJobs.set(jobId, { ...prev, status: job.status })
+
+      if (job.status === 'done') {
+        const resultRes = await fetch(`${WHISPERX_BASE}/jobs/${jobId}/result`, { headers })
+        if (resultRes.ok) {
+          const content = await resultRes.text()
+          fs.mkdirSync(path.dirname(outputHostPath), { recursive: true })
+          fs.writeFileSync(outputHostPath, content, 'utf8')
+          transcriptionJobs.set(jobId, { status: 'done', content, error: null })
+        } else {
+          transcriptionJobs.set(jobId, { status: 'failed', content: null, error: '無法下載轉錄結果' })
+        }
+        fetch(`${WHISPERX_BASE}/jobs/${jobId}`, { method: 'DELETE', headers }).catch(() => {})
+        return
+      }
+
+      if (job.status === 'failed') {
+        transcriptionJobs.set(jobId, { status: 'failed', content: null, error: job.error || '轉錄失敗' })
+        return
+      }
+
+      // pending / running → keep polling
+      setTimeout(poll, 15000)
+    } catch (err) {
+      console.error('[whisperx-poll] error:', err.message)
+      setTimeout(poll, 15000)
+    }
+  }
+
+  setTimeout(poll, 15000)
+}
 const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
 app.use(cors({
@@ -334,7 +385,7 @@ app.get('/api/workflow/extraction-tags', requireAuth, (req, res) => {
 
 // ── Transcription preparation ─────────────────────────────────────────────────
 
-app.post('/api/workflow/prepare-transcription', requireAuth, (req, res) => {
+app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) => {
   const { mediaPath, tags } = req.body ?? {}
   const provisionUserId = getProvisionUserId(req.user.userId)
   const allowedPrefix = `/${provisionUserId}/workspace/`
@@ -344,45 +395,112 @@ app.post('/api/workflow/prepare-transcription', requireAuth, (req, res) => {
   }
 
   const relativePath = mediaPath.slice(`/${provisionUserId}/workspace`.length)
-  const containerAudioPath = `${CONTAINER_WORKSPACE}${relativePath}`
+  const paths = getUserPaths(provisionUserId)
+  const hostAudioPath = path.join(paths.workspace, relativePath)
 
-  const audioExt = path.extname(containerAudioPath)
-  const audioDir = path.dirname(containerAudioPath)
-  const baseName = path.basename(containerAudioPath, audioExt).replace(/---[0-9a-f-]{36}$/i, '')
-  const transcriptOutputPath = `${audioDir}/${baseName}/${baseName}_逐字稿.md`
-
-  const termsStr = Array.isArray(tags) && tags.length > 0
-    ? tags.join(', ')
-    : ''
-
-  const sessionKey = makeScopedSessionKey('transcription')
-
-  const promptLines = [
-    '我已上傳音檔，請進行逐字轉錄。',
-    `音檔位置：${containerAudioPath}`,
-    `音檔檔名：${path.basename(containerAudioPath)}`,
-    '',
-    '請使用 meeting-transcription 的 skill，以本地模式（local mode）進行轉錄。',
-  ]
-
-  if (termsStr) {
-    promptLines.push(
-      `轉錄時請在執行 python3 meeting_workflow.py 指令時加上 --terms 參數，帶入以下專有名詞以提升辨識準確率：`,
-      `--terms "${termsStr}"`,
-    )
+  if (!hostAudioPath.startsWith(paths.workspace)) {
+    return res.status(403).json({ error: '無權限' })
   }
 
-  const notifyEmail = process.env.OPENCLAW_NOTIFY_EMAIL || 'fabian.chung@advantech.com.tw'
-  promptLines.push(
-    `收件人：${notifyEmail}（不需調整）`,
-    '請直接執行，無需再次確認上述設定。',
-    '這個過程可能需要數分鐘至數十分鐘，請每十分鐘回覆進度，並用 job_id 追蹤轉錄狀況。',
-  )
+  if (!fs.existsSync(hostAudioPath)) {
+    return res.status(404).json({ error: '找不到音訊檔案' })
+  }
 
-  res.json({ success: true, sessionKey, prompt: promptLines.join('\n'), transcriptOutputPath })
+  const audioExt = path.extname(hostAudioPath)
+  const baseName = path.basename(hostAudioPath, audioExt).replace(/---[0-9a-f-]{36}$/i, '')
+  const outputHostPath = path.join(path.dirname(hostAudioPath), baseName, `${baseName}_逐字稿.md`)
+
+  // Container-side path (returned for compatibility)
+  const containerAudioPath = `${CONTAINER_WORKSPACE}${relativePath}`
+  const containerAudioDir = path.dirname(containerAudioPath)
+  const transcriptOutputPath = `${containerAudioDir}/${baseName}/${baseName}_逐字稿.md`
+
+  const formData = new FormData()
+  const audioBuffer = fs.readFileSync(hostAudioPath)
+  formData.append('audio', new Blob([audioBuffer]), path.basename(hostAudioPath))
+  formData.append('lang', 'zh')
+  if (Array.isArray(tags) && tags.length > 0) {
+    formData.append('terms', tags.join(', '))
+  }
+
+  const whisperxHeaders = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+
+  try {
+    const uploadRes = await fetch(`${WHISPERX_BASE}/transcribe`, {
+      method: 'POST',
+      body: formData,
+      headers: whisperxHeaders,
+    })
+
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.json().catch(() => ({}))
+      return res.status(502).json({ error: errBody.detail || `WhisperX 回傳 HTTP ${uploadRes.status}` })
+    }
+
+    const { job_id } = await uploadRes.json()
+    transcriptionJobs.set(job_id, { status: 'pending', content: null, error: null })
+    pollWhisperXJob(job_id, outputHostPath)
+
+    res.json({ success: true, jobId: job_id, transcriptOutputPath })
+  } catch (err) {
+    console.error('[prepare-transcription] WhisperX error:', err.message)
+    res.status(502).json({ error: `無法連接轉錄伺服器：${err.message}` })
+  }
 })
 
 app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
+  const { jobId } = req.query
+
+  if (!jobId) return res.status(400).json({ error: '缺少 jobId 參數' })
+
+  const job = transcriptionJobs.get(jobId)
+  if (!job) return res.json({ ready: false, content: null, status: 'unknown' })
+
+  if (job.status === 'done' && job.content) {
+    return res.json({ ready: true, content: job.content })
+  }
+  if (job.status === 'failed') {
+    return res.status(500).json({ error: job.error || '轉錄失敗' })
+  }
+
+  res.json({ ready: false, content: null, status: job.status })
+})
+
+// ── Meeting notes (Step 4) ────────────────────────────────────────────────────
+
+app.post('/api/workflow/prepare-meeting-notes', requireAuth, (req, res) => {
+  const { transcriptContainerPath } = req.body ?? {}
+  const provisionUserId = getProvisionUserId(req.user.userId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!transcriptContainerPath || !transcriptContainerPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的逐字稿路徑' })
+  }
+
+  const transcriptDir = path.dirname(transcriptContainerPath)
+  const transcriptBase = path.basename(transcriptContainerPath, '_逐字稿.md')
+  const notesOutputContainerPath = `${transcriptDir}/${transcriptBase}_notes.md`
+
+  const sessionKey = makeScopedSessionKey('meeting-notes')
+
+  const prompt = [
+    '請執行 meeting-transcription skill 的步驟 2：讀取逐字稿並生成會議記錄。',
+    '',
+    `逐字稿路徑：${transcriptContainerPath}`,
+    '',
+    '請依序完成：',
+    '1. 讀取逐字稿全文',
+    '2. 判斷錄音類型（商務會議 / 訪談與使用者研究 / 知識學習與演講 / 其他）',
+    '3. 依對應格式生成完整會議記錄',
+    `4. 將完整結果**寫入以下固定路徑**（無論類型皆統一輸出此路徑）：\n   ${notesOutputContainerPath}`,
+    '',
+    '請直接執行，無需確認。',
+  ].join('\n')
+
+  res.json({ success: true, sessionKey, prompt, notesOutputContainerPath })
+})
+
+app.get('/api/workflow/meeting-notes-result', requireAuth, (req, res) => {
   const { outputPath } = req.query
   const provisionUserId = getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -407,7 +525,56 @@ app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
     const content = fs.readFileSync(hostPath, 'utf8')
     res.json({ ready: true, content })
   } catch {
-    res.status(500).json({ error: '讀取轉錄結果失敗' })
+    res.status(500).json({ error: '讀取會議記錄失敗' })
+  }
+})
+
+app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
+  const { recipients, subject, content, transcriptContent } = req.body ?? {}
+
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return res.status(400).json({ error: '請填寫至少一位收件者' })
+  }
+
+  const smtpHost = process.env.SMTP_HOST
+  const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10)
+  const smtpUser = process.env.SMTP_USER
+  const smtpPass = process.env.SMTP_PASS
+  const fromName = process.env.EMAIL_FROM_NAME || 'ClawPM 會議助理'
+
+  if (!smtpHost || !smtpUser || !smtpPass) {
+    return res.status(500).json({ error: 'SMTP 尚未設定，請聯絡管理員填寫 .env 的 SMTP_* 參數' })
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465,
+      auth: { user: smtpUser, pass: smtpPass },
+    })
+
+    const attachments = []
+    if (transcriptContent) {
+      attachments.push({
+        filename: '逐字稿.md',
+        content: transcriptContent,
+        contentType: 'text/markdown; charset=utf-8',
+      })
+    }
+
+    await transporter.sendMail({
+      from: `"${fromName}" <${smtpUser}>`,
+      to: recipients.join(', '),
+      subject: subject || '會議記錄',
+      text: content || '',
+      attachments,
+    })
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[send-meeting-email] error:', err.message)
+    res.status(500).json({ error: `郵件發送失敗：${err.message}` })
   }
 })
 

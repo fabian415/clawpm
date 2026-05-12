@@ -3,9 +3,9 @@
     <!-- Stepper -->
     <div class="mb-12 relative flex justify-between">
       <div class="absolute top-5 left-0 w-full h-1 bg-slate-200 dark:bg-slate-800 -z-10"></div>
-      <div class="absolute top-5 left-0 h-1 bg-blue-600 -z-10 transition-all duration-500" :style="{ width: ((step - 1) / 3 * 100) + '%' }"></div>
+      <div class="absolute top-5 left-0 h-1 bg-blue-600 -z-10 transition-all duration-500" :style="{ width: ((step - 1) / 4 * 100) + '%' }"></div>
 
-      <div v-for="s in 4" :key="s" class="flex flex-col items-center">
+      <div v-for="s in 5" :key="s" class="flex flex-col items-center">
         <div
           :class="[step >= s ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400']"
           class="w-10 h-10 rounded-full border-2 flex items-center justify-center font-bold mb-2 transition-all duration-300 shadow-sm"
@@ -188,8 +188,83 @@
       </div>
     </div>
 
-    <!-- Step 4: Insights -->
+    <!-- Step 4: Meeting Notes & Email -->
     <div v-if="step === 4" class="space-y-6">
+      <!-- Loading -->
+      <div v-if="isProcessing" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-12 text-center">
+        <div class="relative w-24 h-24 mx-auto mb-6">
+          <div class="absolute inset-0 rounded-full border-4 border-blue-100 dark:border-slate-800"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
+          <div class="absolute inset-0 flex items-center justify-center">
+            <FileText class="w-10 h-10 text-blue-600 animate-pulse" />
+          </div>
+        </div>
+        <h3 class="text-xl font-bold mb-2">AI 正在生成會議記錄...</h3>
+        <p class="text-slate-500 text-sm">OpenClaw 正在讀取逐字稿、分類並套用對應格式</p>
+        <p class="text-xs text-slate-400 mt-4">進度可在右下角聊天視窗查看</p>
+      </div>
+
+      <!-- Ready -->
+      <div v-else class="space-y-5">
+        <!-- Header -->
+        <div class="flex items-center justify-between">
+          <h3 class="text-xl font-bold">會議記錄</h3>
+          <select
+            v-model="meetingNotesType"
+            class="text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
+          >
+            <option>商務會議</option>
+            <option>訪談與使用者研究</option>
+            <option>知識學習與演講</option>
+            <option>專案評審</option>
+          </select>
+        </div>
+
+        <!-- Editable notes -->
+        <div class="relative">
+          <textarea
+            v-model="meetingNotesContent"
+            class="w-full h-96 font-mono text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 resize-none outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed"
+            placeholder="會議記錄將在此顯示，您可以直接編輯..."
+          ></textarea>
+          <span class="absolute bottom-3 right-4 text-[10px] text-slate-400">可直接編輯</span>
+        </div>
+
+        <!-- Email section -->
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 space-y-4">
+          <h4 class="font-bold flex items-center gap-2">
+            <Mail class="w-4 h-4 text-slate-400" /> 發送會議記錄
+          </h4>
+          <div class="flex gap-3">
+            <input
+              v-model="emailTo"
+              type="text"
+              placeholder="收件者 Email（多位請用逗號分隔）"
+              class="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+              @click="sendMeetingEmail"
+              :disabled="emailSending || !emailTo.trim() || !meetingNotesContent"
+              :class="emailSending || !emailTo.trim() || !meetingNotesContent
+                ? 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
+                : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20'"
+              class="px-5 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 whitespace-nowrap"
+            >
+              <Loader2 v-if="emailSending" class="w-4 h-4 animate-spin" />
+              <Send v-else class="w-4 h-4" />
+              {{ emailSending ? '發送中...' : '發送' }}
+            </button>
+          </div>
+          <p v-if="emailSent" class="text-green-600 dark:text-green-400 text-sm flex items-center gap-1.5">
+            <Check class="w-4 h-4" /> 已成功發送至 {{ emailTo }}
+          </p>
+          <p v-if="emailError" class="text-red-500 text-sm">{{ emailError }}</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: Insights -->
+    <div v-if="step === 5" class="space-y-6">
       <div v-if="isProcessing" class="flex flex-col items-center justify-center py-20 text-center">
         <Sparkles class="w-16 h-16 text-blue-500 animate-bounce mb-6" />
         <h3 class="text-2xl font-bold mb-2">正在生成專案洞見...</h3>
@@ -235,10 +310,10 @@
       </button>
       <div v-else></div>
       <button
-        v-if="step < 4"
+        v-if="step < 5"
         @click="nextStep"
-        :disabled="(step === 1 && !uploadDone) || (step === 3 && isProcessing)"
-        :class="(step === 1 && !uploadDone) || (step === 3 && isProcessing)
+        :disabled="(step === 1 && !uploadDone) || (step === 3 && isProcessing) || (step === 4 && isProcessing)"
+        :class="(step === 1 && !uploadDone) || (step === 3 && isProcessing) || (step === 4 && isProcessing)
           ? 'bg-blue-300 dark:bg-blue-900 cursor-not-allowed text-white px-8 py-2.5 rounded-xl font-bold flex items-center gap-2'
           : 'bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 flex items-center gap-2'"
       >
@@ -252,14 +327,14 @@
 import { ref, onUnmounted } from 'vue'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
-  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle
+  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array })
 const emit = defineEmits(['navigate', 'extraction-ready'])
 
 const step = ref(1)
-const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '洞見生成']
+const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '會議記錄', '洞見生成']
 const isProcessing = ref(false)
 const uploadedDocs = ref([])
 const docFileInputRef = ref(null)
@@ -278,9 +353,20 @@ const extractionOutputPath = ref(null)
 let extractionPollTimer = null
 
 const transcriptLines = ref([])
-const transcriptOutputPath = ref(null)
+const transcriptJobId = ref(null)
+const transcriptContainerPath = ref(null)
+const transcriptRawContent = ref('')
 const transcriptWordCount = ref(0)
 let transcriptionPollTimer = null
+
+const meetingNotesOutputPath = ref(null)
+const meetingNotesContent = ref('')
+const meetingNotesType = ref('商務會議')
+const emailTo = ref('')
+const emailSending = ref(false)
+const emailSent = ref(false)
+const emailError = ref('')
+let meetingNotesPollTimer = null
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -359,6 +445,11 @@ async function nextStep() {
     startTranscription()
     return
   }
+  if (step.value === 3) {
+    step.value++
+    startMeetingNotes()
+    return
+  }
   isProcessing.value = true
   setTimeout(() => {
     isProcessing.value = false
@@ -410,8 +501,8 @@ async function startTranscription() {
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || '準備轉錄失敗')
 
-    transcriptOutputPath.value = data.transcriptOutputPath
-    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    transcriptJobId.value = data.jobId
+    transcriptContainerPath.value = data.transcriptOutputPath
     startTranscriptionPolling()
   } catch (err) {
     console.error('[transcription] prepare error:', err.message)
@@ -422,15 +513,22 @@ async function startTranscription() {
 function startTranscriptionPolling() {
   clearTimeout(transcriptionPollTimer)
   const poll = async () => {
-    if (!transcriptOutputPath.value) return
+    if (!transcriptJobId.value) return
     const token = localStorage.getItem('clawpm_token')
     try {
       const res = await fetch(
-        `/api/workflow/transcription-result?outputPath=${encodeURIComponent(transcriptOutputPath.value)}`,
+        `/api/workflow/transcription-result?jobId=${encodeURIComponent(transcriptJobId.value)}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        console.error('[transcription] poll error:', err.error)
+        isProcessing.value = false
+        return
+      }
       const data = await res.json()
       if (data.ready && data.content) {
+        transcriptRawContent.value = data.content
         transcriptLines.value = parseTranscript(data.content)
         transcriptWordCount.value = countWords(data.content)
         isProcessing.value = false
@@ -439,7 +537,84 @@ function startTranscriptionPolling() {
     } catch {}
     transcriptionPollTimer = setTimeout(poll, 15000)
   }
-  transcriptionPollTimer = setTimeout(poll, 15000)
+  poll()
+}
+
+async function startMeetingNotes() {
+  if (!transcriptContainerPath.value) {
+    isProcessing.value = false
+    return
+  }
+  isProcessing.value = true
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/prepare-meeting-notes', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcriptContainerPath: transcriptContainerPath.value }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '準備會議記錄失敗')
+
+    meetingNotesOutputPath.value = data.notesOutputContainerPath
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    startMeetingNotesPolling()
+  } catch (err) {
+    console.error('[meeting-notes] prepare error:', err.message)
+    isProcessing.value = false
+  }
+}
+
+function startMeetingNotesPolling() {
+  clearTimeout(meetingNotesPollTimer)
+  const poll = async () => {
+    if (!meetingNotesOutputPath.value) return
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch(
+        `/api/workflow/meeting-notes-result?outputPath=${encodeURIComponent(meetingNotesOutputPath.value)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      const data = await res.json()
+      if (data.ready && data.content) {
+        meetingNotesContent.value = data.content
+        isProcessing.value = false
+        return
+      }
+    } catch {}
+    meetingNotesPollTimer = setTimeout(poll, 10000)
+  }
+  meetingNotesPollTimer = setTimeout(poll, 10000)
+}
+
+async function sendMeetingEmail() {
+  emailSending.value = true
+  emailSent.value = false
+  emailError.value = ''
+
+  const token = localStorage.getItem('clawpm_token')
+  const recipients = emailTo.value.split(/[,;]/).map(e => e.trim()).filter(Boolean)
+
+  try {
+    const res = await fetch('/api/workflow/send-meeting-email', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipients,
+        subject: `會議記錄 — ${meetingNotesType.value}`,
+        content: meetingNotesContent.value,
+        transcriptContent: transcriptRawContent.value,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || '發送失敗')
+    emailSent.value = true
+  } catch (err) {
+    emailError.value = err.message
+  } finally {
+    emailSending.value = false
+  }
 }
 
 function parseTranscript(markdown) {
@@ -537,6 +712,7 @@ async function uploadDoc(file) {
 onUnmounted(() => {
   clearTimeout(extractionPollTimer)
   clearTimeout(transcriptionPollTimer)
+  clearTimeout(meetingNotesPollTimer)
 })
 
 async function removeDoc(idx) {
