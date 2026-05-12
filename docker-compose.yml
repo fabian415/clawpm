@@ -13,7 +13,7 @@ services:
       PASV_ADDRESS: ${FTP_SERVER_IP}
       PASV_MIN_PORT: 21100
       PASV_MAX_PORT: 21110
-      LOCAL_UMASK: "022"
+      LOCAL_UMASK: "000"
       FILE_OPEN_MODE: "0666"
       REVERSE_LOOKUP_ENABLE: "NO"
     restart: always

@@ -52,6 +52,7 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
         '18789/tcp': [{ HostPort: String(gatewayPort) }],
         '18790/tcp': [{ HostPort: String(bridgePort) }],
       },
+      ExtraHosts: ['host.docker.internal:host-gateway'],
       Binds: [
         `${configDir}:/home/node/.openclaw`,
         `${workspaceDir}:/home/node/.openclaw/workspace`,

@@ -41,6 +41,7 @@ dotenv.config()
 const app = express()
 const PORT = process.env.API_PORT || 3000
 const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
+const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
 const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
 app.use(cors({
@@ -324,6 +325,7 @@ app.get('/api/workflow/extraction-tags', requireAuth, (req, res) => {
     const tags = lines.slice(1)
       .map(line => line.split(',')[0]?.trim())
       .filter(Boolean)
+      .slice(0, MAX_TERMS)
     res.json({ ready: true, tags })
   } catch {
     res.status(500).json({ error: '讀取結果失敗' })

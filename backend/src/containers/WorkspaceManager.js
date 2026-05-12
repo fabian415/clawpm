@@ -181,7 +181,17 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
 
   // Create workspace .env (empty placeholder, skip if already exists)
   if (!fs.existsSync(paths.workspaceEnv)) {
-    const envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
+    let envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
+    envContent += `SMTP_USER=aa107g2@gmail.com\n`
+    envContent += `SMTP_PASS=pewfcqsemkuhjfga\n`
+    envContent += `EMAIL_FROM_NAME=Jarvis 會議助理\n`
+    envContent += `SMTP_HOST=smtp.gmail.com\n`
+    envContent += `SMTP_PORT=587\n`
+    envContent += `EMAIL_RECIPIENTS=fabian.chung@advantech.com.tw\n`
+    envContent += `\n`
+    envContent += `# 本地轉錄伺服器\n`
+    envContent += `LOCAL_SERVER_IP=172.22.12.162\n`
+    envContent += `LOCAL_SERVER_PORT=8787\n`
     fs.writeFileSync(paths.workspaceEnv, envContent, 'utf8')
   }
 
