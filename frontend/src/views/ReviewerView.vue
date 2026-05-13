@@ -397,8 +397,24 @@ const renderedMarkdown = computed(() => {
   let codeLines = []
   let listItems = []
   let listType = ''
+  // Accumulates parts of a potentially multi-line list item
+  let pending = null // { type: 'ul'|'ol'|'cb', parts: string[], checked?: bool, num?: string }
+
+  const flushPending = () => {
+    if (!pending) return
+    const htmlContent = pending.parts.map(p => inlineMd(p)).join('<br>')
+    if (pending.type === 'cb') {
+      listItems.push(`<li class="flex items-start gap-2"><input type="checkbox" ${pending.checked ? 'checked' : ''} disabled class="mt-1 rounded accent-blue-500 shrink-0"><span class="${pending.checked ? 'line-through text-slate-400' : ''}">${htmlContent}</span></li>`)
+    } else if (pending.type === 'ol') {
+      listItems.push(`<li class="flex items-start gap-2"><span class="text-blue-500 font-bold min-w-[1.5rem] shrink-0">${pending.num}.</span><span class="flex-1 min-w-0">${htmlContent}</span></li>`)
+    } else {
+      listItems.push(`<li class="flex items-start gap-1.5 before:content-['•'] before:text-blue-500 before:font-bold before:shrink-0 before:mt-px"><span class="flex-1 min-w-0">${htmlContent}</span></li>`)
+    }
+    pending = null
+  }
 
   const flushList = () => {
+    flushPending()
     if (!listItems.length) return
     const tag = listType === 'ol' ? 'ol' : 'ul'
     out.push(`<${tag} class="list-none pl-0 space-y-1 mb-4">${listItems.join('')}</${tag}>`)
@@ -423,20 +439,35 @@ const renderedMarkdown = computed(() => {
     if (line === '---') { flushList(); out.push('<hr class="border-slate-200 dark:border-slate-700 my-4">'); continue }
     if (line.startsWith('> ')) { flushList(); out.push(`<blockquote class="border-l-4 border-blue-300 pl-4 py-1 my-2 text-slate-500 dark:text-slate-400 italic text-sm">${inlineMd(line.slice(2))}</blockquote>`); continue }
 
-    const cbMatch = line.match(/^[-*]\s+\[([ xX])\]\s*(.+)$/)
+    const trimmed = line.trimStart()
+    const isIndented = line !== trimmed
+
+    // Indented non-list line → continuation of current list item
+    const isListMarker = /^[-*+] /.test(trimmed) || /^[-*]\s+\[/.test(trimmed) || /^\d+\. /.test(trimmed)
+    if (isIndented && pending && !isListMarker) {
+      pending.parts.push(trimmed)
+      continue
+    }
+
+    // Checkbox: match with optional leading whitespace
+    const cbMatch = trimmed.match(/^[-*]\s+\[([ xX])\]\s*(.+)$/)
     if (cbMatch) {
-      const checked = cbMatch[1].toLowerCase() === 'x'
-      listItems.push(`<li class="flex items-start gap-2"><input type="checkbox" ${checked ? 'checked' : ''} disabled class="mt-1 rounded accent-blue-500 shrink-0"><span class="${checked ? 'line-through text-slate-400' : ''}">${inlineMd(cbMatch[2])}</span></li>`)
+      flushPending()
+      pending = { type: 'cb', checked: cbMatch[1].toLowerCase() === 'x', parts: [cbMatch[2]] }
       listType = 'ul'; continue
     }
-    const bulletMatch = line.match(/^[-*+] (.+)$/)
+    // Bullet: match with optional leading whitespace
+    const bulletMatch = trimmed.match(/^[-*+] (.+)$/)
     if (bulletMatch) {
-      listItems.push(`<li class="flex items-start gap-1.5 before:content-['•'] before:text-blue-500 before:font-bold before:shrink-0 before:mt-px">${inlineMd(bulletMatch[1])}</li>`)
+      flushPending()
+      pending = { type: 'ul', parts: [bulletMatch[1]] }
       listType = 'ul'; continue
     }
-    const numMatch = line.match(/^(\d+)\. (.+)$/)
+    // Numbered: match with optional leading whitespace
+    const numMatch = trimmed.match(/^(\d+)\. (.+)$/)
     if (numMatch) {
-      listItems.push(`<li class="flex items-start gap-2"><span class="text-blue-500 font-bold min-w-[1.5rem] shrink-0">${numMatch[1]}.</span>${inlineMd(numMatch[2])}</li>`)
+      flushPending()
+      pending = { type: 'ol', num: numMatch[1], parts: [numMatch[2]] }
       listType = 'ol'; continue
     }
 
