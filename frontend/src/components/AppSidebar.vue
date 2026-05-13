@@ -32,13 +32,19 @@
 
       <template v-if="!collapsed">
         <div class="pt-4 pb-2 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">最近專案</div>
+        <div v-if="isLoading" class="flex items-center justify-center py-4 text-slate-500">
+          <Loader2 class="w-4 h-4 animate-spin" />
+        </div>
         <div
-          v-for="p in recentProjects" :key="p.id"
-          @click="$emit('select-project', p)"
+          v-for="p in recentReviewerProjects" :key="p.slug"
+          @click="$emit('open-reviewer-project', p.slug)"
           class="flex items-center gap-3 px-3 py-1.5 text-sm rounded-md hover:bg-slate-800 cursor-pointer text-slate-400"
         >
-          <ChevronRight class="w-3 h-3" />
+          <ChevronRight class="w-3 h-3 shrink-0" />
           <span class="truncate">{{ p.name }}</span>
+        </div>
+        <div v-if="!isLoading && recentReviewerProjects.length === 0" class="px-3 py-2 text-xs text-slate-600">
+          尚無專案
         </div>
       </template>
     </nav>
@@ -72,20 +78,47 @@
 </template>
 
 <script setup>
+import { ref, onMounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon
+  Settings, Sun, Moon, Loader2
 } from 'lucide-vue-next'
 
 defineProps({
   collapsed: Boolean,
   currentPage: String,
-  recentProjects: Array,
   containerStatus: String,
   containerStatusColor: String,
   containerStatusTextColor: String,
   isDark: Boolean
 })
 
-defineEmits(['navigate', 'select-project', 'toggle-theme', 'update:collapsed'])
+defineEmits(['navigate', 'open-reviewer-project', 'toggle-theme', 'update:collapsed'])
+
+const isLoading = ref(false)
+const recentReviewerProjects = ref([])
+
+async function fetchRecentProjects() {
+  isLoading.value = true
+  try {
+    const res = await fetch('/api/project-insights/list', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}` }
+    })
+    if (!res.ok) return
+    const data = await res.json()
+    const projects = data.projects || []
+    recentReviewerProjects.value = projects
+      .sort((a, b) => {
+        if (!a.lastUpdated) return 1
+        if (!b.lastUpdated) return -1
+        return b.lastUpdated.localeCompare(a.lastUpdated)
+      })
+  } catch (err) {
+    console.error('[sidebar] reviewer fetch error:', err.message)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+onMounted(fetchRecentProjects)
 </script>

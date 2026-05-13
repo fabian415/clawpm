@@ -23,6 +23,7 @@ import { initializeWorkspace } from './src/containers/WorkspaceManager.js'
 import {
   createAndStartContainer,
   getContainerStatus,
+  getContainerResourceStats,
   startContainer,
   stopContainer,
   destroyContainer,
@@ -585,6 +586,8 @@ const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
   const { transcriptContainerPath, notesContainerPath } = req.body ?? {}
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
 
   if (transcriptContainerPath && (typeof transcriptContainerPath !== 'string' || !transcriptContainerPath.startsWith(containerPrefix))) {
     return res.status(400).json({ error: '無效的逐字稿路徑' })
@@ -592,6 +595,19 @@ app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
   if (notesContainerPath && (typeof notesContainerPath !== 'string' || !notesContainerPath.startsWith(containerPrefix))) {
     return res.status(400).json({ error: '無效的會議記錄路徑' })
   }
+
+  // Snapshot current projects.json state so polling can detect when this run's update lands
+  const projectsJsonHostPath = path.join(paths.workspace, 'project-insights', 'reviewer', 'projects.json')
+  let beforeMtime = 0
+  let existingProjectIds = []
+  let knownProjects = []
+  try {
+    beforeMtime = fs.statSync(projectsJsonHostPath).mtimeMs
+    const existing = JSON.parse(fs.readFileSync(projectsJsonHostPath, 'utf8'))
+    existingProjectIds = (existing.projects || []).map(p => p.id || p.slug || p.name).filter(Boolean)
+    knownProjects = (existing.projects || []).filter(p => p.name && (p.slug || p.id))
+      .map(p => ({ name: p.name, slug: p.slug || p.id }))
+  } catch {}
 
   const today = new Date().toISOString().slice(0, 10)
   const sessionKey = makeScopedSessionKey('insights')
@@ -603,31 +619,47 @@ app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
   ]
   if (transcriptContainerPath) parts.push(`本次會議逐字稿路徑：${transcriptContainerPath}`)
   if (notesContainerPath) parts.push(`本次會議記錄路徑：${notesContainerPath}`)
-  parts.push(
-    '',
-    `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`,
-    '',
-    '請依照 skill 工作流程完整執行：',
-    '1. 讀取現有 project-insights/ 目錄中的所有專案 Markdown（若存在）',
-    '2. 偵測本次會議涉及哪些專案',
-    '3. 以增量合併方式更新每個涉及的專案 Markdown',
-    '4. 若出現新專案主題，自動建立對應新 Markdown 檔',
-    '5. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
-    '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
-    '',
-    '請直接執行，無需確認。',
-  )
+  parts.push('', `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`, '')
+
+  if (knownProjects.length > 0) {
+    parts.push(
+      '知識庫中已有以下專案（Markdown 文件已就緒），請優先將本次會議內容對應至這些專案進行增量整併：',
+      ...knownProjects.map(p => `- ${p.name}（${p.slug}.md）`),
+      '',
+      '請依照 skill 工作流程完整執行：',
+      '1. 讀取上方所列專案的 Markdown 文件，以增量合併方式更新各專案內容',
+      '2. 若本次會議出現上述清單以外的新主題，可自動新增對應 Markdown',
+      '3. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
+      '4. 完成後回報各專案更新情況、目前進度、對外發表成熟度與主要缺口',
+      '',
+      '請直接執行，無需確認。',
+    )
+  } else {
+    parts.push(
+      '請依照 skill 工作流程完整執行：',
+      '1. 讀取現有 project-insights/ 目錄中的所有專案 Markdown（若存在）',
+      '2. 偵測本次會議涉及哪些專案',
+      '3. 以增量合併方式更新每個涉及的專案 Markdown',
+      '4. 若出現新專案主題，自動建立對應新 Markdown 檔',
+      '5. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
+      '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
+      '',
+      '請直接執行，無需確認。',
+    )
+  }
 
   res.json({
     success: true,
     sessionKey,
     prompt: parts.join('\n'),
     insightsContainerDir: CONTAINER_INSIGHTS_DIR,
+    beforeMtime,
+    existingProjectIds,
   })
 })
 
 app.get('/api/workflow/insights-result', requireAuth, (req, res) => {
-  const { insightsDir } = req.query
+  const { insightsDir, beforeMtime } = req.query
   const provisionUserId = getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
 
@@ -646,6 +678,15 @@ app.get('/api/workflow/insights-result', requireAuth, (req, res) => {
 
   if (!fs.existsSync(projectsJsonPath)) {
     return res.json({ ready: false, projects: [] })
+  }
+
+  // Only return ready when the file is newer than when this run started,
+  // so stale data from a previous run doesn't prematurely end polling.
+  if (beforeMtime && parseFloat(beforeMtime) > 0) {
+    const fileMtime = fs.statSync(projectsJsonPath).mtimeMs
+    if (fileMtime <= parseFloat(beforeMtime)) {
+      return res.json({ ready: false, projects: [] })
+    }
   }
 
   try {
@@ -673,14 +714,16 @@ app.get('/api/project-insights/list', requireAuth, (req, res) => {
     } catch {}
   }
 
+  function metaMatchesSlug(p, slug) {
+    return p.id === slug || p.slug === slug ||
+      (p.name && p.name.toLowerCase().replace(/[\s/]/g, '-') === slug)
+  }
+
   const files = fs.readdirSync(hostInsightsDir)
     .filter(f => f.endsWith('.md') && f !== 'index.md')
     .map(f => {
       const slug = f.replace('.md', '')
-      const meta = projectsMeta.find(p =>
-        p.id === slug || p.slug === slug ||
-        (p.name && p.name.toLowerCase().replace(/[\s/]/g, '-') === slug)
-      ) || {}
+      const meta = projectsMeta.find(p => metaMatchesSlug(p, slug)) || {}
       return {
         name: f,
         slug,
@@ -692,7 +735,17 @@ app.get('/api/project-insights/list', requireAuth, (req, res) => {
     })
     .sort((a, b) => (b.lastUpdated || '').localeCompare(a.lastUpdated || ''))
 
-  res.json({ files, projects: projectsMeta, hostPath: hostInsightsDir })
+  // Ensure each project's slug matches the actual filename so the frontend
+  // can load it correctly even if projects.json has a stale/derived slug.
+  const projects = projectsMeta.map(p => {
+    const matchedFile = files.find(f => metaMatchesSlug(p, f.slug))
+    if (matchedFile && matchedFile.slug !== p.slug) {
+      return { ...p, slug: matchedFile.slug }
+    }
+    return p
+  })
+
+  res.json({ files, projects, hostPath: hostInsightsDir })
 })
 
 app.get('/api/project-insights/file', requireAuth, (req, res) => {
@@ -722,6 +775,73 @@ app.get('/api/project-insights/file', requireAuth, (req, res) => {
   } catch {
     res.status(500).json({ error: '讀取檔案失敗' })
   }
+})
+
+app.post('/api/project-insights/create', requireAuth, (req, res) => {
+  const { name } = req.body ?? {}
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: '專案名稱不可為空' })
+  }
+
+  const displayName = name.trim()
+  const slug = displayName
+    .toLowerCase()
+    .replace(/[\s/\\]+/g, '-')
+    .replace(/[*?"<>|:]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+
+  if (!slug) return res.status(400).json({ error: '無法從名稱產生有效的檔案識別碼' })
+
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  fs.mkdirSync(hostInsightsDir, { recursive: true })
+
+  // 1. Create empty Markdown (skip if exists — preserve existing content)
+  const mdPath = path.join(hostInsightsDir, `${slug}.md`)
+  const isNew = !fs.existsSync(mdPath)
+  if (isNew) {
+    fs.writeFileSync(mdPath, `# ${displayName}\n\n`, 'utf8')
+  }
+
+  // 2. Upsert entry in projects.json
+  const reviewerDir = path.join(hostInsightsDir, 'reviewer')
+  fs.mkdirSync(reviewerDir, { recursive: true })
+  const projectsJsonPath = path.join(reviewerDir, 'projects.json')
+  let projectsData = { projects: [] }
+  try {
+    if (fs.existsSync(projectsJsonPath)) {
+      const parsed = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf8'))
+      if (Array.isArray(parsed.projects)) projectsData = parsed
+    }
+  } catch {}
+
+  const alreadyInJson = projectsData.projects.some(p => p.slug === slug || p.id === slug)
+  if (!alreadyInJson) {
+    projectsData.projects.push({
+      id: slug,
+      slug,
+      name: displayName,
+      maturity: 'not ready',
+      lastUpdated: new Date().toISOString().slice(0, 10),
+    })
+    fs.writeFileSync(projectsJsonPath, JSON.stringify(projectsData, null, 2), 'utf8')
+  }
+
+  // 3. Add link to index.md
+  const indexMdPath = path.join(hostInsightsDir, 'index.md')
+  let indexContent = '# 專案知識庫\n\n'
+  try {
+    if (fs.existsSync(indexMdPath)) indexContent = fs.readFileSync(indexMdPath, 'utf8')
+  } catch {}
+  const projectLink = `- [${displayName}](./${slug}.md)`
+  if (!indexContent.includes(projectLink)) {
+    indexContent = indexContent.trimEnd() + '\n' + projectLink + '\n'
+    fs.writeFileSync(indexMdPath, indexContent, 'utf8')
+  }
+
+  res.json({ success: true, slug, name: displayName, isNew })
 })
 
 app.patch('/api/project-insights/file', requireAuth, (req, res) => {
@@ -1132,6 +1252,12 @@ app.post('/api/provision', requireAuth, async (req, res) => {
 })
 
 // ── Container management routes ───────────────────────────────────────────────
+
+app.get('/api/container/stats', requireAuth, async (req, res) => {
+  const userId = getProvisionUserId(req.user.userId)
+  const stats = await getContainerResourceStats(userId)
+  res.json(stats ?? {})
+})
 
 app.get('/api/container/config', requireAuth, async (req, res) => {
   const userId = getProvisionUserId(req.user.userId)

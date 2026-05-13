@@ -15,13 +15,12 @@
     <AppSidebar
       v-model:collapsed="sidebarCollapsed"
       :current-page="currentPage"
-      :recent-projects="recentProjects"
       :container-status="containerStatus"
       :container-status-color="containerStatusColor"
       :container-status-text-color="containerStatusTextColor"
       :is-dark="isDark"
       @navigate="currentPage = $event"
-      @select-project="selectProject"
+      @open-reviewer-project="openReviewerProject"
       @toggle-theme="toggleTheme"
     />
 
@@ -39,7 +38,9 @@
           :container-status="containerStatus"
           :container-status-color="containerStatusColor"
           :current-user="currentUser"
+          :container-stats="containerStats"
           @navigate="currentPage = $event"
+          @open-reviewer-project="openReviewerProject"
         />
 
         <ProjectListView
@@ -63,7 +64,7 @@
           @extraction-ready="handleExtractionReady"
         />
 
-        <ReviewerView v-else-if="currentPage === 'reviewer'" />
+        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" />
 
         <SettingsView
           v-else-if="currentPage === 'settings'"
@@ -123,7 +124,7 @@
 </template>
 
 <script setup>
-import { watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useApp } from './composables/useApp.js'
 import { useChat } from './composables/useChat.js'
 import AppSidebar from './components/AppSidebar.vue'
@@ -147,12 +148,19 @@ const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
   showNewProjectModal, showRestartConfirm, isRestarting, restartProgress,
   showDestroyConfirm, isDestroying, containerConfig,
-  toast, containerStatus, containerStatusColor, containerStatusTextColor,
+  toast, containerStatus, containerStats, containerStatusColor, containerStatusTextColor,
   isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
   breadcrumb, authError, isAuthLoading, currentUser,
   toggleTheme, selectProject, handleAuth, logout, saveSettings, handleRestart, handleDestroy, showToast,
   completeSetup
 } = useApp()
+
+const reviewerInitialSlug = ref(null)
+
+function openReviewerProject(slug) {
+  reviewerInitialSlug.value = slug
+  currentPage.value = 'reviewer'
+}
 
 const chat = useChat()
 

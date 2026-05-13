@@ -1,4 +1,4 @@
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 
 function getStoredUser() {
   try {
@@ -41,7 +41,9 @@ export function useApp() {
   const showNewProjectModal = ref(false)
   const toast = ref({ show: false, message: '', icon: 'CheckCircle' })
   const containerStatus = ref('Running')
+  const containerStats = ref(null)
   const editingProjectInfo = ref(false)
+  let statsInterval = null
 
   const projects = ref([
     { id: 1, name: 'OpenClaw 前端 UI 設計', desc: '負責設計全新的 AI 輔助專案管理平台介面。', created: '2024-05-01', updated: '2小時前', meetings: 3 },
@@ -62,7 +64,7 @@ export function useApp() {
     { id: 1, time: '00:00', speaker: 'Jason', text: '大家好，今天我們要討論 ClawPM 的前端介面設計。' },
     { id: 2, time: '00:15', speaker: 'Alice', text: '我覺得側邊欄應該支援折疊，這樣使用者在小螢幕上比較好操作。' },
     { id: 3, time: '00:32', speaker: 'Jason', text: '沒錯，我們還要加上容器狀態指示燈，讓用戶知道後端 AI 是否運行中。' },
-    { id: 4, time: '00:50', speaker: 'Bob', text: '關於 Markdown Reviewer，我希望能有雙欄即時預覽功能。' }
+    { id: 4, time: '00:50', speaker: 'Bob', text: '關於專案列表，我希望能有雙欄即時預覽功能。' }
   ]
 
   const containerStatusColor = computed(() => {
@@ -112,7 +114,7 @@ export function useApp() {
       projects: '所有專案',
       projectDetail: selectedProject.value?.name ?? '',
       workflow: '會議處理流程',
-      reviewer: 'Markdown Reviewer',
+      reviewer: '專案列表',
       settings: '系統設定'
     }
     return map[currentPage.value] ?? ''
@@ -178,6 +180,7 @@ export function useApp() {
       }
       localStorage.setItem('clawpm_user', JSON.stringify(user))
       currentUser.value = user
+      startStatsPolling()
       if (mode === 'register') {
         isConfiguring.value = true
         configProgress.value = 0
@@ -204,6 +207,7 @@ export function useApp() {
   }
 
   function logout() {
+    stopStatsPolling()
     localStorage.removeItem('clawpm_token')
     localStorage.removeItem('clawpm_user')
     currentUser.value = null
@@ -280,6 +284,34 @@ export function useApp() {
       syncContainerStatus(null)
     }
   }
+
+  async function fetchContainerStats() {
+    const token = localStorage.getItem('clawpm_token')
+    if (!token) return
+    try {
+      const res = await fetch('/api/container/stats', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) containerStats.value = await res.json()
+    } catch {}
+  }
+
+  function startStatsPolling() {
+    if (statsInterval) return
+    fetchContainerStats()
+    statsInterval = setInterval(fetchContainerStats, 15000)
+  }
+
+  function stopStatsPolling() {
+    if (statsInterval) { clearInterval(statsInterval); statsInterval = null }
+    containerStats.value = null
+  }
+
+  onMounted(() => {
+    if (localStorage.getItem('clawpm_token')) startStatsPolling()
+  })
+
+  onUnmounted(() => stopStatsPolling())
 
   async function handleRestart() {
     isRestarting.value = true
@@ -360,7 +392,7 @@ export function useApp() {
     workflowStep, workflowStepLabels, isProcessing, uploadProgress, uploadedDocs,
     tags, newTag, reviewerMode, showKeys, showRestartConfirm, isRestarting,
     restartProgress, showDestroyConfirm, isDestroying, containerConfig,
-    showNewProjectModal, toast, containerStatus, editingProjectInfo,
+    showNewProjectModal, toast, containerStatus, containerStats, editingProjectInfo,
     isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
     containerStatusColor, containerStatusTextColor, breadcrumb,
     passwordStrength, passwordStrengthText, passwordStrengthClass,

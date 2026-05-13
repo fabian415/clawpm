@@ -319,7 +319,7 @@
           <div>
             <h4 class="font-bold text-green-900 dark:text-green-100">專案知識庫已更新！</h4>
             <p class="text-sm text-green-700 dark:text-green-300 mt-1">
-              本次會議內容已成功整合至專案知識庫，可至 Markdown Reviewer 進行檢閱與編輯。
+              本次會議內容已成功整合至專案知識庫，可至專案列表進行檢閱與編輯。
             </p>
           </div>
         </div>
@@ -329,14 +329,18 @@
           <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
             <h4 class="font-bold flex items-center gap-2">
               <Sparkles class="w-4 h-4 text-blue-500" />
-              已更新專案 ({{ insightsProjects.length }})
+              專案知識庫 ({{ insightsProjects.length }})
+              <span v-if="newProjectsCount > 0" class="text-xs font-bold px-2 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full">
+                {{ newProjectsCount }} 個新增
+              </span>
             </h4>
           </div>
           <div class="divide-y divide-slate-100 dark:divide-slate-800">
             <div v-for="p in insightsProjects" :key="p.id || p.name" class="px-6 py-3.5 flex items-center justify-between">
-              <div class="min-w-0">
+              <div class="min-w-0 flex items-center gap-2 flex-1">
                 <span class="font-medium truncate">{{ p.name }}</span>
-                <span v-if="p.lastUpdated" class="ml-2 text-xs text-slate-400">{{ p.lastUpdated }}</span>
+                <span v-if="isNewInsightProject(p)" class="shrink-0 text-[10px] font-bold px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded">新增</span>
+                <span v-if="p.lastUpdated" class="shrink-0 text-xs text-slate-400">{{ p.lastUpdated }}</span>
               </div>
               <span :class="maturityClass(p.maturity)" class="ml-3 shrink-0 text-xs font-bold px-2.5 py-1 rounded-full">
                 {{ p.maturity || '—' }}
@@ -352,7 +356,7 @@
 
         <!-- Open Reviewer button -->
         <button @click="$emit('navigate', 'reviewer')" class="w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2">
-          開啟 Markdown Reviewer <ExternalLink class="w-4 h-4" />
+          開啟專案列表 <ExternalLink class="w-4 h-4" />
         </button>
       </div>
     </div>
@@ -378,7 +382,7 @@
 </template>
 
 <script setup>
-import { ref, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send
@@ -426,6 +430,8 @@ let meetingNotesPollTimer = null
 
 const insightsOutputDir = ref(null)
 const insightsProjects = ref([])
+const insightsBeforeMtime = ref(0)
+const existingProjectIds = ref([])
 let insightsPollTimer = null
 
 function openFileDialog() {
@@ -805,6 +811,8 @@ async function startInsights() {
     if (!res.ok || !data.success) throw new Error(data.error || '準備洞見失敗')
 
     insightsOutputDir.value = data.insightsContainerDir
+    insightsBeforeMtime.value = data.beforeMtime || 0
+    existingProjectIds.value = data.existingProjectIds || []
     emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
     startInsightsPolling()
   } catch (err) {
@@ -820,7 +828,7 @@ function startInsightsPolling() {
     const token = localStorage.getItem('clawpm_token')
     try {
       const res = await fetch(
-        `/api/workflow/insights-result?insightsDir=${encodeURIComponent(insightsOutputDir.value)}`,
+        `/api/workflow/insights-result?insightsDir=${encodeURIComponent(insightsOutputDir.value)}&beforeMtime=${insightsBeforeMtime.value}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
       const data = await res.json()
@@ -834,6 +842,13 @@ function startInsightsPolling() {
   }
   insightsPollTimer = setTimeout(poll, 10000)
 }
+
+function isNewInsightProject(p) {
+  const id = p.id || p.slug || p.name
+  return id && !existingProjectIds.value.includes(id)
+}
+
+const newProjectsCount = computed(() => insightsProjects.value.filter(isNewInsightProject).length)
 
 function maturityClass(maturity) {
   if (!maturity) return 'bg-slate-100 dark:bg-slate-800 text-slate-500'

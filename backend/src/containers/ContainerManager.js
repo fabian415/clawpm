@@ -228,6 +228,34 @@ export async function pullImage(onProgress) {
   })
 }
 
+/** Get one-shot CPU + memory stats for a running container. Returns null if unavailable. */
+export async function getContainerResourceStats(userId) {
+  const containerName = getContainerName(userId)
+  try {
+    const container = docker.getContainer(containerName)
+    const stats = await container.stats({ stream: false })
+
+    const memUsage = stats.memory_stats?.usage ?? 0
+    const memLimit = stats.memory_stats?.limit ?? 0
+
+    const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) -
+                     (stats.precpu_stats?.cpu_usage?.total_usage ?? 0)
+    const sysDelta = (stats.cpu_stats?.system_cpu_usage ?? 0) -
+                     (stats.precpu_stats?.system_cpu_usage ?? 0)
+    const numCpus = stats.cpu_stats?.online_cpus ||
+                    stats.cpu_stats?.cpu_usage?.percpu_usage?.length || 1
+    const cpuPercent = sysDelta > 0 ? Math.round((cpuDelta / sysDelta) * numCpus * 100 * 10) / 10 : 0
+
+    return {
+      cpuPercent,
+      memoryUsedMB: Math.round(memUsage / 1024 / 1024 * 10) / 10,
+      memoryLimitMB: Math.round(memLimit / 1024 / 1024),
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Check whether the OpenClaw image exists locally. */
 export async function imageExists() {
   try {

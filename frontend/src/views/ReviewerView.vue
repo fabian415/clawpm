@@ -231,11 +231,15 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
   PanelLeft, RefreshCw, Check, LayoutDashboard
 } from 'lucide-vue-next'
+
+const props = defineProps({
+  initialSlug: { type: String, default: null }
+})
 
 const mode = ref('split')
 const sidebarOpen = ref(true)
@@ -467,8 +471,13 @@ function maturityShort(m) {
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
-onMounted(() => {
-  fetchProjectList()
+watch(() => props.initialSlug, (slug) => {
+  if (slug) loadProject(slug)
+})
+
+onMounted(async () => {
+  await fetchProjectList()
+  if (props.initialSlug) loadProject(props.initialSlug)
   window.addEventListener('keydown', handleKeydown)
 })
 
