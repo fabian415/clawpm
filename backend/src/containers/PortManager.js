@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-const PORT_RANGE_START = parseInt(process.env.OPENCLAW_PORT_RANGE_START || '18800')
-const PORT_RANGE_END = parseInt(process.env.OPENCLAW_PORT_RANGE_END || '19799')
+// Read lazily so dotenv.config() in server.js runs first
+function getPortRangeStart() { return parseInt(process.env.OPENCLAW_PORT_RANGE_START || '18800') }
+function getPortRangeEnd()   { return parseInt(process.env.OPENCLAW_PORT_RANGE_END   || '19799') }
 const PORT_DB_PATH = process.env.CLAWPM_PORT_DB_PATH
   || path.join(__dirname, '..', '..', 'data', 'ports.json')
 
@@ -38,7 +39,7 @@ export function allocatePorts(userId) {
     Object.values(db.allocations).flatMap(a => [a.gatewayPort, a.bridgePort]),
   )
 
-  for (let port = PORT_RANGE_START; port < PORT_RANGE_END; port += 2) {
+  for (let port = getPortRangeStart(); port < getPortRangeEnd(); port += 2) {
     if (!usedPorts.has(port) && !usedPorts.has(port + 1)) {
       const allocation = { gatewayPort: port, bridgePort: port + 1, allocatedAt: new Date().toISOString() }
       db.allocations[userId] = allocation
@@ -47,7 +48,7 @@ export function allocatePorts(userId) {
     }
   }
 
-  throw new Error(`No available ports in range ${PORT_RANGE_START}-${PORT_RANGE_END}`)
+  throw new Error(`No available ports in range ${getPortRangeStart()}-${getPortRangeEnd()}`)
 }
 
 /** Free the port pair allocated to a user. */

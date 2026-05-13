@@ -32,6 +32,7 @@ export function useApp() {
   const authError = ref('')
   const isAuthLoading = ref(false)
   const currentUser = ref(storedUser)
+  const isAdmin = computed(() => currentUser.value?.role === 'admin')
   const showRestartConfirm = ref(false)
   const isRestarting = ref(false)
   const restartProgress = ref(0)
@@ -156,15 +157,20 @@ export function useApp() {
     currentPage.value = 'projectDetail'
   }
 
-  async function handleAuth({ mode, email, password }) {
+  async function handleAuth({ action, teamId, teamName, email, password }) {
     authError.value = ''
     isAuthLoading.value = true
     try {
-      const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login'
+      const isRegister = action === 'register-team'
+      const endpoint = isRegister ? '/api/auth/register-team' : '/api/auth/login'
+      const body = isRegister
+        ? { teamName, email, password }
+        : { teamId, email, password }
+
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify(body)
       })
       const data = await res.json()
       if (!res.ok) {
@@ -176,12 +182,14 @@ export function useApp() {
         userId: data.userId,
         email: data.email,
         name: data.name ?? data.email.split('@')[0],
+        role: data.role ?? 'user',
+        teamId: data.teamId ?? null,
         setupCompleted: data.setupCompleted ?? false
       }
       localStorage.setItem('clawpm_user', JSON.stringify(user))
       currentUser.value = user
       startStatsPolling()
-      if (mode === 'register') {
+      if (isRegister) {
         isConfiguring.value = true
         configProgress.value = 0
         const interval = setInterval(() => {
@@ -218,7 +226,7 @@ export function useApp() {
   async function completeSetup(config) {
     const token = localStorage.getItem('clawpm_token')
     try {
-      await fetch('/api/user/setup', {
+      await fetch('/api/team/setup', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -370,7 +378,6 @@ export function useApp() {
       if (currentUser.value) {
         currentUser.value = {
           ...currentUser.value,
-          ...(data.user ?? {}),
           setupCompleted: false
         }
         localStorage.setItem('clawpm_user', JSON.stringify(currentUser.value))
@@ -396,7 +403,7 @@ export function useApp() {
     isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
     containerStatusColor, containerStatusTextColor, breadcrumb,
     passwordStrength, passwordStrengthText, passwordStrengthClass,
-    authError, isAuthLoading, currentUser,
+    authError, isAuthLoading, currentUser, isAdmin,
     toggleTheme, selectProject, handleAuth, logout, simulateUpload, nextWorkflowStep,
     addTag, saveSettings, handleRestart, handleDestroy, showToast, completeSetup
   }

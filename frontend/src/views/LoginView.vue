@@ -3,9 +3,7 @@
     <div class="w-full max-w-md bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 p-8">
       <div class="text-center mb-8">
         <h1 class="text-3xl font-bold text-blue-600">ClawPM</h1>
-        <p class="text-slate-500 mt-2">
-          {{ mode === 'login' ? '歡迎回來，請登入帳號' : '建立您的 AI 專案管理空間' }}
-        </p>
+        <p class="text-slate-500 mt-2">AI 專案管理平台</p>
       </div>
 
       <!-- Error Message -->
@@ -13,49 +11,125 @@
         {{ props.authError }}
       </div>
 
-      <form @submit.prevent="handleAuth" class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium mb-1">電子郵件</label>
-          <input
-            type="email"
-            required
-            v-model="email"
-            placeholder="you@example.com"
-            class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium mb-1">密碼</label>
-          <input
-            type="password"
-            required
-            v-model="password"
-            placeholder="••••••••"
-            class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
-          />
-          <div v-if="mode === 'register'" class="mt-2 space-y-1">
-            <div class="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
-              <div class="h-full transition-all duration-300" :class="strengthClass" :style="{ width: strength + '%' }"></div>
-            </div>
-            <p class="text-xs text-slate-500">密碼強度：{{ strengthText }}</p>
+      <!-- Mode: Register New Team -->
+      <template v-if="mode === 'register-team'">
+        <h2 class="text-lg font-bold mb-5">建立新的 Team</h2>
+        <form @submit.prevent="handleRegisterTeam" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">Team 名稱</label>
+            <input
+              type="text"
+              required
+              v-model="teamName"
+              placeholder="例：研發一組"
+              class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
           </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">管理員 Email</label>
+            <input
+              type="email"
+              required
+              v-model="email"
+              placeholder="you@example.com"
+              class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">密碼</label>
+            <input
+              type="password"
+              required
+              v-model="password"
+              placeholder="••••••••"
+              class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+            <div class="mt-2 space-y-1">
+              <div class="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+                <div class="h-full transition-all duration-300" :class="strengthClass" :style="{ width: strength + '%' }"></div>
+              </div>
+              <p class="text-xs text-slate-500">密碼強度：{{ strengthText }}</p>
+            </div>
+          </div>
+          <button
+            type="submit"
+            :disabled="props.isLoading"
+            class="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-lg transition-colors"
+          >
+            <span v-if="props.isLoading">建立中...</span>
+            <span v-else>建立 Team 並登入</span>
+          </button>
+        </form>
+        <div class="mt-5 text-center">
+          <button @click="mode = 'select-team'" class="text-sm text-blue-600 underline">
+            返回選擇 Team
+          </button>
         </div>
-        <button
-          type="submit"
-          :disabled="props.isLoading"
-          class="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-lg transition-colors"
-        >
-          <span v-if="props.isLoading">處理中...</span>
-          <span v-else>{{ mode === 'login' ? '登入' : '立即註冊' }}</span>
-        </button>
-      </form>
+      </template>
 
-      <div class="mt-6 text-center text-sm">
-        <span class="text-slate-500">{{ mode === 'login' ? '還沒有帳號？' : '已經有帳號了？' }}</span>
-        <button @click="switchMode" class="text-blue-600 font-medium ml-1 underline">
-          {{ mode === 'login' ? '註冊' : '登入' }}
+      <!-- Mode: Select Team -->
+      <template v-else-if="mode === 'select-team'">
+        <button
+          @click="mode = 'register-team'"
+          class="w-full mb-5 py-3 rounded-xl border-2 border-dashed border-blue-400 text-blue-600 font-medium hover:bg-blue-50 dark:hover:bg-blue-950/30 transition-colors"
+        >
+          + 建立新的 Team
         </button>
-      </div>
+
+        <div class="text-sm text-slate-500 mb-3">或選擇現有 Team 登入：</div>
+
+        <div v-if="isLoadingTeams" class="text-center py-6 text-slate-400 text-sm">載入中...</div>
+        <div v-else-if="teams.length === 0" class="text-center py-6 text-slate-400 text-sm italic">尚無 Team，請先建立一個</div>
+        <div v-else class="space-y-2">
+          <button
+            v-for="team in teams"
+            :key="team.id"
+            @click="selectTeam(team)"
+            class="w-full text-left px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 transition-all font-medium"
+          >
+            {{ team.name }}
+          </button>
+        </div>
+      </template>
+
+      <!-- Mode: Login with selected team -->
+      <template v-else-if="mode === 'login' && selectedTeam">
+        <div class="flex items-center gap-2 mb-5 p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
+          <span class="text-xs text-slate-500">Team</span>
+          <span class="font-semibold flex-1">{{ selectedTeam.name }}</span>
+          <button @click="mode = 'select-team'" class="text-xs text-blue-600 underline">更換</button>
+        </div>
+        <form @submit.prevent="handleLogin" class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium mb-1">電子郵件</label>
+            <input
+              type="email"
+              required
+              v-model="email"
+              placeholder="you@example.com"
+              class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium mb-1">密碼</label>
+            <input
+              type="password"
+              required
+              v-model="password"
+              placeholder="••••••••"
+              class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
+            />
+          </div>
+          <button
+            type="submit"
+            :disabled="props.isLoading"
+            class="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-lg transition-colors"
+          >
+            <span v-if="props.isLoading">登入中...</span>
+            <span v-else>登入</span>
+          </button>
+        </form>
+      </template>
     </div>
 
     <!-- Configuring Overlay -->
@@ -67,7 +141,7 @@
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
         </div>
-        <h2 class="text-xl font-bold mb-2">正在為您配置 OpenClaw 環境...</h2>
+        <h2 class="text-xl font-bold mb-2">正在建立 Team 環境...</h2>
         <p class="text-slate-400 text-sm">這通常需要幾秒鐘，請稍候</p>
         <div class="mt-6 h-2 w-full bg-slate-800 rounded-full overflow-hidden">
           <div class="h-full bg-blue-500 transition-all duration-500" :style="{ width: props.configProgress + '%' }"></div>
@@ -78,7 +152,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 
 const props = defineProps({
   isConfiguring: Boolean,
@@ -89,7 +163,11 @@ const props = defineProps({
 
 const emit = defineEmits(['auth'])
 
-const mode = ref('login')
+const mode = ref('select-team')
+const teams = ref([])
+const isLoadingTeams = ref(false)
+const selectedTeam = ref(null)
+const teamName = ref('')
 const email = ref('')
 const password = ref('')
 
@@ -114,12 +192,39 @@ const strengthClass = computed(() => {
   return 'bg-green-500'
 })
 
-function switchMode() {
-  mode.value = mode.value === 'login' ? 'register' : 'login'
-  password.value = ''
+async function fetchTeams() {
+  isLoadingTeams.value = true
+  try {
+    const res = await fetch('/api/teams')
+    if (res.ok) teams.value = await res.json()
+  } catch {}
+  isLoadingTeams.value = false
 }
 
-function handleAuth() {
-  emit('auth', { mode: mode.value, email: email.value, password: password.value })
+function selectTeam(team) {
+  selectedTeam.value = team
+  email.value = ''
+  password.value = ''
+  mode.value = 'login'
 }
+
+function handleLogin() {
+  emit('auth', {
+    action: 'login',
+    teamId: selectedTeam.value.id,
+    email: email.value,
+    password: password.value
+  })
+}
+
+function handleRegisterTeam() {
+  emit('auth', {
+    action: 'register-team',
+    teamName: teamName.value,
+    email: email.value,
+    password: password.value
+  })
+}
+
+onMounted(fetchTeams)
 </script>

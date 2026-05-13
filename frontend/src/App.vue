@@ -29,17 +29,28 @@
 
       <div class="flex-1 overflow-y-auto p-8">
         <SetupWizard
-          v-if="currentPage === 'dashboard' && isNewUser"
+          v-if="currentPage === 'dashboard' && isNewUser && isAdmin"
           :is-dark="isDark"
           @complete="completeSetup"
         />
+        <div
+          v-else-if="currentPage === 'dashboard' && isNewUser && !isAdmin"
+          class="flex flex-col items-center justify-center h-64 text-center gap-4"
+        >
+          <div class="w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+            <svg class="w-8 h-8 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          </div>
+          <h2 class="text-lg font-bold">等待 Admin 完成系統設定</h2>
+          <p class="text-slate-500 text-sm">請聯繫您的 Admin 完成容器初始化後再使用。</p>
+        </div>
         <DashboardView
           v-else-if="currentPage === 'dashboard'"
           :container-status="containerStatus"
           :container-status-color="containerStatusColor"
           :current-user="currentUser"
           :container-stats="containerStats"
-          @navigate="currentPage = $event"
+          :is-admin="isAdmin"
+          @navigate="handleNavigate"
           @open-reviewer-project="openReviewerProject"
         />
 
@@ -69,6 +80,7 @@
         <SettingsView
           v-else-if="currentPage === 'settings'"
           :container-config="containerConfig"
+          :is-admin="isAdmin"
           @restart="showRestartConfirm = true"
           @destroy="showDestroyConfirm = true"
           @save="saveSettings"
@@ -150,7 +162,7 @@ const {
   showDestroyConfirm, isDestroying, containerConfig,
   toast, containerStatus, containerStats, containerStatusColor, containerStatusTextColor,
   isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
-  breadcrumb, authError, isAuthLoading, currentUser,
+  breadcrumb, authError, isAuthLoading, currentUser, isAdmin,
   toggleTheme, selectProject, handleAuth, logout, saveSettings, handleRestart, handleDestroy, showToast,
   completeSetup
 } = useApp()
@@ -160,6 +172,16 @@ const reviewerInitialSlug = ref(null)
 function openReviewerProject(slug) {
   reviewerInitialSlug.value = slug
   currentPage.value = 'reviewer'
+}
+
+function handleNavigate(page, section) {
+  currentPage.value = page
+  if (section === 'members') {
+    // scroll to account management section after render
+    setTimeout(() => {
+      document.getElementById('account-management-section')?.scrollIntoView({ behavior: 'smooth' })
+    }, 100)
+  }
 }
 
 const chat = useChat()

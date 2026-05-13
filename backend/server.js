@@ -10,7 +10,8 @@ import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import { Client as FtpClient } from 'basic-ftp'
 import nodemailer from 'nodemailer'
-import { register, login, verifyToken, getUserById, completeSetup, resetSetup } from './src/managers/UserManager.js'
+import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers } from './src/managers/UserManager.js'
+import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder } from './src/managers/TeamManager.js'
 import { getHistory as getChatHistory, appendMessage, createMessage } from './src/managers/ChatManager.js'
 import {
   getClientForUser, disconnectClientForUser,
@@ -41,7 +42,9 @@ import { getUserPaths } from './src/containers/WorkspaceManager.js'
 dotenv.config()
 
 const app = express()
-const PORT = process.env.API_PORT || 3000
+const DEFAULT_PORT = 3000
+const INITIAL_PORT = Number.parseInt(process.env.API_PORT || `${DEFAULT_PORT}`, 10)
+const PORT_RETRY_LIMIT = Number.parseInt(process.env.API_PORT_RETRY_LIMIT || '20', 10)
 const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
 const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
 const WHISPERX_BASE = `http://${process.env.LOCAL_SERVER_IP || '172.22.12.162'}:${process.env.LOCAL_SERVER_PORT || '8787'}`
@@ -104,16 +107,22 @@ app.use(express.json())
 
 // ── Auth routes ───────────────────────────────────────────────────────────────
 
-app.post('/api/auth/register', async (req, res) => {
-  const { email, password } = req.body ?? {}
-  if (!email || !password) {
-    return res.status(400).json({ error: '請填寫電子郵件與密碼' })
+// Public: list teams for login page
+app.get('/api/teams', (_req, res) => {
+  res.json(listTeams())
+})
+
+// Public: register a new team + first admin
+app.post('/api/auth/register-team', async (req, res) => {
+  const { teamName, email, password } = req.body ?? {}
+  if (!teamName || !email || !password) {
+    return res.status(400).json({ error: '請填寫 Team 名稱、電子郵件與密碼' })
   }
   if (password.length < 6) {
     return res.status(400).json({ error: '密碼至少需要 6 個字元' })
   }
   try {
-    const result = await register(email, password)
+    const result = await registerTeam(teamName, email, password)
     res.json(result)
   } catch (err) {
     res.status(400).json({ error: err.message })
@@ -121,12 +130,12 @@ app.post('/api/auth/register', async (req, res) => {
 })
 
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body ?? {}
+  const { email, password, teamId } = req.body ?? {}
   if (!email || !password) {
     return res.status(400).json({ error: '請填寫電子郵件與密碼' })
   }
   try {
-    const result = await login(email, password)
+    const result = await login(email, password, teamId)
     res.json(result)
   } catch (err) {
     res.status(401).json({ error: err.message })
@@ -149,20 +158,89 @@ function requireAuth(req, res, next) {
   }
 }
 
+function requireAdmin(req, res, next) {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: '此操作需要 Admin 權限' })
+  }
+  next()
+}
+
 app.get('/api/user/me', requireAuth, (req, res) => {
   const user = getUserById(req.user.userId)
   if (!user) return res.status(404).json({ error: '用戶不存在' })
-  res.json(user)
+  const team = user.teamId ? getTeam(user.teamId) : null
+  res.json({ ...user, team })
 })
 
+// Team setup (replaces /api/user/setup)
+app.patch('/api/team/setup', requireAuth, requireAdmin, (req, res) => {
+  const { provider, apiKey, baseUrl, model, workspaceFolder } = req.body ?? {}
+  if (!provider || !apiKey || !model || !workspaceFolder) {
+    return res.status(400).json({ error: '缺少必要的設定欄位' })
+  }
+  try {
+    const team = completeTeamSetup(req.user.teamId, { provider, apiKey, baseUrl, model, workspaceFolder })
+    res.json(team)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// Keep old route for backward compat
 app.patch('/api/user/setup', requireAuth, (req, res) => {
   const { provider, apiKey, baseUrl, model, workspaceFolder } = req.body ?? {}
   if (!provider || !apiKey || !model || !workspaceFolder) {
     return res.status(400).json({ error: '缺少必要的設定欄位' })
   }
   try {
-    const user = completeSetup(req.user.userId, { provider, apiKey, baseUrl, model, workspaceFolder })
-    res.json(user)
+    const team = completeTeamSetup(req.user.teamId, { provider, apiKey, baseUrl, model, workspaceFolder })
+    res.json(team)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// ── Team member management routes (admin only) ────────────────────────────────
+
+app.get('/api/team/members', requireAuth, requireAdmin, (req, res) => {
+  try {
+    res.json(listMembers(req.user.userId))
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/team/members', requireAuth, requireAdmin, async (req, res) => {
+  const { email, password, name } = req.body ?? {}
+  if (!email || !password) {
+    return res.status(400).json({ error: '請填寫電子郵件與密碼' })
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: '密碼至少需要 6 個字元' })
+  }
+  try {
+    const member = await createMember(req.user.userId, email, password, name)
+    res.json(member)
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.delete('/api/team/members/:memberId', requireAuth, requireAdmin, (req, res) => {
+  try {
+    deleteMember(req.user.userId, req.params.memberId)
+    res.json({ success: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.patch('/api/team/members/:memberId/role', requireAuth, requireAdmin, (req, res) => {
+  const { role } = req.body ?? {}
+  if (!role) return res.status(400).json({ error: '請指定角色' })
+  try {
+    const member = setMemberRole(req.user.userId, req.params.memberId, role)
+    res.json(member)
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
@@ -1077,6 +1155,11 @@ function applyEnvKey(envPath, key, value) {
 
 function getProvisionUserId(authUserId) {
   const user = getUserById(authUserId)
+  if (user?.teamId) {
+    const folder = getWorkspaceFolder(user.teamId)
+    if (folder) return folder
+  }
+  // backward compat: fall back to user-level setupConfig
   return user?.setupConfig?.workspaceFolder || authUserId
 }
 
@@ -1091,7 +1174,7 @@ function readGatewayToken(paths) {
 
 // ── Provision routes ──────────────────────────────────────────────────────────
 
-app.get('/api/provision/check-userid/:userId', requireAuth, (req, res) => {
+app.get('/api/provision/check-userid/:userId', requireAuth, requireAdmin, (req, res) => {
   const { userId } = req.params
   if (!/^[\w-]+$/.test(userId)) {
     return res.json({ available: false, reason: '格式不正確，只允許英文字母、數字、連字號與底線' })
@@ -1100,7 +1183,7 @@ app.get('/api/provision/check-userid/:userId', requireAuth, (req, res) => {
   res.json({ available: !taken, reason: taken ? '此 ID 已被使用' : null })
 })
 
-app.post('/api/provision', requireAuth, async (req, res) => {
+app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
   const { userId, provider, geminiApiKey, baseUrl, apiKey, modelId } = req.body ?? {}
 
   if (!userId || !/^[\w-]+$/.test(userId)) {
@@ -1213,9 +1296,9 @@ app.post('/api/provision', requireAuth, async (req, res) => {
       send('warn', `  Reason: ${err.message}`)
     }
 
-    // 8. Link auth user → workspace so getProvisionUserId resolves correctly
+    // 8. Link team → workspace so getProvisionUserId resolves correctly
     try {
-      completeSetup(req.user.userId, {
+      completeTeamSetup(req.user.teamId, {
         provider,
         apiKey: provider === 'gemini' ? geminiApiKey : (apiKey ?? ''),
         baseUrl: baseUrl ?? null,
@@ -1223,7 +1306,7 @@ app.post('/api/provision', requireAuth, async (req, res) => {
         workspaceFolder: userId,
       })
     } catch (e) {
-      console.warn('[provision] Could not link user to workspace:', e.message)
+      console.warn('[provision] Could not link team to workspace:', e.message)
     }
 
     // Done
@@ -1287,7 +1370,7 @@ app.get('/api/container/config', requireAuth, async (req, res) => {
   })
 })
 
-app.post('/api/container/restart', requireAuth, async (req, res) => {
+app.post('/api/container/restart', requireAuth, requireAdmin, async (req, res) => {
   const userId = getProvisionUserId(req.user.userId)
   try {
     const status = await getContainerStatus(userId)
@@ -1300,15 +1383,15 @@ app.post('/api/container/restart', requireAuth, async (req, res) => {
   }
 })
 
-app.delete('/api/container', requireAuth, async (req, res) => {
+app.delete('/api/container', requireAuth, requireAdmin, async (req, res) => {
   const userId = getProvisionUserId(req.user.userId)
   try {
     const status = await getContainerStatus(userId)
     if (status.exists) await destroyContainer(userId)
     releasePorts(userId)
     deleteContainerConfig(userId)
-    const user = resetSetup(req.user.userId)
-    res.json({ success: true, userId, user })
+    const team = req.user.teamId ? resetTeamSetup(req.user.teamId) : null
+    res.json({ success: true, userId, team })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
@@ -1406,6 +1489,51 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
 const server = createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws/chat' })
 
+wss.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') return
+  console.error('[ws] server error:', err.message)
+})
+
+function getStartPort() {
+  if (Number.isInteger(INITIAL_PORT) && INITIAL_PORT > 0 && INITIAL_PORT <= 65535) {
+    return INITIAL_PORT
+  }
+  console.warn(`[startup] Invalid API_PORT "${process.env.API_PORT}", falling back to ${DEFAULT_PORT}`)
+  return DEFAULT_PORT
+}
+
+function getPortRetryLimit() {
+  if (Number.isInteger(PORT_RETRY_LIMIT) && PORT_RETRY_LIMIT >= 0) {
+    return PORT_RETRY_LIMIT
+  }
+  console.warn(`[startup] Invalid API_PORT_RETRY_LIMIT "${process.env.API_PORT_RETRY_LIMIT}", falling back to 20`)
+  return 20
+}
+
+function listenOnAvailablePort(port, remainingRetries = getPortRetryLimit()) {
+  const onError = (err) => {
+    server.off('listening', onListening)
+    if (err.code !== 'EADDRINUSE' || remainingRetries <= 0) {
+      throw err
+    }
+
+    const nextPort = port + 1
+    console.warn(`[startup] Port ${port} is in use; trying ${nextPort}`)
+    listenOnAvailablePort(nextPort, remainingRetries - 1)
+  }
+
+  const onListening = () => {
+    server.off('error', onError)
+    const address = server.address()
+    const actualPort = typeof address === 'object' && address ? address.port : port
+    console.log(`ClawPM API server running on http://localhost:${actualPort}`)
+  }
+
+  server.once('error', onError)
+  server.once('listening', onListening)
+  server.listen(port)
+}
+
 wss.on('connection', (ws) => {
   let authUserId = null
   let sessionKey = getDefaultSessionKey()
@@ -1489,6 +1617,7 @@ wss.on('connection', (ws) => {
   })
 })
 
-server.listen(PORT, () => {
-  console.log(`ClawPM API server running on http://localhost:${PORT}`)
-})
+// Run migration once on startup to assign legacy users to teams
+migrateUsers()
+
+listenOnAvailablePort(getStartPort())

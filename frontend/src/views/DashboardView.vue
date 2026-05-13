@@ -101,6 +101,14 @@
             </div>
             <ChevronRight class="w-4 h-4" />
           </button>
+
+          <button v-if="isAdmin" @click="$emit('navigate', 'settings', 'members')" class="w-full flex items-center justify-between p-4 bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl transition-colors">
+            <div class="flex items-center gap-3">
+              <div class="p-2 bg-indigo-100 text-indigo-600 rounded-lg"><Users class="w-5 h-5" /></div>
+              <span class="font-medium">帳號管理</span>
+            </div>
+            <ChevronRight class="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>
@@ -109,13 +117,14 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { PlusCircle, BrainCircuit, Clock, Calendar, ChevronRight, ChevronDown, Settings2, Loader2, FolderPlus, Plus } from 'lucide-vue-next'
+import { PlusCircle, BrainCircuit, Clock, Calendar, ChevronRight, ChevronDown, Settings2, Loader2, FolderPlus, Plus, Users } from 'lucide-vue-next'
 
 const props = defineProps({
   containerStatus: String,
   containerStatusColor: String,
   currentUser: Object,
   containerStats: Object,
+  isAdmin: { type: Boolean, default: false },
 })
 
 defineEmits(['navigate', 'open-reviewer-project'])
