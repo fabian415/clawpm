@@ -22,11 +22,11 @@
         <span v-if="!collapsed">儀表板</span>
       </div>
       <div
-        @click="$emit('navigate', 'projects')"
-        :class="{ 'bg-blue-600 text-white': currentPage === 'projects' || currentPage === 'projectDetail' }"
+        @click="$emit('navigate', 'reviewer')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'reviewer' }"
         class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
       >
-        <FolderKanban class="w-5 h-5 shrink-0" />
+        <FileSearch class="w-5 h-5 shrink-0" />
         <span v-if="!collapsed">專案列表</span>
       </div>
 
@@ -73,7 +73,7 @@
 
 <script setup>
 import {
-  Terminal, LayoutDashboard, FolderKanban, ChevronRight, ChevronLeft,
+  Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
   Settings, Sun, Moon
 } from 'lucide-vue-next'
 

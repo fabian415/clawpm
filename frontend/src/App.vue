@@ -36,13 +36,10 @@
         />
         <DashboardView
           v-else-if="currentPage === 'dashboard'"
-          :recent-projects="recentProjects"
           :container-status="containerStatus"
           :container-status-color="containerStatusColor"
           :current-user="currentUser"
           @navigate="currentPage = $event"
-          @select-project="selectProject"
-          @new-project="showNewProjectModal = true"
         />
 
         <ProjectListView

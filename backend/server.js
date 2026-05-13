@@ -578,6 +578,281 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
   }
 })
 
+// ── Project Insights (Step 5) ─────────────────────────────────────────────────
+
+const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
+
+app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
+  const { transcriptContainerPath, notesContainerPath } = req.body ?? {}
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+
+  if (transcriptContainerPath && (typeof transcriptContainerPath !== 'string' || !transcriptContainerPath.startsWith(containerPrefix))) {
+    return res.status(400).json({ error: '無效的逐字稿路徑' })
+  }
+  if (notesContainerPath && (typeof notesContainerPath !== 'string' || !notesContainerPath.startsWith(containerPrefix))) {
+    return res.status(400).json({ error: '無效的會議記錄路徑' })
+  }
+
+  const today = new Date().toISOString().slice(0, 10)
+  const sessionKey = makeScopedSessionKey('insights')
+
+  const parts = [
+    '請使用 project-insight-synthesizer skill，將本次會議資料增量更新至專案知識庫。',
+    '',
+    `本次會議日期：${today}`,
+  ]
+  if (transcriptContainerPath) parts.push(`本次會議逐字稿路徑：${transcriptContainerPath}`)
+  if (notesContainerPath) parts.push(`本次會議記錄路徑：${notesContainerPath}`)
+  parts.push(
+    '',
+    `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`,
+    '',
+    '請依照 skill 工作流程完整執行：',
+    '1. 讀取現有 project-insights/ 目錄中的所有專案 Markdown（若存在）',
+    '2. 偵測本次會議涉及哪些專案',
+    '3. 以增量合併方式更新每個涉及的專案 Markdown',
+    '4. 若出現新專案主題，自動建立對應新 Markdown 檔',
+    '5. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
+    '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
+    '',
+    '請直接執行，無需確認。',
+  )
+
+  res.json({
+    success: true,
+    sessionKey,
+    prompt: parts.join('\n'),
+    insightsContainerDir: CONTAINER_INSIGHTS_DIR,
+  })
+})
+
+app.get('/api/workflow/insights-result', requireAuth, (req, res) => {
+  const { insightsDir } = req.query
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  if (!insightsDir || typeof insightsDir !== 'string' || !insightsDir.startsWith(`${CONTAINER_WORKSPACE}/`)) {
+    return res.status(400).json({ error: '無效的路徑' })
+  }
+
+  const relPath = insightsDir.slice(CONTAINER_WORKSPACE.length)
+  const hostInsightsDir = path.join(paths.workspace, relPath)
+
+  if (!hostInsightsDir.startsWith(paths.workspace)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  const projectsJsonPath = path.join(hostInsightsDir, 'reviewer', 'projects.json')
+
+  if (!fs.existsSync(projectsJsonPath)) {
+    return res.json({ ready: false, projects: [] })
+  }
+
+  try {
+    const data = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf8'))
+    res.json({ ready: true, projects: data.projects || [] })
+  } catch {
+    res.status(500).json({ error: '讀取專案清單失敗' })
+  }
+})
+
+app.get('/api/project-insights/list', requireAuth, (req, res) => {
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+
+  if (!fs.existsSync(hostInsightsDir)) {
+    return res.json({ files: [], projects: [], hostPath: hostInsightsDir })
+  }
+
+  let projectsMeta = []
+  const projectsJsonPath = path.join(hostInsightsDir, 'reviewer', 'projects.json')
+  if (fs.existsSync(projectsJsonPath)) {
+    try {
+      projectsMeta = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf8')).projects || []
+    } catch {}
+  }
+
+  const files = fs.readdirSync(hostInsightsDir)
+    .filter(f => f.endsWith('.md') && f !== 'index.md')
+    .map(f => {
+      const slug = f.replace('.md', '')
+      const meta = projectsMeta.find(p =>
+        p.id === slug || p.slug === slug ||
+        (p.name && p.name.toLowerCase().replace(/[\s/]/g, '-') === slug)
+      ) || {}
+      return {
+        name: f,
+        slug,
+        title: meta.name || slug,
+        status: meta.status || null,
+        maturity: meta.maturity || null,
+        lastUpdated: meta.lastUpdated || null,
+      }
+    })
+    .sort((a, b) => (b.lastUpdated || '').localeCompare(a.lastUpdated || ''))
+
+  res.json({ files, projects: projectsMeta, hostPath: hostInsightsDir })
+})
+
+app.get('/api/project-insights/file', requireAuth, (req, res) => {
+  const { name } = req.query
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+
+  if (!name || typeof name !== 'string' || name.includes('..') || name.includes('/') || name.includes('\\')) {
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+
+  const safeFileName = name.endsWith('.md') ? name : `${name}.md`
+  const hostPath = path.join(hostInsightsDir, safeFileName)
+
+  if (!hostPath.startsWith(hostInsightsDir)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  if (!fs.existsSync(hostPath)) {
+    return res.status(404).json({ error: '檔案不存在' })
+  }
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name: safeFileName, hostPath })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/project-insights/file', requireAuth, (req, res) => {
+  const { name, content } = req.body ?? {}
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+
+  if (!name || typeof name !== 'string' || name.includes('..') || name.includes('/') || name.includes('\\')) {
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: '缺少 content' })
+  }
+
+  const safeFileName = name.endsWith('.md') ? name : `${name}.md`
+  const hostPath = path.join(hostInsightsDir, safeFileName)
+
+  if (!hostPath.startsWith(hostInsightsDir)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  try {
+    fs.mkdirSync(hostInsightsDir, { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name: safeFileName })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+// ── Project Insights HTML Viewer (iframe) ─────────────────────────────────────
+// Serves reviewer/index.html with projects.json inlined via a fetch-intercept
+// script, so the iframe needs zero further authenticated sub-requests.
+
+app.get('/api/project-insights/viewer', (req, res) => {
+  const token = req.query.token
+  let user
+  try {
+    if (!token) throw new Error('no token')
+    user = verifyToken(token)
+  } catch {
+    return res.status(401).setHeader('Content-Type', 'text/html').send(
+      '<p style="font-family:sans-serif;padding:2rem">Unauthorized — please open from the ClawPM app.</p>'
+    )
+  }
+
+  const provisionUserId = getProvisionUserId(user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const reviewerDir = path.join(paths.workspace, 'project-insights', 'reviewer')
+  const htmlPath = path.join(reviewerDir, 'index.html')
+  const jsonPath = path.join(reviewerDir, 'projects.json')
+
+  // Always read projects.json to inject inline
+  let projectsData = { projects: [] }
+  if (fs.existsSync(jsonPath)) {
+    try { projectsData = JSON.parse(fs.readFileSync(jsonPath, 'utf8')) } catch {}
+  }
+
+  // Escape for inline script
+  const inlineJson = JSON.stringify(projectsData)
+    .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')
+
+  // Script that intercepts both fetch() and XMLHttpRequest for projects.json
+  const intercept = `<script>
+(function(){
+  var _d=${inlineJson};
+  var _f=window.fetch;
+  window.fetch=function(u,o){
+    if(typeof u==='string'&&u.replace(/[?#].*$/,'').endsWith('projects.json'))
+      return Promise.resolve(new Response(JSON.stringify(_d),{status:200,headers:{'Content-Type':'application/json'}}));
+    return _f.call(this,u,o);
+  };
+  var _X=window.XMLHttpRequest;
+  function X2(){this._x=new _X();}
+  ['onreadystatechange','onload','onerror','onabort','ontimeout'].forEach(function(e){
+    Object.defineProperty(X2.prototype,e,{get:function(){return this._x[e];},set:function(v){this._x[e]=v;}});
+  });
+  X2.prototype.open=function(m,u){
+    this._u=u;
+    if(typeof u==='string'&&u.replace(/[?#].*$/,'').endsWith('projects.json'))
+      this._hit=true;
+    else this._x.open(m,u);
+  };
+  X2.prototype.send=function(){
+    if(this._hit){var s=this;setTimeout(function(){
+      Object.defineProperty(s,'readyState',{get:function(){return 4;}});
+      Object.defineProperty(s,'status',{get:function(){return 200;}});
+      Object.defineProperty(s,'responseText',{get:function(){return JSON.stringify(_d);}});
+      if(s.onreadystatechange)s.onreadystatechange();
+      if(s.onload)s.onload();
+    },0);}else{this._x.send();}
+  };
+  ['setRequestHeader','abort','getAllResponseHeaders','getResponseHeader'].forEach(function(m){
+    X2.prototype[m]=function(){return this._x[m].apply(this._x,arguments);};
+  });
+  window.XMLHttpRequest=X2;
+})();
+</script>`
+
+  if (fs.existsSync(htmlPath)) {
+    let html = fs.readFileSync(htmlPath, 'utf8')
+    html = html.replace(/<head([^>]*)>/i, (m) => m + intercept)
+    return res.setHeader('Content-Type', 'text/html; charset=utf-8').send(html)
+  }
+
+  // Fallback: render built-in summary page when reviewer/index.html hasn't been generated yet
+  const matColors = { 'not ready': '#6b7280', 'internal only': '#d97706', 'soft launch ready': '#2563eb', 'public launch candidate': '#16a34a' }
+  const cards = (projectsData.projects || []).map(p => {
+    const m = String(p.maturity || '').toLowerCase()
+    const c = Object.entries(matColors).find(([k]) => m.includes(k))?.[1] || '#6b7280'
+    return `<div class="card"><div class="row"><span class="name">${p.name || p.id || '—'}</span><span class="badge" style="background:${c}22;color:${c}">${p.maturity || '—'}</span></div>${p.lastUpdated ? `<div class="date">${p.lastUpdated}</div>` : ''}</div>`
+  }).join('')
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8').send(`<!DOCTYPE html><html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;padding:20px;background:#f8fafc;color:#1e293b}
+h1{font-size:18px;font-weight:700;margin:0 0 16px;color:#0f172a}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.name{font-weight:600;font-size:14px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;white-space:nowrap;flex-shrink:0}
+.date{font-size:11px;color:#94a3b8;margin-top:6px}
+.empty{text-align:center;padding:48px;color:#94a3b8;font-size:14px}
+</style></head><body>
+<h1>專案知識庫總覽</h1>
+${cards ? `<div class="grid">${cards}</div>` : '<div class="empty">尚未建立任何專案。<br><small>請先完成工作流程 Step 5。</small></div>'}
+</body></html>`)
+})
+
 // ── Provision helpers ─────────────────────────────────────────────────────────
 
 function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {

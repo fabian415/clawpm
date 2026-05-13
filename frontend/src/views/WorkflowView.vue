@@ -137,6 +137,15 @@
         <p class="text-slate-500">AI 正在分析音訊內容並提取專有名詞與核心概念</p>
       </div>
       <div v-else class="space-y-6 text-left">
+        <!-- Extraction error -->
+        <div v-if="extractionError" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div>
+            <p class="font-medium text-red-700 dark:text-red-400 text-sm">萃取失敗</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ extractionError }}</p>
+          </div>
+        </div>
+
         <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8">
           <div class="flex justify-between items-center mb-6">
             <h3 class="text-xl font-bold">專有名詞標籤雲</h3>
@@ -145,11 +154,17 @@
               <button @click="addTag" class="p-1 bg-blue-600 text-white rounded-lg"><Plus class="w-5 h-5" /></button>
             </div>
           </div>
-          <div class="flex flex-wrap gap-3">
+          <!-- Tags -->
+          <div v-if="tags.length > 0" class="flex flex-wrap gap-3">
             <div v-for="(tag, idx) in tags" :key="idx" class="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-full text-sm font-medium border border-blue-100 dark:border-blue-900/50 group">
               {{ tag }}
               <button @click="tags.splice(idx, 1)" class="hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><X class="w-3 h-3" /></button>
             </div>
+          </div>
+          <!-- Empty state -->
+          <div v-else class="py-6 text-center text-slate-400 text-sm">
+            <p>未上傳補充文件，無法自動萃取專有名詞</p>
+            <p class="text-xs mt-1 text-slate-300">您仍可手動輸入標籤，以提升步驟 3 的語音辨識準確率</p>
           </div>
         </div>
       </div>
@@ -167,6 +182,21 @@
         <p class="text-xs text-slate-400 mt-6">轉錄進度可在右下角聊天視窗查看</p>
       </div>
       <div v-else class="space-y-4">
+        <!-- Transcription error -->
+        <div v-if="transcriptError" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl">
+          <div class="flex items-start gap-3">
+            <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+            <div class="flex-1 min-w-0">
+              <p class="font-medium text-red-700 dark:text-red-400 text-sm">轉錄失敗</p>
+              <p class="text-xs text-red-600 dark:text-red-500 mt-0.5 break-words">{{ transcriptError }}</p>
+            </div>
+            <button
+              @click="transcriptError = ''; transcriptJobId = null; startTranscription()"
+              class="shrink-0 text-xs px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
+            >重試</button>
+          </div>
+        </div>
+
         <div class="flex justify-between items-end">
           <h3 class="text-xl font-bold">逐字稿預覽</h3>
           <span class="text-xs text-slate-500">共 {{ transcriptWordCount.toLocaleString() }} 字</span>
@@ -181,7 +211,7 @@
               <p class="text-slate-600 dark:text-slate-400 pl-4 border-l-2 border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-colors">{{ line.text }}</p>
             </div>
           </div>
-          <div v-else class="flex items-center justify-center h-full text-slate-400 text-sm">
+          <div v-else-if="!transcriptError" class="flex items-center justify-center h-full text-slate-400 text-sm">
             尚無逐字稿內容
           </div>
         </div>
@@ -265,38 +295,62 @@
 
     <!-- Step 5: Insights -->
     <div v-if="step === 5" class="space-y-6">
+      <!-- Processing -->
       <div v-if="isProcessing" class="flex flex-col items-center justify-center py-20 text-center">
-        <Sparkles class="w-16 h-16 text-blue-500 animate-bounce mb-6" />
+        <div class="relative w-32 h-32 mb-8">
+          <div class="absolute inset-0 rounded-full border-4 border-blue-100 dark:border-slate-800"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
+          <div class="absolute inset-0 flex items-center justify-center">
+            <Sparkles class="w-14 h-14 text-blue-600 animate-pulse" />
+          </div>
+        </div>
         <h3 class="text-2xl font-bold mb-2">正在生成專案洞見...</h3>
-        <p class="text-slate-500">將逐字稿轉化為結構化的 Markdown 摘要與行動項目</p>
+        <p class="text-slate-500 mb-2">OpenClaw 正在分析會議內容、比對現有知識庫並進行增量更新</p>
+        <p class="text-xs text-slate-400">進度可在右下角聊天視窗查看</p>
       </div>
-      <div v-else class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 space-y-6">
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label class="block text-sm font-medium mb-2">目標專案</label>
-            <select class="w-full bg-slate-50 dark:bg-slate-800 border-none px-4 py-2.5 rounded-xl outline-none ring-1 ring-slate-200 dark:ring-slate-700 focus:ring-blue-500">
-              <option v-for="p in projects" :key="p.id">{{ p.name }}</option>
-            </select>
+
+      <!-- Done -->
+      <div v-else class="space-y-5">
+        <!-- Success banner -->
+        <div class="p-5 bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-900/30 rounded-2xl flex items-start gap-4">
+          <div class="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center shrink-0">
+            <Check class="text-white w-5 h-5" />
           </div>
           <div>
-            <label class="block text-sm font-medium mb-2">寫入策略</label>
-            <div class="flex bg-slate-50 dark:bg-slate-800 rounded-xl p-1 gap-1">
-              <button class="flex-1 py-1.5 text-xs font-bold rounded-lg bg-white dark:bg-slate-700 shadow-sm text-blue-600">附加到現有洞見</button>
-              <button class="flex-1 py-1.5 text-xs font-bold rounded-lg text-slate-500 hover:bg-white dark:hover:bg-slate-700">取代現有洞見</button>
+            <h4 class="font-bold text-green-900 dark:text-green-100">專案知識庫已更新！</h4>
+            <p class="text-sm text-green-700 dark:text-green-300 mt-1">
+              本次會議內容已成功整合至專案知識庫，可至 Markdown Reviewer 進行檢閱與編輯。
+            </p>
+          </div>
+        </div>
+
+        <!-- Updated projects list -->
+        <div v-if="insightsProjects.length > 0" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+            <h4 class="font-bold flex items-center gap-2">
+              <Sparkles class="w-4 h-4 text-blue-500" />
+              已更新專案 ({{ insightsProjects.length }})
+            </h4>
+          </div>
+          <div class="divide-y divide-slate-100 dark:divide-slate-800">
+            <div v-for="p in insightsProjects" :key="p.id || p.name" class="px-6 py-3.5 flex items-center justify-between">
+              <div class="min-w-0">
+                <span class="font-medium truncate">{{ p.name }}</span>
+                <span v-if="p.lastUpdated" class="ml-2 text-xs text-slate-400">{{ p.lastUpdated }}</span>
+              </div>
+              <span :class="maturityClass(p.maturity)" class="ml-3 shrink-0 text-xs font-bold px-2.5 py-1 rounded-full">
+                {{ p.maturity || '—' }}
+              </span>
             </div>
           </div>
         </div>
-        <div class="p-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/30 rounded-xl">
-          <div class="flex gap-4">
-            <div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center shrink-0">
-              <Check class="text-white w-6 h-6" />
-            </div>
-            <div>
-              <h4 class="font-bold text-blue-900 dark:text-blue-100">處理完成！</h4>
-              <p class="text-sm text-blue-700 dark:text-blue-300 mt-1">您的會議紀錄已經成功轉化為洞見。現在您可以前往 Markdown Reviewer 進行最後的檢查與修訂。</p>
-            </div>
-          </div>
+
+        <!-- Fallback when no projects.json yet -->
+        <div v-else class="bg-slate-50 dark:bg-slate-800/50 rounded-2xl p-8 text-center text-slate-400 text-sm">
+          尚未偵測到更新的專案。若 OpenClaw 仍在處理，請稍候後重新整理。
         </div>
+
+        <!-- Open Reviewer button -->
         <button @click="$emit('navigate', 'reviewer')" class="w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2">
           開啟 Markdown Reviewer <ExternalLink class="w-4 h-4" />
         </button>
@@ -305,7 +359,7 @@
 
     <!-- Footer Actions -->
     <div class="mt-12 flex justify-between">
-      <button v-if="step > 1" @click="step--" class="px-6 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2">
+      <button v-if="step > 1" @click="prevStep" class="px-6 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2">
         <ArrowLeft class="w-4 h-4" /> 上一步
       </button>
       <div v-else></div>
@@ -339,8 +393,10 @@ const isProcessing = ref(false)
 const uploadedDocs = ref([])
 const docFileInputRef = ref(null)
 const isDragOver = ref(false)
-const tags = ref(['ClawPM', 'Vue 3', 'Tailwind', 'AI 專案管理', 'GPU 加速', '前端架構'])
+const tags = ref([])
 const newTag = ref('')
+const extractionError = ref('')
+const transcriptError = ref('')
 
 const fileInputRef = ref(null)
 const selectedFile = ref(null)
@@ -367,6 +423,10 @@ const emailSending = ref(false)
 const emailSent = ref(false)
 const emailError = ref('')
 let meetingNotesPollTimer = null
+
+const insightsOutputDir = ref(null)
+const insightsProjects = ref([])
+let insightsPollTimer = null
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -434,6 +494,14 @@ function formatFileSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+function prevStep() {
+  // Reset shared processing state so going back doesn't show wrong step's spinner
+  isProcessing.value = false
+  extractionError.value = ''
+  transcriptError.value = ''
+  step.value--
+}
+
 async function nextStep() {
   if (step.value === 1) {
     step.value++
@@ -450,16 +518,18 @@ async function nextStep() {
     startMeetingNotes()
     return
   }
-  isProcessing.value = true
-  setTimeout(() => {
-    isProcessing.value = false
+  if (step.value === 4) {
     step.value++
-  }, 2000)
+    startInsights()
+    return
+  }
 }
 
 async function startExtraction() {
+  extractionError.value = ''
   const sourceDoc = uploadedDocs.value.find(d => !d.uploading && !d.error && d.remotePath)
   if (!sourceDoc) {
+    tags.value = []  // Clear any stale tags; user can add manually
     isProcessing.value = false
     return
   }
@@ -480,13 +550,21 @@ async function startExtraction() {
     startExtractionPolling()
   } catch (err) {
     console.error('[extraction] prepare error:', err.message)
+    extractionError.value = err.message
     isProcessing.value = false
   }
 }
 
 async function startTranscription() {
+  transcriptError.value = ''
   if (!uploadedMediaPath.value) {
+    transcriptError.value = '未取得音訊檔案路徑，請返回步驟 1 重新上傳'
     isProcessing.value = false
+    return
+  }
+  // Don't re-submit if already have a job ID (e.g. user went back and came forward)
+  if (transcriptJobId.value) {
+    startTranscriptionPolling()
     return
   }
   isProcessing.value = true
@@ -506,6 +584,7 @@ async function startTranscription() {
     startTranscriptionPolling()
   } catch (err) {
     console.error('[transcription] prepare error:', err.message)
+    transcriptError.value = err.message
     isProcessing.value = false
   }
 }
@@ -522,7 +601,7 @@ function startTranscriptionPolling() {
       )
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
-        console.error('[transcription] poll error:', err.error)
+        transcriptError.value = err.error || `轉錄伺服器回傳錯誤 (HTTP ${res.status})`
         isProcessing.value = false
         return
       }
@@ -709,10 +788,68 @@ async function uploadDoc(file) {
   }
 }
 
+async function startInsights() {
+  isProcessing.value = true
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/prepare-insights', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcriptContainerPath: transcriptContainerPath.value || undefined,
+        notesContainerPath: meetingNotesOutputPath.value || undefined,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '準備洞見失敗')
+
+    insightsOutputDir.value = data.insightsContainerDir
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    startInsightsPolling()
+  } catch (err) {
+    console.error('[insights] prepare error:', err.message)
+    isProcessing.value = false
+  }
+}
+
+function startInsightsPolling() {
+  clearTimeout(insightsPollTimer)
+  const poll = async () => {
+    if (!insightsOutputDir.value) return
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch(
+        `/api/workflow/insights-result?insightsDir=${encodeURIComponent(insightsOutputDir.value)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      const data = await res.json()
+      if (data.ready) {
+        insightsProjects.value = data.projects || []
+        isProcessing.value = false
+        return
+      }
+    } catch {}
+    insightsPollTimer = setTimeout(poll, 10000)
+  }
+  insightsPollTimer = setTimeout(poll, 10000)
+}
+
+function maturityClass(maturity) {
+  if (!maturity) return 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+  const m = String(maturity).toLowerCase()
+  if (m.includes('not ready')) return 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+  if (m.includes('internal')) return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+  if (m.includes('soft')) return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+  if (m.includes('public')) return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+  return 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+}
+
 onUnmounted(() => {
   clearTimeout(extractionPollTimer)
   clearTimeout(transcriptionPollTimer)
   clearTimeout(meetingNotesPollTimer)
+  clearTimeout(insightsPollTimer)
 })
 
 async function removeDoc(idx) {
