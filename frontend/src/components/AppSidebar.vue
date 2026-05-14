@@ -29,6 +29,14 @@
         <FileSearch class="w-5 h-5 shrink-0" />
         <span v-if="!collapsed">專案列表</span>
       </div>
+      <div
+        @click="$emit('navigate', 'speakers')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'speakers' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <Mic class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">聲紋管理</span>
+      </div>
 
       <template v-if="!collapsed">
         <div class="pt-4 pb-2 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">最近專案</div>
@@ -81,7 +89,7 @@
 import { ref, onMounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon, Loader2
+  Settings, Sun, Moon, Loader2, Mic
 } from 'lucide-vue-next'
 
 defineProps({

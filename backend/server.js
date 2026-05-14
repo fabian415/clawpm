@@ -1465,6 +1465,96 @@ app.delete('/api/container', requireAuth, requireAdmin, async (req, res) => {
   }
 })
 
+// ── Speaker voiceprint management (proxy to WhisperX) ─────────────────────────
+
+const SPEAKER_AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.mp4', '.ogg', '.flac', '.webm', '.aac'])
+
+const speakerUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase()
+      cb(null, `clawpm-speaker-${Date.now()}${ext}`)
+    },
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase()
+    if (SPEAKER_AUDIO_EXTS.has(ext)) return cb(null, true)
+    cb(new Error('不支援的檔案格式，請上傳 MP3、WAV、M4A、MP4、OGG、FLAC、WebM 或 AAC'))
+  },
+})
+
+app.get('/api/speakers', requireAuth, async (_req, res) => {
+  const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+  try {
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers`, { headers })
+    const data = await upstream.json()
+    res.status(upstream.status).json(data)
+  } catch (err) {
+    res.status(502).json({ error: `無法連線到語音辨識伺服器：${err.message}` })
+  }
+})
+
+app.post('/api/speakers/enroll', requireAuth, (req, res, next) => {
+  speakerUpload.single('audio')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message })
+    next()
+  })
+}, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: '未收到音訊檔案' })
+  const { name, device } = req.body ?? {}
+  if (!name?.trim()) return res.status(400).json({ error: '請提供 Speaker 名稱' })
+
+  const formData = new FormData()
+  const fileBuffer = fs.readFileSync(req.file.path)
+  formData.append('audio', new Blob([fileBuffer], { type: req.file.mimetype }), req.file.originalname)
+  formData.append('name', name.trim())
+  if (device) formData.append('device', device)
+
+  const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+  try {
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/enroll`, { method: 'POST', headers, body: formData })
+    const data = await upstream.json()
+    res.status(upstream.status).json(data)
+  } catch (err) {
+    res.status(502).json({ error: `聲紋註冊失敗：${err.message}` })
+  } finally {
+    fs.unlink(req.file.path, () => {})
+  }
+})
+
+app.get('/api/speakers/:name/audio', requireAuth, async (req, res) => {
+  const { name } = req.params
+  const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+  try {
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(name)}/audio`, { headers })
+    if (!upstream.ok) return res.status(upstream.status).json({ error: '找不到聲紋音檔' })
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'audio/wav')
+    const reader = upstream.body.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      res.write(Buffer.from(value))
+    }
+    res.end()
+  } catch (err) {
+    res.status(502).json({ error: `無法取得音檔：${err.message}` })
+  }
+})
+
+app.delete('/api/speakers/:name', requireAuth, async (req, res) => {
+  const { name } = req.params
+  const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+  try {
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(name)}`, { method: 'DELETE', headers })
+    const data = await upstream.json()
+    res.status(upstream.status).json(data)
+  } catch (err) {
+    res.status(502).json({ error: `刪除失敗：${err.message}` })
+  }
+})
+
 // ── WebSocket chat ────────────────────────────────────────────────────────────
 
 /**

@@ -76,6 +76,8 @@
 
         <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" />
 
+        <SpeakerManagementView v-else-if="currentPage === 'speakers'" />
+
         <SettingsView
           v-else-if="currentPage === 'settings'"
           :container-config="containerConfig"
@@ -154,6 +156,7 @@ import ProjectDetailView from './views/ProjectDetailView.vue'
 import WorkflowView from './views/WorkflowView.vue'
 import ReviewerView from './views/ReviewerView.vue'
 import SettingsView from './views/SettingsView.vue'
+import SpeakerManagementView from './views/SpeakerManagementView.vue'
 
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
