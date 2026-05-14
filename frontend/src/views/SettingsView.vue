@@ -133,13 +133,21 @@
       <div class="p-8">
         <div class="space-y-2">
           <label class="text-sm font-medium">Email 收件人</label>
-          <input type="email" placeholder="jason.su@example.com" class="w-full bg-slate-50 dark:bg-slate-800 px-4 py-2.5 rounded-xl outline-none ring-1 ring-slate-200 dark:ring-slate-700 focus:ring-blue-500" />
+          <input
+            v-model="notificationEmails"
+            type="text"
+            placeholder="jason.su@example.com; alice@example.com"
+            class="w-full bg-slate-50 dark:bg-slate-800 px-4 py-2.5 rounded-xl outline-none ring-1 ring-slate-200 dark:ring-slate-700 focus:ring-blue-500"
+          />
+          <p class="text-xs text-slate-400">多位收件人請用 <code class="bg-slate-100 dark:bg-slate-800 px-1 rounded">;</code> 分隔，會議記錄發送時將自動帶入</p>
         </div>
       </div>
     </section>
 
     <div class="flex justify-end pt-4">
-      <button @click="$emit('save')" class="bg-blue-600 text-white px-10 py-3 rounded-xl font-bold hover:bg-blue-700 shadow-xl shadow-blue-500/20 transition-all">儲存設定</button>
+      <button @click="handleSave" :disabled="isSaving" class="bg-blue-600 text-white px-10 py-3 rounded-xl font-bold hover:bg-blue-700 shadow-xl shadow-blue-500/20 transition-all disabled:opacity-60">
+        {{ isSaving ? '儲存中...' : '儲存設定' }}
+      </button>
     </div>
 
     <!-- Account Management (admin only) -->
@@ -230,7 +238,7 @@ const props = defineProps({
   containerConfig: { type: Object, default: null },
   isAdmin: { type: Boolean, default: false }
 })
-defineEmits(['restart', 'destroy', 'save'])
+const emit = defineEmits(['restart', 'destroy', 'save'])
 
 const showKeys = ref(false)
 const showToken = ref(false)
@@ -238,6 +246,8 @@ const selectedModel = ref('large-v3')
 const userSettings = ref(null)
 const isLoadingUserSettings = ref(false)
 const settingsError = ref('')
+const notificationEmails = ref('')
+const isSaving = ref(false)
 
 const whisperModels = [
   { name: 'large-v3', desc: '高準確度' },
@@ -325,6 +335,30 @@ async function fetchUserSettings() {
   } finally {
     isLoadingUserSettings.value = false
   }
+}
+
+async function fetchAppSettings() {
+  const token = localStorage.getItem('clawpm_token')
+  if (!token) return
+  try {
+    const res = await fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok && data.notificationEmails) notificationEmails.value = data.notificationEmails
+  } catch {}
+}
+
+async function handleSave() {
+  isSaving.value = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationEmails: notificationEmails.value })
+    })
+  } catch {}
+  isSaving.value = false
+  emit('save')
 }
 
 // ── Member management ─────────────────────────────────────────────────────────
@@ -423,6 +457,7 @@ async function submitAddMember() {
 
 onMounted(() => {
   fetchUserSettings()
+  fetchAppSettings()
   fetchMembers()
 })
 </script>

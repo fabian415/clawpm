@@ -270,7 +270,7 @@ export function useApp() {
   }
 
   function saveSettings() {
-    showToast('設定已更新，重啟 container 以套用')
+    showToast('設定已更新')
   }
 
   async function fetchContainerConfig() {

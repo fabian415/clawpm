@@ -657,6 +657,27 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
   }
 })
 
+// ── App Settings ──────────────────────────────────────────────────────────────
+
+const APP_SETTINGS_PATH = path.resolve('./data/app_settings.json')
+
+function readAppSettings() {
+  if (!fs.existsSync(APP_SETTINGS_PATH)) return {}
+  try { return JSON.parse(fs.readFileSync(APP_SETTINGS_PATH, 'utf-8')) } catch { return {} }
+}
+
+app.get('/api/settings', requireAuth, (req, res) => {
+  res.json(readAppSettings())
+})
+
+app.put('/api/settings', requireAuth, (req, res) => {
+  const current = readAppSettings()
+  const updated = { ...current, ...req.body }
+  fs.mkdirSync(path.dirname(APP_SETTINGS_PATH), { recursive: true })
+  fs.writeFileSync(APP_SETTINGS_PATH, JSON.stringify(updated, null, 2))
+  res.json(updated)
+})
+
 // ── Project Insights (Step 5) ─────────────────────────────────────────────────
 
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`

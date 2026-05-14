@@ -269,7 +269,7 @@
             <input
               v-model="emailTo"
               type="text"
-              placeholder="收件者 Email（多位請用逗號分隔）"
+              placeholder="收件者 Email（多位請用 ; 分隔）"
               class="flex-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button
@@ -382,7 +382,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send
@@ -859,6 +859,16 @@ function maturityClass(maturity) {
   if (m.includes('public')) return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
   return 'bg-slate-100 dark:bg-slate-800 text-slate-500'
 }
+
+onMounted(async () => {
+  const token = localStorage.getItem('clawpm_token')
+  if (!token) return
+  try {
+    const res = await fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok && data.notificationEmails) emailTo.value = data.notificationEmails
+  } catch {}
+})
 
 onUnmounted(() => {
   clearTimeout(extractionPollTimer)
