@@ -21,6 +21,11 @@ const SKILL_NAMES = [
   'project-insight-synthesizer',
 ]
 
+// Always overwrite on init to keep assistant character and workspace instructions current.
+const IDENTITY_FILES = ['AGENTS.md', 'IDENTITY.md', 'SOUL.md']
+// Copied only on first init — users may customize these files over time.
+const IDENTITY_FILES_ONCE = ['HEARTBEAT.md', 'TOOLS.md', 'USER.md']
+
 /**
  * Returns all relevant paths for a user's workspace.
  * These are HOST paths used for Docker volume mounts and file operations.
@@ -169,6 +174,32 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     }
     else {
       warnings.push(`Skill source not found: ${src}`)
+    }
+  }
+
+  // Copy identity files (always overwrite to stay current)
+  for (const filename of IDENTITY_FILES) {
+    const src = path.join(SKILLS_SOURCE, filename)
+    const dest = path.join(paths.workspace, filename)
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dest)
+    }
+    else {
+      warnings.push(`Identity file not found: ${src}`)
+    }
+  }
+
+  // Copy USER.md only on first init (preserve user customizations)
+  for (const filename of IDENTITY_FILES_ONCE) {
+    const src = path.join(SKILLS_SOURCE, filename)
+    const dest = path.join(paths.workspace, filename)
+    if (!fs.existsSync(dest)) {
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest)
+      }
+      else {
+        warnings.push(`Identity file not found: ${src}`)
+      }
     }
   }
 

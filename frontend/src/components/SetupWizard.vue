@@ -108,7 +108,7 @@
                 </div>
               </div>
               <div>
-                <label class="block text-sm font-medium mb-1.5">API Key <span class="text-red-500">*</span></label>
+                <label class="block text-sm font-medium mb-1.5">API Key <span class="text-slate-400 text-xs font-normal">(選填)</span></label>
                 <div class="relative">
                   <Key class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input v-model="customApiKey"
@@ -512,7 +512,7 @@ const isNextDisabled = computed(() => {
   if (step.value === 1) {
     if (!provider.value) return true
     if (provider.value === 'gemini') return !geminiApiKey.value.trim()
-    return !customBaseUrl.value.trim() || !customApiKey.value.trim()
+    return !customBaseUrl.value.trim()
   }
   if (step.value === 2) {
     if (isFetchingModels.value) return true

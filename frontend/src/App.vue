@@ -56,7 +56,6 @@
 
         <ProjectListView
           v-else-if="currentPage === 'projects'"
-          :projects="projects"
           @select-project="selectProject"
           @new-project="showNewProjectModal = true"
         />

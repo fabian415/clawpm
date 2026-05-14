@@ -951,6 +951,53 @@ app.patch('/api/project-insights/file', requireAuth, (req, res) => {
   }
 })
 
+app.delete('/api/project-insights/delete', requireAuth, (req, res) => {
+  const { slug } = req.query
+  if (!slug || typeof slug !== 'string' || slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
+    return res.status(400).json({ error: '無效的專案識別碼' })
+  }
+
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+
+  const mdPath = path.join(hostInsightsDir, `${slug}.md`)
+  if (!mdPath.startsWith(hostInsightsDir + path.sep)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  // 1. Delete the .md file
+  if (fs.existsSync(mdPath)) {
+    fs.unlinkSync(mdPath)
+  } else {
+    return res.status(404).json({ error: '專案不存在' })
+  }
+
+  // 2. Remove from projects.json
+  const projectsJsonPath = path.join(hostInsightsDir, 'reviewer', 'projects.json')
+  if (fs.existsSync(projectsJsonPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(projectsJsonPath, 'utf8'))
+      if (Array.isArray(raw.projects)) {
+        raw.projects = raw.projects.filter(p => p.slug !== slug && p.id !== slug)
+        fs.writeFileSync(projectsJsonPath, JSON.stringify(raw, null, 2), 'utf8')
+      }
+    } catch {}
+  }
+
+  // 3. Remove link from index.md
+  const indexMdPath = path.join(hostInsightsDir, 'index.md')
+  if (fs.existsSync(indexMdPath)) {
+    try {
+      const lines = fs.readFileSync(indexMdPath, 'utf8').split('\n')
+      const filtered = lines.filter(line => !line.includes(`(./${slug}.md)`))
+      fs.writeFileSync(indexMdPath, filtered.join('\n'), 'utf8')
+    } catch {}
+  }
+
+  res.json({ success: true, slug })
+})
+
 // ── Project Insights HTML Viewer (iframe) ─────────────────────────────────────
 // Serves reviewer/index.html with projects.json inlined via a fetch-intercept
 // script, so the iframe needs zero further authenticated sub-requests.
@@ -1119,7 +1166,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
       providers: {
         custom: {
           baseUrl,
-          apiKey,
+          apiKey: apiKey || 'dummy-key',
           api: 'openai-completions',
           models: [
             {
@@ -1195,7 +1242,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
   if (provider === 'gemini' && !geminiApiKey) {
     return res.status(400).json({ error: '缺少 Gemini API Key' })
   }
-  if (provider === 'custom' && (!baseUrl || !apiKey || !modelId)) {
+  if (provider === 'custom' && (!baseUrl || !modelId)) {
     return res.status(400).json({ error: '缺少 Custom provider 設定' })
   }
   if (getContainerConfig(userId) || getPortsForUser(userId)) {

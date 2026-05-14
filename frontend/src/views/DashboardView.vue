@@ -36,14 +36,31 @@
         <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div
             v-for="p in reviewerProjects" :key="p.slug"
-            @click="$emit('open-reviewer-project', p.slug)"
-            class="group p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl hover:border-blue-500 hover:shadow-md transition-all cursor-pointer"
+            @click="confirmDeleteSlug !== p.slug && $emit('open-reviewer-project', p.slug)"
+            class="group p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl hover:border-blue-500 hover:shadow-md transition-all"
+            :class="confirmDeleteSlug !== p.slug ? 'cursor-pointer' : 'cursor-default'"
           >
             <div class="flex justify-between items-start mb-3">
-              <h4 class="font-bold group-hover:text-blue-600 transition-colors">{{ p.name }}</h4>
-              <span v-if="p.readiness" :class="maturityClass(p.readiness)" class="text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {{ p.readiness }}
-              </span>
+              <h4 class="font-bold group-hover:text-blue-600 transition-colors flex-1 min-w-0 truncate pr-2">{{ p.name }}</h4>
+              <div class="flex items-center gap-1.5 flex-shrink-0">
+                <span v-if="p.readiness && confirmDeleteSlug !== p.slug" :class="maturityClass(p.readiness)" class="text-[10px] font-bold px-2 py-0.5 rounded-full">
+                  {{ p.readiness }}
+                </span>
+                <!-- 刪除確認 -->
+                <div v-if="confirmDeleteSlug === p.slug" class="flex items-center gap-1" @click.stop>
+                  <span class="text-xs text-red-600 font-medium whitespace-nowrap">確認刪除？</span>
+                  <button @click.stop="deleteProject(p.slug)" :disabled="isDeleting" class="text-xs px-1.5 py-0.5 bg-red-600 hover:bg-red-700 text-white rounded disabled:opacity-50 transition-colors">確認</button>
+                  <button @click.stop="confirmDeleteSlug = null" class="text-xs px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 rounded transition-colors">取消</button>
+                </div>
+                <button
+                  v-else
+                  @click.stop="confirmDeleteSlug = p.slug"
+                  class="opacity-0 group-hover:opacity-100 p-1 hover:text-red-600 text-slate-400 rounded transition-all"
+                  title="刪除專案"
+                >
+                  <Trash2 class="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
             <p class="text-xs text-slate-500 mb-4">{{ p.stage || '—' }}</p>
             <div class="text-[10px] text-slate-400 flex items-center gap-1">
@@ -117,7 +134,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { PlusCircle, BrainCircuit, Clock, Calendar, ChevronRight, ChevronDown, Settings2, Loader2, FolderPlus, Plus, Users } from 'lucide-vue-next'
+import { PlusCircle, BrainCircuit, Clock, Calendar, ChevronRight, ChevronDown, Settings2, Loader2, FolderPlus, Plus, Users, Trash2 } from 'lucide-vue-next'
 
 const props = defineProps({
   containerStatus: String,
@@ -137,6 +154,9 @@ const newProjectName = ref('')
 const isCreating = ref(false)
 const createError = ref('')
 const createSuccess = ref('')
+
+const confirmDeleteSlug = ref(null)
+const isDeleting = ref(false)
 
 function toggleAddProject() {
   showAddProject.value = !showAddProject.value
@@ -175,6 +195,27 @@ async function createProject() {
 
 function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}` }
+}
+
+async function deleteProject(slug) {
+  isDeleting.value = true
+  try {
+    const res = await fetch(`/api/project-insights/delete?slug=${encodeURIComponent(slug)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    })
+    if (!res.ok) {
+      const data = await res.json()
+      console.error('[dashboard] delete error:', data.error)
+      return
+    }
+    confirmDeleteSlug.value = null
+    await fetchReviewerProjects()
+  } catch (err) {
+    console.error('[dashboard] delete error:', err.message)
+  } finally {
+    isDeleting.value = false
+  }
 }
 
 async function fetchReviewerProjects() {
@@ -255,7 +296,7 @@ let welcomeTimer = null
 onMounted(() => {
   welcomeTimer = setInterval(() => {
     welcomeMessage.value = pickMessage()
-  }, 10 * 60 * 1000)
+  }, 3 * 60 * 1000)
 })
 
 onUnmounted(() => {
