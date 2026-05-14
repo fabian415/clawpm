@@ -284,7 +284,10 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
   const provisionUserId = getProvisionUserId(req.user.userId)
   const ftpUser = process.env.FTP_USER || 'advantech'
   const ftpPass = process.env.FTP_PASS || 'changeme'
-  const dateFolder = new Date().toISOString().slice(0, 10)
+  const rawDate = req.body?.meetingDate
+  const dateFolder = rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)
+    ? rawDate
+    : new Date().toISOString().slice(0, 10)
   const remoteDir = `/${provisionUserId}/workspace/ftp_data/media/${dateFolder}`
   const originalName = req.file.originalname
 
@@ -548,7 +551,7 @@ app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
 // ── Meeting notes (Step 4) ────────────────────────────────────────────────────
 
 app.post('/api/workflow/prepare-meeting-notes', requireAuth, (req, res) => {
-  const { transcriptContainerPath } = req.body ?? {}
+  const { transcriptContainerPath, meetingDate } = req.body ?? {}
   const provisionUserId = getProvisionUserId(req.user.userId)
 
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
@@ -562,9 +565,14 @@ app.post('/api/workflow/prepare-meeting-notes', requireAuth, (req, res) => {
 
   const sessionKey = makeScopedSessionKey('meeting-notes')
 
+  const resolvedDate = meetingDate && /^\d{4}-\d{2}-\d{2}$/.test(meetingDate)
+    ? meetingDate
+    : new Date().toISOString().slice(0, 10)
+
   const prompt = [
     '請執行 meeting-transcription skill 的步驟 2：讀取逐字稿並生成會議記錄。',
     '',
+    `本次會議日期：${resolvedDate}`,
     `逐字稿路徑：${transcriptContainerPath}`,
     '',
     '請依序完成：',
@@ -683,7 +691,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 
 app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
-  const { transcriptContainerPath, notesContainerPath } = req.body ?? {}
+  const { transcriptContainerPath, notesContainerPath, meetingDate } = req.body ?? {}
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
   const provisionUserId = getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -708,7 +716,9 @@ app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
       .map(p => ({ name: p.name, slug: p.slug || p.id }))
   } catch {}
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = meetingDate && /^\d{4}-\d{2}-\d{2}$/.test(meetingDate)
+    ? meetingDate
+    : new Date().toISOString().slice(0, 10)
   const sessionKey = makeScopedSessionKey('insights')
 
   const parts = [

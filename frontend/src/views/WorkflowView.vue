@@ -38,6 +38,18 @@
         @change="handleDocFileChange"
       />
 
+      <!-- Meeting date picker -->
+      <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 flex items-center gap-4">
+        <Calendar class="w-5 h-5 text-slate-400 shrink-0" />
+        <label class="font-bold text-sm shrink-0">會議日期</label>
+        <input
+          v-model="meetingDate"
+          type="date"
+          class="px-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-100"
+        />
+        <span class="text-xs text-slate-400">此日期將用於建立資料夾及帶入 AI 對話</span>
+      </div>
+
       <!-- Upload area -->
       <div
         @click="openFileDialog"
@@ -385,7 +397,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
-  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send
+  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array })
@@ -418,6 +430,8 @@ const transcriptContainerPath = ref(null)
 const transcriptRawContent = ref('')
 const transcriptWordCount = ref(0)
 let transcriptionPollTimer = null
+
+const meetingDate = ref(new Date().toISOString().slice(0, 10))
 
 const meetingNotesOutputPath = ref(null)
 const meetingNotesContent = ref('')
@@ -459,6 +473,7 @@ function uploadFile(file) {
   const token = localStorage.getItem('clawpm_token')
   const formData = new FormData()
   formData.append('file', file)
+  formData.append('meetingDate', meetingDate.value)
 
   const xhr = new XMLHttpRequest()
 
@@ -637,7 +652,7 @@ async function startMeetingNotes() {
     const res = await fetch('/api/workflow/prepare-meeting-notes', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcriptContainerPath: transcriptContainerPath.value }),
+      body: JSON.stringify({ transcriptContainerPath: transcriptContainerPath.value, meetingDate: meetingDate.value }),
     })
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || '準備會議記錄失敗')
@@ -805,6 +820,7 @@ async function startInsights() {
       body: JSON.stringify({
         transcriptContainerPath: transcriptContainerPath.value || undefined,
         notesContainerPath: meetingNotesOutputPath.value || undefined,
+        meetingDate: meetingDate.value,
       }),
     })
     const data = await res.json()

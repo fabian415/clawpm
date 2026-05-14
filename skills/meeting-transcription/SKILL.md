@@ -96,8 +96,7 @@ PYTHONUNBUFFERED=1 python3 -u <script> <音檔路徑> --mode openai --step trans
 ```markdown
 # 會議記錄
 
-> 本份會議記錄由 **Claude Sonnet 4.6**（anthropic/claude-sonnet-4-6）根據逐字稿原文生成。
->（Gemini 模式改標注 Gemini 模型名稱；Azure 模式亦標注 Claude）
+> 本份會議記錄由 AI 根據逐字稿原文生成。
 
 ## 會議名稱
 [公司名稱] 主題說明
