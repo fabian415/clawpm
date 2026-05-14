@@ -343,7 +343,10 @@ async function fetchAppSettings() {
   try {
     const res = await fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
     const data = await res.json().catch(() => ({}))
-    if (res.ok && data.notificationEmails) notificationEmails.value = data.notificationEmails
+    if (res.ok) {
+      if (data.notificationEmails) notificationEmails.value = data.notificationEmails
+      if (data.whisperModel) selectedModel.value = data.whisperModel
+    }
   } catch {}
 }
 
@@ -354,7 +357,7 @@ async function handleSave() {
     await fetch('/api/settings', {
       method: 'PUT',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notificationEmails: notificationEmails.value })
+      body: JSON.stringify({ notificationEmails: notificationEmails.value, whisperModel: selectedModel.value })
     })
   } catch {}
   isSaving.value = false

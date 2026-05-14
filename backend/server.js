@@ -497,10 +497,14 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
   const containerAudioDir = path.dirname(containerAudioPath)
   const transcriptOutputPath = `${containerAudioDir}/${baseName}/${baseName}_逐字稿.md`
 
+  const appSettings = readAppSettings()
+  const whisperModel = appSettings.whisperModel || 'large-v3'
+
   const formData = new FormData()
   const audioBuffer = fs.readFileSync(hostAudioPath)
   formData.append('audio', new Blob([audioBuffer]), path.basename(hostAudioPath))
   formData.append('lang', 'zh')
+  formData.append('model', whisperModel)
   if (Array.isArray(tags) && tags.length > 0) {
     formData.append('terms', tags.join(', '))
   }
@@ -519,7 +523,16 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
       return res.status(502).json({ error: errBody.detail || `WhisperX 回傳 HTTP ${uploadRes.status}` })
     }
 
-    const { job_id } = await uploadRes.json()
+    let parsedResponse
+    try {
+      parsedResponse = await uploadRes.json()
+    } catch {
+      return res.status(502).json({ error: 'WhisperX 伺服器回傳了無效的回應，請確認服務是否正常運作' })
+    }
+    const { job_id } = parsedResponse
+    if (!job_id) {
+      return res.status(502).json({ error: 'WhisperX 未回傳 job_id，請確認服務是否正常運作' })
+    }
     transcriptionJobs.set(job_id, { status: 'pending', content: null, error: null })
     pollWhisperXJob(job_id, outputHostPath)
 
@@ -654,7 +667,7 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
       from: `"${fromName}" <${smtpUser}>`,
       to: recipients.join(', '),
       subject: subject || '會議記錄',
-      text: content || '',
+      html: content || '',
       attachments,
     })
 

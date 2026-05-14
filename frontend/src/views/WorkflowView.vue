@@ -395,6 +395,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar
@@ -688,6 +689,25 @@ function startMeetingNotesPolling() {
   meetingNotesPollTimer = setTimeout(poll, 10000)
 }
 
+function styleEmailHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+
+  doc.querySelectorAll('table').forEach(table => {
+    table.style.cssText = 'border-collapse:collapse;width:100%;font-size:14px;margin:12px 0;'
+  })
+  doc.querySelectorAll('th').forEach(th => {
+    th.style.cssText = 'background-color:#1e40af;color:#ffffff;padding:8px 12px;border:1px solid #1e3a8a;text-align:left;font-weight:600;'
+  })
+  doc.querySelectorAll('td').forEach(td => {
+    td.style.cssText = 'padding:8px 12px;border:1px solid #cbd5e1;'
+  })
+  doc.querySelectorAll('tbody tr:nth-child(even)').forEach(tr => {
+    tr.style.backgroundColor = '#f8fafc'
+  })
+
+  return doc.body.innerHTML
+}
+
 async function sendMeetingEmail() {
   emailSending.value = true
   emailSent.value = false
@@ -703,7 +723,7 @@ async function sendMeetingEmail() {
       body: JSON.stringify({
         recipients,
         subject: `會議記錄 — ${meetingNotesType.value}`,
-        content: meetingNotesContent.value,
+        content: styleEmailHtml(marked.parse(meetingNotesContent.value)),
         transcriptContent: transcriptRawContent.value,
       }),
     })
