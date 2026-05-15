@@ -19,7 +19,7 @@
       :container-status-color="containerStatusColor"
       :container-status-text-color="containerStatusTextColor"
       :is-dark="isDark"
-      @navigate="currentPage = $event"
+      @navigate="page => { if (page === 'workflow') selectedTask = null; currentPage = page }"
       @open-reviewer-project="openReviewerProject"
       @toggle-theme="toggleTheme"
     />
@@ -70,13 +70,21 @@
         <WorkflowView
           v-else-if="currentPage === 'workflow'"
           :projects="projects"
-          @navigate="currentPage = $event"
+          :initial-task="selectedTask"
+          @navigate="page => { currentPage = page; selectedTask = null }"
           @extraction-ready="handleExtractionReady"
         />
 
         <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" />
 
         <SpeakerManagementView v-else-if="currentPage === 'speakers'" />
+
+        <TasksView
+          v-else-if="currentPage === 'tasks'"
+          @navigate="currentPage = $event"
+          @select-task="openTaskDetail"
+        />
+
 
         <SettingsView
           v-else-if="currentPage === 'settings'"
@@ -157,6 +165,7 @@ import WorkflowView from './views/WorkflowView.vue'
 import ReviewerView from './views/ReviewerView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SpeakerManagementView from './views/SpeakerManagementView.vue'
+import TasksView from './views/TasksView.vue'
 
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
@@ -170,6 +179,17 @@ const {
 } = useApp()
 
 const reviewerInitialSlug = ref(null)
+const selectedTask = ref(null)
+
+async function openTaskDetail(taskId) {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}` }
+    })
+    if (res.ok) selectedTask.value = await res.json()
+  } catch {}
+  currentPage.value = 'workflow'
+}
 
 function openReviewerProject(slug) {
   reviewerInitialSlug.value = slug

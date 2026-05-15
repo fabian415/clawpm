@@ -401,7 +401,7 @@ import {
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar
 } from 'lucide-vue-next'
 
-const props = defineProps({ projects: Array })
+const props = defineProps({ projects: Array, initialTask: Object })
 const emit = defineEmits(['navigate', 'extraction-ready'])
 
 const step = ref(1)
@@ -433,6 +433,8 @@ const transcriptWordCount = ref(0)
 let transcriptionPollTimer = null
 
 const meetingDate = ref(new Date().toISOString().slice(0, 10))
+
+const taskId = ref(null)
 
 const meetingNotesOutputPath = ref(null)
 const meetingNotesContent = ref('')
@@ -493,6 +495,7 @@ function uploadFile(file) {
       } catch {}
       uploadProgress.value = 100
       uploadDone.value = true
+      createWorkflowTask()
     } else {
       let msg = 'FTP 上傳失敗'
       try { msg = JSON.parse(xhr.responseText).error || msg } catch {}
@@ -511,6 +514,39 @@ function uploadFile(file) {
   xhr.send(formData)
 }
 
+async function createWorkflowTask() {
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/tasks', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meetingDate: meetingDate.value,
+        audioFileName: selectedFile.value?.name || uploadedOriginalName.value || '',
+        data: {
+          uploadedMediaPath: uploadedMediaPath.value,
+          uploadedOriginalName: uploadedOriginalName.value,
+          uploadedDocPaths: uploadedDocs.value.filter(d => d.remotePath).map(d => ({ name: d.name, remotePath: d.remotePath })),
+        },
+      }),
+    })
+    const data = await res.json()
+    if (res.ok) taskId.value = data.id
+  } catch {}
+}
+
+async function syncTask(updates) {
+  if (!taskId.value) return
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    await fetch(`/api/tasks/${taskId.value}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    })
+  } catch {}
+}
+
 function formatFileSize(bytes) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
@@ -527,21 +563,25 @@ function prevStep() {
 async function nextStep() {
   if (step.value === 1) {
     step.value++
+    syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { uploadedDocPaths: uploadedDocs.value.filter(d => d.remotePath).map(d => ({ name: d.name, remotePath: d.remotePath })) } })
     startExtraction()
     return
   }
   if (step.value === 2) {
     step.value++
+    syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: tags.value, extractionOutputPath: extractionOutputPath.value } })
     startTranscription()
     return
   }
   if (step.value === 3) {
     step.value++
+    syncTask({ currentStep: 3, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'pending', 5: 'pending' }, data: { transcriptJobId: transcriptJobId.value, transcriptContainerPath: transcriptContainerPath.value, transcriptRawContent: transcriptRawContent.value } })
     startMeetingNotes()
     return
   }
   if (step.value === 4) {
     step.value++
+    syncTask({ currentStep: 4, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: meetingNotesContent.value } })
     startInsights()
     return
   }
@@ -633,6 +673,7 @@ function startTranscriptionPolling() {
         transcriptLines.value = parseTranscript(data.content)
         transcriptWordCount.value = countWords(data.content)
         isProcessing.value = false
+        syncTask({ currentStep: 3, status: 'waiting', autoAdvanceAt: new Date(Date.now() + 10000).toISOString(), stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'pending', 5: 'pending' }, data: { transcriptRawContent: data.content, transcriptJobId: transcriptJobId.value, transcriptContainerPath: transcriptContainerPath.value } })
         return
       }
     } catch {}
@@ -681,6 +722,7 @@ function startMeetingNotesPolling() {
       if (data.ready && data.content) {
         meetingNotesContent.value = data.content
         isProcessing.value = false
+        syncTask({ currentStep: 4, status: 'waiting', autoAdvanceAt: new Date(Date.now() + 10000).toISOString(), stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: data.content } })
         return
       }
     } catch {}
@@ -771,9 +813,10 @@ function startExtractionPolling() {
         { headers: { Authorization: `Bearer ${token}` } },
       )
       const data = await res.json()
-      if (data.ready && data.tags?.length > 0) {
-        tags.value = data.tags
+      if (data.ready) {
+        tags.value = data.tags || []
         isProcessing.value = false
+        syncTask({ currentStep: 2, status: 'waiting', autoAdvanceAt: new Date(Date.now() + 10000).toISOString(), stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: data.tags || [], extractionOutputPath: extractionOutputPath.value } })
         return
       }
     } catch {}
@@ -871,6 +914,7 @@ function startInsightsPolling() {
       if (data.ready) {
         insightsProjects.value = data.projects || []
         isProcessing.value = false
+        syncTask({ currentStep: 5, status: 'completed', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done' } })
         return
       }
     } catch {}
@@ -896,6 +940,57 @@ function maturityClass(maturity) {
   return 'bg-slate-100 dark:bg-slate-800 text-slate-500'
 }
 
+function restoreFromTask(task) {
+  taskId.value = task.id
+  meetingDate.value = task.meetingDate || meetingDate.value
+
+  // Step 1 state
+  uploadDone.value = true
+  uploadedMediaPath.value = task.data.uploadedMediaPath || null
+  uploadedOriginalName.value = task.data.uploadedOriginalName || null
+  if (task.data.uploadedOriginalName) {
+    selectedFile.value = { name: task.data.uploadedOriginalName, size: 0 }
+  }
+  uploadedDocs.value = (task.data.uploadedDocPaths || []).map(d => ({
+    name: d.name, size: '', uploading: false, error: null, remotePath: d.remotePath,
+  }))
+
+  // Step 2 state
+  tags.value = task.data.tags || []
+  extractionOutputPath.value = task.data.extractionOutputPath || null
+
+  // Step 3 state
+  transcriptJobId.value = task.data.transcriptJobId || null
+  transcriptContainerPath.value = task.data.transcriptContainerPath || null
+  transcriptRawContent.value = task.data.transcriptRawContent || ''
+  if (task.data.transcriptRawContent) {
+    transcriptLines.value = parseTranscript(task.data.transcriptRawContent)
+    transcriptWordCount.value = countWords(task.data.transcriptRawContent)
+  }
+
+  // Step 4 state
+  meetingNotesOutputPath.value = task.data.meetingNotesOutputPath || null
+  meetingNotesContent.value = task.data.meetingNotesContent || ''
+  meetingNotesType.value = task.data.meetingNotesType || '商務會議'
+
+  // Step 5 state
+  insightsOutputDir.value = task.data.insightsOutputDir || null
+  insightsBeforeMtime.value = task.data.insightsBeforeMtime || 0
+  existingProjectIds.value = task.data.existingProjectIds || []
+
+  // Set current step and processing state
+  step.value = task.currentStep || 1
+  isProcessing.value = task.status === 'running'
+
+  // Resume polling if step was mid-processing when user left
+  if (task.status === 'running') {
+    if (task.currentStep === 2 && task.data.extractionOutputPath) startExtractionPolling()
+    else if (task.currentStep === 3 && task.data.transcriptJobId) startTranscriptionPolling()
+    else if (task.currentStep === 4 && task.data.meetingNotesOutputPath) startMeetingNotesPolling()
+    else if (task.currentStep === 5 && task.data.insightsOutputDir) startInsightsPolling()
+  }
+}
+
 onMounted(async () => {
   const token = localStorage.getItem('clawpm_token')
   if (!token) return
@@ -904,6 +999,10 @@ onMounted(async () => {
     const data = await res.json().catch(() => ({}))
     if (res.ok && data.notificationEmails) emailTo.value = data.notificationEmails
   } catch {}
+
+  if (props.initialTask) {
+    restoreFromTask(props.initialTask)
+  }
 })
 
 onUnmounted(() => {

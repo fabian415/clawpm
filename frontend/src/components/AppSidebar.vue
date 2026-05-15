@@ -37,6 +37,20 @@
         <Mic class="w-5 h-5 shrink-0" />
         <span v-if="!collapsed">聲紋管理</span>
       </div>
+      <div
+        @click="$emit('navigate', 'tasks')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'tasks' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <div class="relative shrink-0">
+          <ListTodo class="w-5 h-5" />
+          <span
+            v-if="activeTaskCount > 0"
+            class="absolute -top-1.5 -right-1.5 w-4 h-4 bg-orange-500 text-white text-[9px] font-bold rounded-full flex items-center justify-center"
+          >{{ activeTaskCount > 9 ? '9+' : activeTaskCount }}</span>
+        </div>
+        <span v-if="!collapsed">任務管理</span>
+      </div>
 
       <template v-if="!collapsed">
         <div class="pt-4 pb-2 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">最近專案</div>
@@ -86,10 +100,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon, Loader2, Mic
+  Settings, Sun, Moon, Loader2, Mic, ListTodo
 } from 'lucide-vue-next'
 
 defineProps({
@@ -105,6 +119,8 @@ defineEmits(['navigate', 'open-reviewer-project', 'toggle-theme', 'update:collap
 
 const isLoading = ref(false)
 const recentReviewerProjects = ref([])
+const activeTaskCount = ref(0)
+let taskPollTimer = null
 
 async function fetchRecentProjects() {
   isLoading.value = true
@@ -128,5 +144,24 @@ async function fetchRecentProjects() {
   }
 }
 
-onMounted(fetchRecentProjects)
+async function fetchActiveTaskCount() {
+  try {
+    const res = await fetch('/api/tasks', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}` }
+    })
+    if (!res.ok) return
+    const tasks = await res.json()
+    activeTaskCount.value = tasks.filter(t => t.status !== 'completed').length
+  } catch {}
+}
+
+onMounted(() => {
+  fetchRecentProjects()
+  fetchActiveTaskCount()
+  taskPollTimer = setInterval(fetchActiveTaskCount, 10000)
+})
+
+onUnmounted(() => {
+  clearInterval(taskPollTimer)
+})
 </script>

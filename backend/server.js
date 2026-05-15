@@ -20,6 +20,7 @@ import {
   normalizeHistory,
 } from './src/managers/OpenClawClient.js'
 import { allocatePorts, releasePorts, getPortsForUser } from './src/containers/PortManager.js'
+import { createTask, getTask, listTasksForTeam, updateTask, deleteTask, pauseTask, resumeTask, retryTask, startTaskWorker } from './src/managers/TaskManager.js'
 import { initializeWorkspace } from './src/containers/WorkspaceManager.js'
 import {
   createAndStartContainer,
@@ -1798,7 +1799,74 @@ wss.on('connection', (ws) => {
   })
 })
 
+// ── Task Management ───────────────────────────────────────────────────────────
+
+app.get('/api/tasks', requireAuth, (req, res) => {
+  res.json(listTasksForTeam(req.user.teamId))
+})
+
+app.get('/api/tasks/:id', requireAuth, (req, res) => {
+  const task = getTask(req.params.id)
+  if (!task) return res.status(404).json({ error: '找不到任務' })
+  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
+  res.json(task)
+})
+
+app.post('/api/tasks', requireAuth, (req, res) => {
+  const { meetingDate, audioFileName, data: initialData } = req.body ?? {}
+  const provisionUserId = getProvisionUserId(req.user.userId)
+  const task = createTask({
+    teamId: req.user.teamId,
+    createdByUserId: req.user.userId,
+    provisionUserId,
+    meetingDate,
+    audioFileName,
+    data: initialData,
+  })
+  res.json(task)
+})
+
+app.patch('/api/tasks/:id', requireAuth, (req, res) => {
+  const task = getTask(req.params.id)
+  if (!task) return res.status(404).json({ error: '找不到任務' })
+  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
+  const updated = updateTask(req.params.id, req.body)
+  res.json(updated)
+})
+
+app.delete('/api/tasks/:id', requireAuth, (req, res) => {
+  const task = getTask(req.params.id)
+  if (!task) return res.status(404).json({ error: '找不到任務' })
+  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
+  deleteTask(req.params.id)
+  res.json({ success: true })
+})
+
+app.post('/api/tasks/:id/pause', requireAuth, (req, res) => {
+  const task = getTask(req.params.id)
+  if (!task) return res.status(404).json({ error: '找不到任務' })
+  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
+  res.json(pauseTask(req.params.id))
+})
+
+app.post('/api/tasks/:id/resume', requireAuth, (req, res) => {
+  const task = getTask(req.params.id)
+  if (!task) return res.status(404).json({ error: '找不到任務' })
+  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
+  res.json(resumeTask(req.params.id))
+})
+
+app.post('/api/tasks/:id/retry', requireAuth, (req, res) => {
+  const task = getTask(req.params.id)
+  if (!task) return res.status(404).json({ error: '找不到任務' })
+  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
+  const updated = retryTask(req.params.id)
+  if (!updated) return res.status(400).json({ error: '任務不在錯誤狀態' })
+  res.json(updated)
+})
+
 // Run migration once on startup to assign legacy users to teams
 migrateUsers()
+startTaskWorker()
 
 listenOnAvailablePort(getStartPort())
