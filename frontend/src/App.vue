@@ -19,6 +19,7 @@
       :container-status-color="containerStatusColor"
       :container-status-text-color="containerStatusTextColor"
       :is-dark="isDark"
+      :is-admin="isAdmin"
       @navigate="page => { if (page === 'workflow') selectedTask = null; currentPage = page }"
       @open-reviewer-project="openReviewerProject"
       @toggle-theme="toggleTheme"
@@ -89,10 +90,19 @@
         <SettingsView
           v-else-if="currentPage === 'settings'"
           :container-config="containerConfig"
+          @save="saveSettings"
+        />
+
+        <AccountView
+          v-else-if="currentPage === 'account' && isAdmin"
+        />
+
+        <ContainerView
+          v-else-if="currentPage === 'container' && isAdmin"
+          :container-config="containerConfig"
           :is-admin="isAdmin"
           @restart="showRestartConfirm = true"
           @destroy="showDestroyConfirm = true"
-          @save="saveSettings"
         />
       </div>
     </main>
@@ -164,6 +174,8 @@ import ProjectDetailView from './views/ProjectDetailView.vue'
 import WorkflowView from './views/WorkflowView.vue'
 import ReviewerView from './views/ReviewerView.vue'
 import SettingsView from './views/SettingsView.vue'
+import AccountView from './views/AccountView.vue'
+import ContainerView from './views/ContainerView.vue'
 import SpeakerManagementView from './views/SpeakerManagementView.vue'
 import TasksView from './views/TasksView.vue'
 
@@ -196,14 +208,8 @@ function openReviewerProject(slug) {
   currentPage.value = 'reviewer'
 }
 
-function handleNavigate(page, section) {
+function handleNavigate(page) {
   currentPage.value = page
-  if (section === 'members') {
-    // scroll to account management section after render
-    setTimeout(() => {
-      document.getElementById('account-management-section')?.scrollIntoView({ behavior: 'smooth' })
-    }, 100)
-  }
 }
 
 const chat = useChat()

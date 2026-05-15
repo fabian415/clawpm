@@ -256,6 +256,40 @@ export async function getContainerResourceStats(userId) {
   }
 }
 
+/**
+ * Stream container logs via Docker logs API. Returns a Docker multiplexed stream (follow=true)
+ * or a Buffer (follow=false). Use demuxDockerLogStream() to extract plain text lines.
+ */
+export async function getContainerLogStream(userId, { follow = true, tail = 200, timestamps = true } = {}) {
+  const container = docker.getContainer(getContainerName(userId))
+  return container.logs({
+    follow,
+    stdout: true,
+    stderr: true,
+    timestamps,
+    tail: follow ? tail : 'all',
+  })
+}
+
+/**
+ * Execute a command in a container and return the live multiplexed output stream.
+ * Suitable for long-running commands like `node dist/index.js logs --follow`.
+ */
+export async function execStreamInContainer(userId, cmd) {
+  const container = docker.getContainer(getContainerName(userId))
+  const exec = await container.exec({
+    Cmd: cmd,
+    AttachStdout: true,
+    AttachStderr: true,
+  })
+  return new Promise((resolve, reject) => {
+    exec.start({ hijack: true }, (error, stream) => {
+      if (error) return reject(error)
+      resolve(stream)
+    })
+  })
+}
+
 /** Check whether the OpenClaw image exists locally. */
 export async function imageExists() {
   try {

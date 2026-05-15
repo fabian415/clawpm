@@ -391,7 +391,7 @@ export function useApp() {
   }
 
   watch(currentPage, (page) => {
-    if (page === 'settings') fetchContainerConfig()
+    if (page === 'settings' || page === 'container') fetchContainerConfig()
   })
 
   return {

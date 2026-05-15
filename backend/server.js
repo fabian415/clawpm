@@ -31,6 +31,8 @@ import {
   destroyContainer,
   imageExists,
   pullImage,
+  getContainerLogStream,
+  execStreamInContainer,
 } from './src/containers/ContainerManager.js'
 import {
   pairDevice,
@@ -1486,6 +1488,76 @@ app.delete('/api/container', requireAuth, requireAdmin, async (req, res) => {
     res.json({ success: true, userId, team })
   } catch (err) {
     res.status(500).json({ error: err.message })
+  }
+})
+
+// Helper: demux Docker multiplexed log stream into individual log lines
+function demuxDockerChunk(chunk, onLine) {
+  let offset = 0
+  while (offset < chunk.length) {
+    if (offset + 8 > chunk.length) break
+    const length = chunk.readUInt32BE(offset + 4)
+    if (offset + 8 + length > chunk.length) break
+    const payload = chunk.slice(offset + 8, offset + 8 + length).toString('utf8')
+    offset += 8 + length
+    const lines = payload.split('\n')
+    for (const line of lines) {
+      if (line) onLine(line)
+    }
+  }
+}
+
+app.get('/api/container/logs/stream', requireAuth, requireAdmin, async (req, res) => {
+  const userId = getProvisionUserId(req.user.userId)
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  const send = (text) => {
+    res.write(`data: ${JSON.stringify({ text })}\n\n`)
+    if (typeof res.flush === 'function') res.flush()
+  }
+
+  // Use `openclaw logs --follow` inside the container to stream the actual log file
+  // (OpenClaw writes runtime logs to /tmp/openclaw/*.log, not stdout, so Docker logs API misses them)
+  let execStream
+  try {
+    execStream = await execStreamInContainer(userId, ['node', 'dist/index.js', 'logs', '--follow'])
+  } catch (err) {
+    send(`[Error] ${err.message}`)
+    return res.end()
+  }
+
+  execStream.on('data', (chunk) => demuxDockerChunk(chunk, send))
+  execStream.on('end', () => res.end())
+  execStream.on('error', (err) => { send(`[Error] ${err.message}`); res.end() })
+
+  req.on('close', () => {
+    try { execStream.destroy() } catch {}
+  })
+})
+
+app.get('/api/container/logs/download', requireAuth, requireAdmin, async (req, res) => {
+  const userId = getProvisionUserId(req.user.userId)
+  const filename = `openclaw-logs-${Date.now()}.txt`
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+
+  try {
+    // follow:false → dockerode returns a Buffer (isStream=false), not a readable stream
+    const result = await getContainerLogStream(userId, { follow: false, timestamps: true })
+    if (Buffer.isBuffer(result)) {
+      demuxDockerChunk(result, (line) => res.write(line + '\n'))
+      res.end()
+    } else {
+      result.on('data', (chunk) => demuxDockerChunk(chunk, (line) => res.write(line + '\n')))
+      result.on('end', () => res.end())
+      result.on('error', () => res.end())
+    }
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message })
+    else res.end()
   }
 })
 

@@ -51,6 +51,24 @@
         </div>
         <span v-if="!collapsed">任務管理</span>
       </div>
+      <div
+        v-if="isAdmin"
+        @click="$emit('navigate', 'account')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'account' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <Users class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">帳號管理</span>
+      </div>
+      <div
+        v-if="isAdmin"
+        @click="$emit('navigate', 'container')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'container' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <Container class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">容器設定</span>
+      </div>
 
       <template v-if="!collapsed">
         <div class="pt-4 pb-2 text-[10px] uppercase font-semibold text-slate-500 tracking-wider">最近專案</div>
@@ -103,7 +121,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon, Loader2, Mic, ListTodo
+  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container
 } from 'lucide-vue-next'
 
 defineProps({
@@ -112,7 +130,8 @@ defineProps({
   containerStatus: String,
   containerStatusColor: String,
   containerStatusTextColor: String,
-  isDark: Boolean
+  isDark: Boolean,
+  isAdmin: { type: Boolean, default: false }
 })
 
 defineEmits(['navigate', 'open-reviewer-project', 'toggle-theme', 'update:collapsed'])
