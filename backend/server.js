@@ -3,6 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -102,11 +103,16 @@ async function pollWhisperXJob(jobId, outputHostPath) {
 }
 const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist')
+
 app.use(cors({
   origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
   credentials: true
 }))
 app.use(express.json())
+app.use(express.static(FRONTEND_DIST))
 
 // ── Auth routes ───────────────────────────────────────────────────────────────
 
@@ -296,9 +302,9 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
 
   const client = new FtpClient()
   try {
-    await client.access({ host: '127.0.0.1', port: 2121, user: ftpUser, password: ftpPass, secure: false })
-    // Override PASV address so data channel also connects to localhost
-    client.ftp.pasvIpReplace = '127.0.0.1'
+    const ftpHost = process.env.FTP_HOST || '127.0.0.1'
+    await client.access({ host: ftpHost, port: 2121, user: ftpUser, password: ftpPass, secure: false })
+    client.ftp.pasvIpReplace = ftpHost
     await client.ensureDir(remoteDir)
     await client.uploadFrom(req.file.path, originalName)
     res.json({ success: true, fileName: originalName, remotePath: `${remoteDir}/${originalName}` })
@@ -348,8 +354,9 @@ app.post('/api/workflow/upload-doc', requireAuth, (req, res, next) => {
 
   const client = new FtpClient()
   try {
-    await client.access({ host: '127.0.0.1', port: 2121, user: ftpUser, password: ftpPass, secure: false })
-    client.ftp.pasvIpReplace = '127.0.0.1'
+    const ftpHost = process.env.FTP_HOST || '127.0.0.1'
+    await client.access({ host: ftpHost, port: 2121, user: ftpUser, password: ftpPass, secure: false })
+    client.ftp.pasvIpReplace = ftpHost
     await client.ensureDir(remoteDir)
     await client.uploadFrom(req.file.path, originalName)
     res.json({ success: true, fileName: originalName, remotePath: `${remoteDir}/${originalName}` })
@@ -1935,6 +1942,11 @@ app.post('/api/tasks/:id/retry', requireAuth, (req, res) => {
   const updated = retryTask(req.params.id)
   if (!updated) return res.status(400).json({ error: '任務不在錯誤狀態' })
   res.json(updated)
+})
+
+// SPA fallback — must be after all API routes
+app.get('{*any}', (_req, res) => {
+  res.sendFile(path.join(FRONTEND_DIST, 'index.html'))
 })
 
 // Run migration once on startup to assign legacy users to teams

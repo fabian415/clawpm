@@ -1,7 +1,46 @@
 services:
+
+  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
+  clawpm-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: clawpm-backend:latest
+    container_name: clawpm-backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
+      OPENCLAW_GATEWAY_HOST: host.docker.internal
+      FTP_HOST: host.docker.internal
+      FTP_USER: ${FTP_USER}
+      FTP_PASS: ${FTP_PASS}
+      # 所有 JSON DB 檔案存放路徑，掛出去讓 host 直接存取
+      CLAWPM_DATA_DIR: /app/data
+    ports:
+      - "${API_PORT:-3000}:3000"
+    volumes:
+      - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CLAWPM_DATA_DIR:-./backend/data}:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── FTP Server ─────────────────────────────────────────────────────────────
   openclaw-ftp-server:
     image: fauria/vsftpd
     container_name: openclaw-ftp-server
+    restart: always
     ports:
       - "2121:21"
       - "21100-21110:21100-21110"
@@ -16,4 +55,49 @@ services:
       LOCAL_UMASK: "000"
       FILE_OPEN_MODE: "0666"
       REVERSE_LOOKUP_ENABLE: "NO"
-    restart: always
+
+  # ── WhisperX Transcribe API ────────────────────────────────────────────────
+  # 需要 NVIDIA GPU，僅在 GPU 伺服器上啟動：docker compose --profile gpu up -d
+  transcribe-api:
+    profiles: [gpu]
+    build:
+      context: ./whiperx
+      dockerfile: Dockerfile
+    image: transcribe-api:latest
+    container_name: transcribe-api
+    restart: unless-stopped
+    env_file:
+      - ./whiperx/.env
+    ports:
+      - "${TRANSCRIBE_PORT:-8787}:8000"
+    volumes:
+      - transcribe_uploads:/app/uploads
+      - transcribe_outputs:/app/outputs
+      - speaker_profiles:/app/speaker_profiles
+      - hf_cache:/root/.cache/huggingface
+      - modelscope_cache:/root/.cache/modelscope
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  transcribe_uploads:
+  transcribe_outputs:
+  speaker_profiles:
+  hf_cache:
+  modelscope_cache:

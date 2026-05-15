@@ -7,8 +7,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // Read lazily so dotenv.config() in server.js runs first
 function getPortRangeStart() { return parseInt(process.env.OPENCLAW_PORT_RANGE_START || '18800') }
 function getPortRangeEnd()   { return parseInt(process.env.OPENCLAW_PORT_RANGE_END   || '19799') }
-const PORT_DB_PATH = process.env.CLAWPM_PORT_DB_PATH
-  || path.join(__dirname, '..', '..', 'data', 'ports.json')
+const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.join(__dirname, '..', '..', 'data')
+const PORT_DB_PATH = process.env.CLAWPM_PORT_DB_PATH || path.join(DATA_DIR, 'ports.json')
 
 function loadDb() {
   try {

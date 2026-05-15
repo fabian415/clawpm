@@ -6,8 +6,8 @@ import { getUserPaths } from './WorkspaceManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-const CONTAINER_DB_PATH = process.env.CLAWPM_CONTAINER_DB_PATH
-  || path.join(__dirname, '..', '..', 'data', 'containers.json')
+const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.join(__dirname, '..', '..', 'data')
+const CONTAINER_DB_PATH = process.env.CLAWPM_CONTAINER_DB_PATH || path.join(DATA_DIR, 'containers.json')
 
 // ── Local DB helpers (replaces real DB for CLI testing) ─────────────────────
 

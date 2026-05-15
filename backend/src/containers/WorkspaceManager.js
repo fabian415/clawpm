@@ -12,7 +12,7 @@ const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:
 const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
 const SKILLS_SOURCE = process.env.OPENCLAW_SKILLS_SOURCE_PATH
-  || path.join(__dirname, '..', '..', '..', 'skills')
+  || path.join(__dirname, '..', '..', 'skills')
 
 
 const SKILL_NAMES = [

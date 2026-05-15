@@ -183,7 +183,8 @@ class OpenClawGatewayClient {
   get gatewayUrl() {
     const config = getContainerConfig(this.userId)
     if (!config?.gatewayPort) throw new Error('容器尚未就緒，無法取得 gateway 位址')
-    return `ws://localhost:${config.gatewayPort}`
+    const host = process.env.OPENCLAW_GATEWAY_HOST || 'localhost'
+    return `ws://${host}:${config.gatewayPort}`
   }
 
   async ensureConnected() {

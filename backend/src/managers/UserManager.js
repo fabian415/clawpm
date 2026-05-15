@@ -6,7 +6,8 @@ import { fileURLToPath } from 'url'
 import { createTeam, getTeam, completeTeamSetup } from './TeamManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const USERS_DB_PATH = path.resolve(__dirname, '../../data/users.json')
+const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.resolve(__dirname, '../../data')
+const USERS_DB_PATH = path.join(DATA_DIR, 'users.json')
 
 function getSecret() {
   return process.env.JWT_SECRET || 'clawpm-dev-secret-change-in-production'

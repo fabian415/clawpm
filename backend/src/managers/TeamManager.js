@@ -3,7 +3,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const TEAMS_DB_PATH = path.resolve(__dirname, '../../data/teams.json')
+const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.resolve(__dirname, '../../data')
+const TEAMS_DB_PATH = path.join(DATA_DIR, 'teams.json')
 
 function readTeams() {
   if (!fs.existsSync(TEAMS_DB_PATH)) return { teams: [] }

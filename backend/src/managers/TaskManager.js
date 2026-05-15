@@ -7,7 +7,8 @@ import { getUserPaths } from '../containers/WorkspaceManager.js'
 import { getClientForUser, makeScopedSessionKey, sendAndStream } from './OpenClawClient.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const TASKS_FILE = path.resolve(__dirname, '../../data/tasks.json')
+const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.resolve(__dirname, '../../data')
+const TASKS_FILE = path.join(DATA_DIR, 'tasks.json')
 const CONTAINER_WORKSPACE = '/home/node/.openclaw/workspace'
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 const AUTO_ADVANCE_DELAY_MS = 10_000

@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const CHAT_DB_PATH = path.join(__dirname, '..', '..', 'data', 'chats.json')
+const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.join(__dirname, '..', '..', 'data')
+const CHAT_DB_PATH = path.join(DATA_DIR, 'chats.json')
 
 function loadDb() {
   try { return JSON.parse(fs.readFileSync(CHAT_DB_PATH, 'utf8')) }
