@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import { Client as FtpClient } from 'basic-ftp'
 import nodemailer from 'nodemailer'
+import { runMigrations } from './src/migrate.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers } from './src/managers/UserManager.js'
 import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder } from './src/managers/TeamManager.js'
 import { getHistory as getChatHistory, appendMessage, createMessage } from './src/managers/ChatManager.js'
@@ -117,8 +118,8 @@ app.use(express.static(FRONTEND_DIST))
 // ── Auth routes ───────────────────────────────────────────────────────────────
 
 // Public: list teams for login page
-app.get('/api/teams', (_req, res) => {
-  res.json(listTeams())
+app.get('/api/teams', async (_req, res) => {
+  res.json(await listTeams())
 })
 
 // Public: register a new team + first admin
@@ -174,21 +175,21 @@ function requireAdmin(req, res, next) {
   next()
 }
 
-app.get('/api/user/me', requireAuth, (req, res) => {
-  const user = getUserById(req.user.userId)
+app.get('/api/user/me', requireAuth, async (req, res) => {
+  const user = await getUserById(req.user.userId)
   if (!user) return res.status(404).json({ error: '用戶不存在' })
-  const team = user.teamId ? getTeam(user.teamId) : null
+  const team = user.team_id ? await getTeam(user.team_id) : null
   res.json({ ...user, team })
 })
 
 // Team setup (replaces /api/user/setup)
-app.patch('/api/team/setup', requireAuth, requireAdmin, (req, res) => {
+app.patch('/api/team/setup', requireAuth, requireAdmin, async (req, res) => {
   const { provider, apiKey, baseUrl, model, workspaceFolder } = req.body ?? {}
   if (!provider || !apiKey || !model || !workspaceFolder) {
     return res.status(400).json({ error: '缺少必要的設定欄位' })
   }
   try {
-    const team = completeTeamSetup(req.user.teamId, { provider, apiKey, baseUrl, model, workspaceFolder })
+    const team = await completeTeamSetup(req.user.teamId, { provider, apiKey, baseUrl, model, workspaceFolder })
     res.json(team)
   } catch (err) {
     res.status(400).json({ error: err.message })
@@ -196,13 +197,13 @@ app.patch('/api/team/setup', requireAuth, requireAdmin, (req, res) => {
 })
 
 // Keep old route for backward compat
-app.patch('/api/user/setup', requireAuth, (req, res) => {
+app.patch('/api/user/setup', requireAuth, async (req, res) => {
   const { provider, apiKey, baseUrl, model, workspaceFolder } = req.body ?? {}
   if (!provider || !apiKey || !model || !workspaceFolder) {
     return res.status(400).json({ error: '缺少必要的設定欄位' })
   }
   try {
-    const team = completeTeamSetup(req.user.teamId, { provider, apiKey, baseUrl, model, workspaceFolder })
+    const team = await completeTeamSetup(req.user.teamId, { provider, apiKey, baseUrl, model, workspaceFolder })
     res.json(team)
   } catch (err) {
     res.status(400).json({ error: err.message })
@@ -211,9 +212,9 @@ app.patch('/api/user/setup', requireAuth, (req, res) => {
 
 // ── Team member management routes (admin only) ────────────────────────────────
 
-app.get('/api/team/members', requireAuth, requireAdmin, (req, res) => {
+app.get('/api/team/members', requireAuth, requireAdmin, async (req, res) => {
   try {
-    res.json(listMembers(req.user.userId))
+    res.json(await listMembers(req.user.userId))
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
@@ -235,20 +236,20 @@ app.post('/api/team/members', requireAuth, requireAdmin, async (req, res) => {
   }
 })
 
-app.delete('/api/team/members/:memberId', requireAuth, requireAdmin, (req, res) => {
+app.delete('/api/team/members/:memberId', requireAuth, requireAdmin, async (req, res) => {
   try {
-    deleteMember(req.user.userId, req.params.memberId)
+    await deleteMember(req.user.userId, req.params.memberId)
     res.json({ success: true })
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
 })
 
-app.patch('/api/team/members/:memberId/role', requireAuth, requireAdmin, (req, res) => {
+app.patch('/api/team/members/:memberId/role', requireAuth, requireAdmin, async (req, res) => {
   const { role } = req.body ?? {}
   if (!role) return res.status(400).json({ error: '請指定角色' })
   try {
-    const member = setMemberRole(req.user.userId, req.params.memberId, role)
+    const member = await setMemberRole(req.user.userId, req.params.memberId, role)
     res.json(member)
   } catch (err) {
     res.status(400).json({ error: err.message })
@@ -257,8 +258,8 @@ app.patch('/api/team/members/:memberId/role', requireAuth, requireAdmin, (req, r
 
 // ── Chat history REST endpoint ────────────────────────────────────────────────
 
-app.get('/api/chat/history', requireAuth, (req, res) => {
-  const history = getChatHistory(req.user.userId)
+app.get('/api/chat/history', requireAuth, async (req, res) => {
+  const history = await getChatHistory(req.user.userId)
   res.json({ messages: history })
 })
 
@@ -290,7 +291,7 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
 }, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未收到檔案' })
 
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const ftpUser = process.env.FTP_USER || 'advantech'
   const ftpPass = process.env.FTP_PASS || 'changeme'
   const rawDate = req.body?.meetingDate
@@ -345,7 +346,7 @@ app.post('/api/workflow/upload-doc', requireAuth, (req, res, next) => {
 }, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: '未收到檔案' })
 
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const ftpUser = process.env.FTP_USER || 'advantech'
   const ftpPass = process.env.FTP_PASS || 'changeme'
   const dateFolder = new Date().toISOString().slice(0, 10)
@@ -375,7 +376,7 @@ app.delete('/api/workflow/delete-doc', requireAuth, async (req, res) => {
     return res.status(400).json({ error: '缺少 remotePath' })
   }
 
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const allowedPrefix = `/${provisionUserId}/workspace/ftp_data/doc/`
   if (!remotePath.startsWith(allowedPrefix)) {
     return res.status(403).json({ error: '無權限刪除此檔案' })
@@ -410,9 +411,9 @@ function sanitizeBaseName(value) {
     .replace(/^_+|_+$/g, '')
 }
 
-app.post('/api/workflow/prepare-extraction', requireAuth, (req, res) => {
+app.post('/api/workflow/prepare-extraction', requireAuth, async (req, res) => {
   const { sourcePath, originalName } = req.body ?? {}
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const allowedPrefix = `/${provisionUserId}/workspace/`
 
   if (!sourcePath || typeof sourcePath !== 'string' || !sourcePath.startsWith(allowedPrefix)) {
@@ -442,9 +443,9 @@ app.post('/api/workflow/prepare-extraction', requireAuth, (req, res) => {
   res.json({ success: true, sessionKey, prompt, outputPath })
 })
 
-app.get('/api/workflow/extraction-tags', requireAuth, (req, res) => {
+app.get('/api/workflow/extraction-tags', requireAuth, async (req, res) => {
   const { outputPath } = req.query
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
 
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
@@ -479,7 +480,7 @@ app.get('/api/workflow/extraction-tags', requireAuth, (req, res) => {
 
 app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) => {
   const { mediaPath, tags, team } = req.body ?? {}
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const allowedPrefix = `/${provisionUserId}/workspace/`
 
   if (!mediaPath || typeof mediaPath !== 'string' || !mediaPath.startsWith(allowedPrefix)) {
@@ -556,9 +557,9 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
   }
 })
 
-app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
+app.get('/api/workflow/transcription-result', requireAuth, async (req, res) => {
   const { jobId, outputPath } = req.query
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
 
   if (!jobId) return res.status(400).json({ error: '缺少 jobId 參數' })
 
@@ -595,9 +596,9 @@ app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
 
 // ── Meeting notes (Step 4) ────────────────────────────────────────────────────
 
-app.post('/api/workflow/prepare-meeting-notes', requireAuth, (req, res) => {
+app.post('/api/workflow/prepare-meeting-notes', requireAuth, async (req, res) => {
   const { transcriptContainerPath, meetingDate } = req.body ?? {}
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
 
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
   if (!transcriptContainerPath || !transcriptContainerPath.startsWith(containerPrefix)) {
@@ -632,9 +633,9 @@ app.post('/api/workflow/prepare-meeting-notes', requireAuth, (req, res) => {
   res.json({ success: true, sessionKey, prompt, notesOutputContainerPath })
 })
 
-app.get('/api/workflow/meeting-notes-result', requireAuth, (req, res) => {
+app.get('/api/workflow/meeting-notes-result', requireAuth, async (req, res) => {
   const { outputPath } = req.query
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
 
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
@@ -735,10 +736,10 @@ app.put('/api/settings', requireAuth, (req, res) => {
 
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 
-app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
+app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
   const { transcriptContainerPath, notesContainerPath, meetingDate } = req.body ?? {}
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
 
   if (transcriptContainerPath && (typeof transcriptContainerPath !== 'string' || !transcriptContainerPath.startsWith(containerPrefix))) {
@@ -812,9 +813,9 @@ app.post('/api/workflow/prepare-insights', requireAuth, (req, res) => {
   })
 })
 
-app.get('/api/workflow/insights-result', requireAuth, (req, res) => {
+app.get('/api/workflow/insights-result', requireAuth, async (req, res) => {
   const { insightsDir, beforeMtime } = req.query
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
 
   if (!insightsDir || typeof insightsDir !== 'string' || !insightsDir.startsWith(`${CONTAINER_WORKSPACE}/`)) {
@@ -851,8 +852,8 @@ app.get('/api/workflow/insights-result', requireAuth, (req, res) => {
   }
 })
 
-app.get('/api/project-insights/list', requireAuth, (req, res) => {
-  const provisionUserId = getProvisionUserId(req.user.userId)
+app.get('/api/project-insights/list', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
 
@@ -902,9 +903,9 @@ app.get('/api/project-insights/list', requireAuth, (req, res) => {
   res.json({ files, projects, hostPath: hostInsightsDir })
 })
 
-app.get('/api/project-insights/file', requireAuth, (req, res) => {
+app.get('/api/project-insights/file', requireAuth, async (req, res) => {
   const { name } = req.query
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
 
@@ -931,7 +932,7 @@ app.get('/api/project-insights/file', requireAuth, (req, res) => {
   }
 })
 
-app.post('/api/project-insights/create', requireAuth, (req, res) => {
+app.post('/api/project-insights/create', requireAuth, async (req, res) => {
   const { name } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: '專案名稱不可為空' })
@@ -947,7 +948,7 @@ app.post('/api/project-insights/create', requireAuth, (req, res) => {
 
   if (!slug) return res.status(400).json({ error: '無法從名稱產生有效的檔案識別碼' })
 
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
   fs.mkdirSync(hostInsightsDir, { recursive: true })
@@ -998,9 +999,9 @@ app.post('/api/project-insights/create', requireAuth, (req, res) => {
   res.json({ success: true, slug, name: displayName, isNew })
 })
 
-app.patch('/api/project-insights/file', requireAuth, (req, res) => {
+app.patch('/api/project-insights/file', requireAuth, async (req, res) => {
   const { name, content } = req.body ?? {}
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
 
@@ -1027,13 +1028,13 @@ app.patch('/api/project-insights/file', requireAuth, (req, res) => {
   }
 })
 
-app.delete('/api/project-insights/delete', requireAuth, (req, res) => {
+app.delete('/api/project-insights/delete', requireAuth, async (req, res) => {
   const { slug } = req.query
   if (!slug || typeof slug !== 'string' || slug.includes('..') || slug.includes('/') || slug.includes('\\')) {
     return res.status(400).json({ error: '無效的專案識別碼' })
   }
 
-  const provisionUserId = getProvisionUserId(req.user.userId)
+  const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
 
@@ -1078,7 +1079,7 @@ app.delete('/api/project-insights/delete', requireAuth, (req, res) => {
 // Serves reviewer/index.html with projects.json inlined via a fetch-intercept
 // script, so the iframe needs zero further authenticated sub-requests.
 
-app.get('/api/project-insights/viewer', (req, res) => {
+app.get('/api/project-insights/viewer', async (req, res) => {
   const token = req.query.token
   let user
   try {
@@ -1090,7 +1091,7 @@ app.get('/api/project-insights/viewer', (req, res) => {
     )
   }
 
-  const provisionUserId = getProvisionUserId(user.userId)
+  const provisionUserId = await getProvisionUserId(user.userId)
   const paths = getUserPaths(provisionUserId)
   const reviewerDir = path.join(paths.workspace, 'project-insights', 'reviewer')
   const htmlPath = path.join(reviewerDir, 'index.html')
@@ -1276,14 +1277,13 @@ function applyEnvKey(envPath, key, value) {
   fs.writeFileSync(envPath, content, 'utf8')
 }
 
-function getProvisionUserId(authUserId) {
-  const user = getUserById(authUserId)
-  if (user?.teamId) {
-    const folder = getWorkspaceFolder(user.teamId)
+async function getProvisionUserId(authUserId) {
+  const user = await getUserById(authUserId)
+  if (user?.team_id) {
+    const folder = await getWorkspaceFolder(user.team_id)
     if (folder) return folder
   }
-  // backward compat: fall back to user-level setupConfig
-  return user?.setupConfig?.workspaceFolder || authUserId
+  return authUserId
 }
 
 function readGatewayToken(paths) {
@@ -1297,12 +1297,13 @@ function readGatewayToken(paths) {
 
 // ── Provision routes ──────────────────────────────────────────────────────────
 
-app.get('/api/provision/check-userid/:userId', requireAuth, requireAdmin, (req, res) => {
+app.get('/api/provision/check-userid/:userId', requireAuth, requireAdmin, async (req, res) => {
   const { userId } = req.params
   if (!/^[\w-]+$/.test(userId)) {
     return res.json({ available: false, reason: '格式不正確，只允許英文字母、數字、連字號與底線' })
   }
-  const taken = !!(getContainerConfig(userId) || getPortsForUser(userId))
+  const [cfg, ports] = await Promise.all([getContainerConfig(userId), getPortsForUser(userId)])
+  const taken = !!(cfg || ports)
   res.json({ available: !taken, reason: taken ? '此 ID 已被使用' : null })
 })
 
@@ -1321,7 +1322,8 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
   if (provider === 'custom' && (!baseUrl || !modelId)) {
     return res.status(400).json({ error: '缺少 Custom provider 設定' })
   }
-  if (getContainerConfig(userId) || getPortsForUser(userId)) {
+  const [existingCfg, existingPorts] = await Promise.all([getContainerConfig(userId), getPortsForUser(userId)])
+  if (existingCfg || existingPorts) {
     return res.status(409).json({ error: `userId "${userId}" 已被使用` })
   }
 
@@ -1340,7 +1342,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
   try {
     // 1. Allocate ports
     send('info', 'Allocating ports...')
-    const ports = allocatePorts(userId)
+    const ports = await allocatePorts(userId)
     send('success', `Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}`)
 
     // 2. Initialize workspace
@@ -1398,7 +1400,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
       })
       send('success', `Container started: ${containerId.slice(0, 12)}`)
 
-      saveContainerConfig(userId, {
+      await saveContainerConfig(userId, {
         containerId,
         gatewayPort: ports.gatewayPort,
         bridgePort: ports.bridgePort,
@@ -1421,7 +1423,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
 
     // 8. Link team → workspace so getProvisionUserId resolves correctly
     try {
-      completeTeamSetup(req.user.teamId, {
+      await completeTeamSetup(req.user.teamId, {
         provider,
         apiKey: provider === 'gemini' ? geminiApiKey : (apiKey ?? ''),
         baseUrl: baseUrl ?? null,
@@ -1434,7 +1436,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
 
     // Done
     const finalStatus = await getContainerStatus(userId)
-    const savedConfig = getContainerConfig(userId)
+    const savedConfig = await getContainerConfig(userId)
     const gatewayPort = finalStatus.gatewayPort || savedConfig?.gatewayPort
     const gatewayToken_ = savedConfig?.gatewayToken
 
@@ -1451,7 +1453,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
     res.end()
 
   } catch (err) {
-    try { releasePorts(userId) } catch {}
+    try { await releasePorts(userId) } catch {}
     res.write(`data: ${JSON.stringify({ type: 'error', text: err.message })}\n\n`)
     res.end()
   }
@@ -1460,14 +1462,14 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
 // ── Container management routes ───────────────────────────────────────────────
 
 app.get('/api/container/stats', requireAuth, async (req, res) => {
-  const userId = getProvisionUserId(req.user.userId)
+  const userId = await getProvisionUserId(req.user.userId)
   const stats = await getContainerResourceStats(userId)
   res.json(stats ?? {})
 })
 
 app.get('/api/container/config', requireAuth, async (req, res) => {
-  const userId = getProvisionUserId(req.user.userId)
-  const config = getContainerConfig(userId)
+  const userId = await getProvisionUserId(req.user.userId)
+  const config = await getContainerConfig(userId)
   const paths = getUserPaths(userId)
   let status = { exists: false }
   try {
@@ -1494,7 +1496,7 @@ app.get('/api/container/config', requireAuth, async (req, res) => {
 })
 
 app.post('/api/container/restart', requireAuth, requireAdmin, async (req, res) => {
-  const userId = getProvisionUserId(req.user.userId)
+  const userId = await getProvisionUserId(req.user.userId)
   try {
     const status = await getContainerStatus(userId)
     if (!status.exists) return res.status(404).json({ error: '容器不存在，請先建立容器' })
@@ -1507,13 +1509,13 @@ app.post('/api/container/restart', requireAuth, requireAdmin, async (req, res) =
 })
 
 app.delete('/api/container', requireAuth, requireAdmin, async (req, res) => {
-  const userId = getProvisionUserId(req.user.userId)
+  const userId = await getProvisionUserId(req.user.userId)
   try {
     const status = await getContainerStatus(userId)
     if (status.exists) await destroyContainer(userId)
-    releasePorts(userId)
-    deleteContainerConfig(userId)
-    const team = req.user.teamId ? resetTeamSetup(req.user.teamId) : null
+    await releasePorts(userId)
+    await deleteContainerConfig(userId)
+    const team = req.user.teamId ? await resetTeamSetup(req.user.teamId) : null
     res.json({ success: true, userId, team })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -1537,7 +1539,7 @@ function demuxDockerChunk(chunk, onLine) {
 }
 
 app.get('/api/container/logs/stream', requireAuth, requireAdmin, async (req, res) => {
-  const userId = getProvisionUserId(req.user.userId)
+  const userId = await getProvisionUserId(req.user.userId)
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
@@ -1568,7 +1570,7 @@ app.get('/api/container/logs/stream', requireAuth, requireAdmin, async (req, res
 })
 
 app.get('/api/container/logs/download', requireAuth, requireAdmin, async (req, res) => {
-  const userId = getProvisionUserId(req.user.userId)
+  const userId = await getProvisionUserId(req.user.userId)
   const filename = `openclaw-logs-${Date.now()}.txt`
   res.setHeader('Content-Type', 'text/plain; charset=utf-8')
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
@@ -1698,7 +1700,7 @@ app.delete('/api/speakers/:team/:name', requireAuth, async (req, res) => {
  * We call chat.send, then poll chat.history until the reply stabilises.
  */
 async function handleChatMessage(ws, authUserId, sessionKey, content) {
-  const provisionUserId = getProvisionUserId(authUserId)
+  const provisionUserId = await getProvisionUserId(authUserId)
 
   const send = (obj) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)) }
   let client
@@ -1731,7 +1733,7 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
           const prevMsg = createMessage('assistant', lastSentText, {
             messageId: frontendMsgId, sessionKey, events: processEntries,
           })
-          appendMessage(authUserId, prevMsg)
+          appendMessage(authUserId, prevMsg).catch(() => {})
           send({ type: 'message_complete', messageId: frontendMsgId, message: prevMsg })
 
           frontendMsgId = randomUUID()
@@ -1862,7 +1864,7 @@ wss.on('connection', (ws) => {
       try {
         const decoded = verifyToken(msg.token)
         authUserId = decoded.userId
-        const history = getChatHistory(authUserId)
+        const history = await getChatHistory(authUserId)
         send({ type: 'auth_ok', history, sessionKey })
       } catch {
         send({ type: 'auth_error', message: 'Token 無效' })
@@ -1878,7 +1880,7 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'message' && typeof msg.content === 'string' && msg.content.trim()) {
       const userMsg = createMessage('user', msg.content.trim(), { sessionKey })
-      appendMessage(authUserId, userMsg)
+      appendMessage(authUserId, userMsg).catch(() => {})
       send({ type: 'user_message', message: userMsg })
       // Enqueue and process in background — caller returns immediately.
       msgQueue.push({ content: msg.content.trim(), sk: sessionKey })
@@ -1910,21 +1912,21 @@ wss.on('connection', (ws) => {
 
 // ── Task Management ───────────────────────────────────────────────────────────
 
-app.get('/api/tasks', requireAuth, (req, res) => {
-  res.json(listTasksForTeam(req.user.teamId))
+app.get('/api/tasks', requireAuth, async (req, res) => {
+  res.json(await listTasksForTeam(req.user.teamId))
 })
 
-app.get('/api/tasks/:id', requireAuth, (req, res) => {
-  const task = getTask(req.params.id)
+app.get('/api/tasks/:id', requireAuth, async (req, res) => {
+  const task = await getTask(req.params.id)
   if (!task) return res.status(404).json({ error: '找不到任務' })
   if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
   res.json(task)
 })
 
-app.post('/api/tasks', requireAuth, (req, res) => {
+app.post('/api/tasks', requireAuth, async (req, res) => {
   const { meetingDate, audioFileName, data: initialData } = req.body ?? {}
-  const provisionUserId = getProvisionUserId(req.user.userId)
-  const task = createTask({
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const task = await createTask({
     teamId: req.user.teamId,
     createdByUserId: req.user.userId,
     provisionUserId,
@@ -1935,41 +1937,41 @@ app.post('/api/tasks', requireAuth, (req, res) => {
   res.json(task)
 })
 
-app.patch('/api/tasks/:id', requireAuth, (req, res) => {
-  const task = getTask(req.params.id)
+app.patch('/api/tasks/:id', requireAuth, async (req, res) => {
+  const task = await getTask(req.params.id)
   if (!task) return res.status(404).json({ error: '找不到任務' })
   if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  const updated = updateTask(req.params.id, req.body)
+  const updated = await updateTask(req.params.id, req.body)
   res.json(updated)
 })
 
-app.delete('/api/tasks/:id', requireAuth, (req, res) => {
-  const task = getTask(req.params.id)
+app.delete('/api/tasks/:id', requireAuth, async (req, res) => {
+  const task = await getTask(req.params.id)
   if (!task) return res.status(404).json({ error: '找不到任務' })
   if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  deleteTask(req.params.id)
+  await deleteTask(req.params.id)
   res.json({ success: true })
 })
 
-app.post('/api/tasks/:id/pause', requireAuth, (req, res) => {
-  const task = getTask(req.params.id)
+app.post('/api/tasks/:id/pause', requireAuth, async (req, res) => {
+  const task = await getTask(req.params.id)
   if (!task) return res.status(404).json({ error: '找不到任務' })
   if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  res.json(pauseTask(req.params.id))
+  res.json(await pauseTask(req.params.id))
 })
 
-app.post('/api/tasks/:id/resume', requireAuth, (req, res) => {
-  const task = getTask(req.params.id)
+app.post('/api/tasks/:id/resume', requireAuth, async (req, res) => {
+  const task = await getTask(req.params.id)
   if (!task) return res.status(404).json({ error: '找不到任務' })
   if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  res.json(resumeTask(req.params.id))
+  res.json(await resumeTask(req.params.id))
 })
 
-app.post('/api/tasks/:id/retry', requireAuth, (req, res) => {
-  const task = getTask(req.params.id)
+app.post('/api/tasks/:id/retry', requireAuth, async (req, res) => {
+  const task = await getTask(req.params.id)
   if (!task) return res.status(404).json({ error: '找不到任務' })
   if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  const updated = retryTask(req.params.id)
+  const updated = await retryTask(req.params.id)
   if (!updated) return res.status(400).json({ error: '任務不在錯誤狀態' })
   res.json(updated)
 })
@@ -1979,8 +1981,15 @@ app.get('{*any}', (_req, res) => {
   res.sendFile(path.join(FRONTEND_DIST, 'index.html'))
 })
 
-// Run migration once on startup to assign legacy users to teams
-migrateUsers()
-startTaskWorker()
-
-listenOnAvailablePort(getStartPort())
+// Run DB migrations, then legacy-data migration, then start
+runMigrations()
+  .then(() => migrateUsers())
+  .then(() => {
+    startTaskWorker()
+    listenOnAvailablePort(getStartPort())
+  })
+  .catch(err => {
+    console.error('[startup] Fatal error during migrations:', err?.message || err)
+    if (err?.stack) console.error(err.stack)
+    process.exit(1)
+  })

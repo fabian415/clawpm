@@ -99,7 +99,7 @@ function loadDeviceIdentity(userId) {
 }
 
 async function ensureOperatorCredentials(userId) {
-  let config = getContainerConfig(userId)
+  let config = await getContainerConfig(userId)
   let identity = loadDeviceIdentity(userId)
 
   if (config?.operatorToken?.trim() && identity) {
@@ -109,7 +109,7 @@ async function ensureOperatorCredentials(userId) {
   if (identity && config?.gatewayToken?.trim()) {
     console.log(`[OpenClaw] Pairing device for user ${userId}: operator token missing`)
     await pairDevice(userId, { healthTimeoutMs: 30_000 })
-    config = getContainerConfig(userId)
+    config = await getContainerConfig(userId)
     identity = loadDeviceIdentity(userId)
   }
 
@@ -180,8 +180,8 @@ class OpenClawGatewayClient {
     this.grantedScopes = []
   }
 
-  get gatewayUrl() {
-    const config = getContainerConfig(this.userId)
+  async getGatewayUrl() {
+    const config = await getContainerConfig(this.userId)
     if (!config?.gatewayPort) throw new Error('容器尚未就緒，無法取得 gateway 位址')
     const host = process.env.OPENCLAW_GATEWAY_HOST || 'localhost'
     return `ws://${host}:${config.gatewayPort}`
@@ -208,7 +208,7 @@ class OpenClawGatewayClient {
   }
 
   async _connect() {
-    const url = this.gatewayUrl
+    const url = await this.getGatewayUrl()
     const { config, identity } = await ensureOperatorCredentials(this.userId)
 
     if (!config?.operatorToken?.trim()) {

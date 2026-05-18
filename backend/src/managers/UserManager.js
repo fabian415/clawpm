@@ -1,97 +1,71 @@
-import fs from 'fs'
-import path from 'path'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
-import { fileURLToPath } from 'url'
+import { query } from '../db.js'
 import { createTeam, getTeam, completeTeamSetup } from './TeamManager.js'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.resolve(__dirname, '../../data')
-const USERS_DB_PATH = path.join(DATA_DIR, 'users.json')
 
 function getSecret() {
   return process.env.JWT_SECRET || 'clawpm-dev-secret-change-in-production'
-}
-
-function readUsers() {
-  if (!fs.existsSync(USERS_DB_PATH)) return { users: [] }
-  return JSON.parse(fs.readFileSync(USERS_DB_PATH, 'utf-8'))
-}
-
-function writeUsers(data) {
-  fs.mkdirSync(path.dirname(USERS_DB_PATH), { recursive: true })
-  fs.writeFileSync(USERS_DB_PATH, JSON.stringify(data, null, 2))
 }
 
 function signToken(payload) {
   return jwt.sign(payload, getSecret(), { expiresIn: '7d' })
 }
 
-// Migrate legacy users (no teamId/role) to a default Team on startup
-export function migrateUsers() {
-  const db = readUsers()
-  const legacyUsers = db.users.filter(u => !u.teamId)
+// Migrate legacy users (no team_id) to a default Team on startup
+export async function migrateUsers() {
+  const { rows: legacyUsers } = await query(
+    `SELECT * FROM users WHERE team_id IS NULL`,
+  )
   if (legacyUsers.length === 0) return
 
   for (const user of legacyUsers) {
     const teamName = (user.name || user.email.split('@')[0]) + ' 的團隊'
-    const team = createTeam(teamName)
-
-    if (user.setupCompleted && user.setupConfig) {
-      completeTeamSetup(team.id, user.setupConfig)
-    }
-
-    user.teamId = team.id
-    user.role = 'admin'
+    const team = await createTeam(teamName)
+    await query(
+      `UPDATE users SET team_id = $1, role = 'admin' WHERE id = $2`,
+      [team.id, user.id],
+    )
   }
 
-  writeUsers(db)
   console.log(`[UserManager] Migrated ${legacyUsers.length} legacy user(s) to teams.`)
 }
 
 export async function registerTeam(teamName, email, password) {
-  const db = readUsers()
-  if (db.users.find(u => u.email === email)) {
-    throw new Error('此電子郵件已被註冊')
-  }
+  const { rows: existing } = await query('SELECT id FROM users WHERE email = $1', [email])
+  if (existing.length > 0) throw new Error('此電子郵件已被註冊')
+
   const hashed = await bcrypt.hash(password, 10)
   const userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const name = email.split('@')[0]
 
-  const team = createTeam(teamName)
+  const team = await createTeam(teamName)
 
-  const user = {
-    id: userId,
-    email,
-    name,
-    password: hashed,
-    role: 'admin',
-    teamId: team.id,
-    createdAt: new Date().toISOString()
-  }
-  db.users.push(user)
-  writeUsers(db)
+  await query(
+    `INSERT INTO users (id, email, name, password_hash, role, team_id, created_at)
+     VALUES ($1, $2, $3, $4, 'admin', $5, NOW())`,
+    [userId, email, name, hashed, team.id],
+  )
 
   const token = signToken({ userId, email, name, role: 'admin', teamId: team.id })
   return { userId, email, name, role: 'admin', teamId: team.id, teamName: team.name, setupCompleted: false, token }
 }
 
 export async function login(email, password, teamId) {
-  const db = readUsers()
-  let user = db.users.find(u => u.email === email)
+  const { rows } = await query('SELECT * FROM users WHERE email = $1', [email])
+  const user = rows[0]
   if (!user) throw new Error('帳號或密碼錯誤')
 
-  if (teamId && user.teamId !== teamId) throw new Error('帳號或密碼錯誤')
+  if (teamId && user.team_id !== teamId) throw new Error('帳號或密碼錯誤')
 
-  const valid = await bcrypt.compare(password, user.password)
+  const valid = await bcrypt.compare(password, user.password_hash)
   if (!valid) throw new Error('帳號或密碼錯誤')
 
   const name = user.name ?? email.split('@')[0]
   const role = user.role ?? 'admin'
-  const resolvedTeamId = user.teamId
+  const resolvedTeamId = user.team_id
 
-  const team = resolvedTeamId ? getTeam(resolvedTeamId) : null
-  const setupCompleted = team?.setupCompleted ?? user.setupCompleted ?? false
+  const team = resolvedTeamId ? await getTeam(resolvedTeamId) : null
+  const setupCompleted = team?.setup_completed ?? false
 
   const token = signToken({ userId: user.id, email, name, role, teamId: resolvedTeamId })
   return { userId: user.id, email, name, role, teamId: resolvedTeamId, teamName: team?.name ?? null, setupCompleted, token }
@@ -101,87 +75,74 @@ export function verifyToken(token) {
   return jwt.verify(token, getSecret())
 }
 
-export function getUserById(userId) {
-  const db = readUsers()
-  const user = db.users.find(u => u.id === userId)
-  if (!user) return null
-  const { password: _, ...safe } = user
-  return safe
+export async function getUserById(userId) {
+  const { rows } = await query(
+    'SELECT id, email, name, role, team_id, created_at FROM users WHERE id = $1',
+    [userId],
+  )
+  return rows[0] ?? null
 }
 
 export async function createMember(adminId, email, password, name) {
-  const admin = getUserById(adminId)
+  const admin = await getUserById(adminId)
   if (!admin) throw new Error('管理員不存在')
   if (admin.role !== 'admin') throw new Error('此操作需要 Admin 權限')
 
-  const db = readUsers()
-  if (db.users.find(u => u.email === email)) {
-    throw new Error('此電子郵件已被註冊')
-  }
+  const { rows: existing } = await query('SELECT id FROM users WHERE email = $1', [email])
+  if (existing.length > 0) throw new Error('此電子郵件已被註冊')
 
   const hashed = await bcrypt.hash(password, 10)
   const userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const memberName = name || email.split('@')[0]
 
-  const user = {
-    id: userId,
-    email,
-    name: memberName,
-    password: hashed,
-    role: 'user',
-    teamId: admin.teamId,
-    createdAt: new Date().toISOString()
-  }
-  db.users.push(user)
-  writeUsers(db)
-
-  const { password: _, ...safe } = user
-  return safe
+  const { rows } = await query(
+    `INSERT INTO users (id, email, name, password_hash, role, team_id, created_at)
+     VALUES ($1, $2, $3, $4, 'user', $5, NOW())
+     RETURNING id, email, name, role, team_id, created_at`,
+    [userId, email, memberName, hashed, admin.team_id],
+  )
+  return rows[0]
 }
 
-export function setMemberRole(adminId, targetUserId, role) {
+export async function setMemberRole(adminId, targetUserId, role) {
   if (!['admin', 'user'].includes(role)) throw new Error('無效的角色')
 
-  const db = readUsers()
-  const admin = db.users.find(u => u.id === adminId)
+  const admin = await getUserById(adminId)
   if (!admin || admin.role !== 'admin') throw new Error('此操作需要 Admin 權限')
 
-  const target = db.users.find(u => u.id === targetUserId)
-  if (!target) throw new Error('用戶不存在')
-  if (target.teamId !== admin.teamId) throw new Error('無法管理其他 Team 的成員')
+  if (role === 'user' && targetUserId === adminId) throw new Error('無法降級自己的帳號')
 
-  if (role === 'user' && target.id === adminId) {
-    throw new Error('無法降級自己的帳號')
-  }
-
-  target.role = role
-  writeUsers(db)
-  const { password: _, ...safe } = target
-  return safe
+  const { rows } = await query(
+    `UPDATE users SET role = $1
+     WHERE id = $2 AND team_id = $3
+     RETURNING id, email, name, role, team_id, created_at`,
+    [role, targetUserId, admin.team_id],
+  )
+  if (rows.length === 0) throw new Error('用戶不存在或不屬於此 Team')
+  return rows[0]
 }
 
-export function listMembers(adminId) {
-  const admin = getUserById(adminId)
+export async function listMembers(adminId) {
+  const admin = await getUserById(adminId)
   if (!admin) throw new Error('用戶不存在')
   if (admin.role !== 'admin') throw new Error('此操作需要 Admin 權限')
 
-  const db = readUsers()
-  return db.users
-    .filter(u => u.teamId === admin.teamId)
-    .map(({ password: _, ...safe }) => safe)
+  const { rows } = await query(
+    'SELECT id, email, name, role, team_id, created_at FROM users WHERE team_id = $1 ORDER BY created_at',
+    [admin.team_id],
+  )
+  return rows
 }
 
-export function deleteMember(adminId, memberId) {
+export async function deleteMember(adminId, memberId) {
   if (adminId === memberId) throw new Error('無法刪除自己')
 
-  const db = readUsers()
-  const admin = db.users.find(u => u.id === adminId)
+  const admin = await getUserById(adminId)
   if (!admin || admin.role !== 'admin') throw new Error('此操作需要 Admin 權限')
 
-  const memberIdx = db.users.findIndex(u => u.id === memberId)
-  if (memberIdx === -1) throw new Error('用戶不存在')
-  if (db.users[memberIdx].teamId !== admin.teamId) throw new Error('無法管理其他 Team 的成員')
-
-  db.users.splice(memberIdx, 1)
-  writeUsers(db)
+  const { rowCount } = await query(
+    'DELETE FROM users WHERE id = $1 AND team_id = $2',
+    [memberId, admin.team_id],
+  )
+  if (rowCount === 0) throw new Error('用戶不存在或不屬於此 Team')
 }

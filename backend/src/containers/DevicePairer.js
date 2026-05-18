@@ -1,110 +1,78 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { query } from '../db.js'
 import { execInContainer, waitForHealthy } from './ContainerManager.js'
 import { getUserPaths } from './WorkspaceManager.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.join(__dirname, '..', '..', 'data')
-const CONTAINER_DB_PATH = process.env.CLAWPM_CONTAINER_DB_PATH || path.join(DATA_DIR, 'containers.json')
+// ── Container config DB helpers ──────────────────────────────────────────────
 
-// ── Local DB helpers (replaces real DB for CLI testing) ─────────────────────
-
-function loadContainerDb() {
-  try {
-    return JSON.parse(fs.readFileSync(CONTAINER_DB_PATH, 'utf8'))
-  }
-  catch {
-    return { containers: {} }
-  }
+export async function saveContainerConfig(userId, config) {
+  await query(
+    `INSERT INTO container_configs (user_id, config, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (user_id) DO UPDATE
+       SET config     = container_configs.config || EXCLUDED.config,
+           updated_at = NOW()`,
+    [userId, config],
+  )
 }
 
-function saveContainerDb(db) {
-  const dir = path.dirname(CONTAINER_DB_PATH)
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(CONTAINER_DB_PATH, JSON.stringify(db, null, 2))
+export async function getContainerConfig(userId) {
+  const { rows } = await query(
+    'SELECT config FROM container_configs WHERE user_id = $1',
+    [userId],
+  )
+  return rows[0]?.config ?? null
 }
 
-export function saveContainerConfig(userId, config) {
-  const db = loadContainerDb()
-  db.containers[userId] = { ...db.containers[userId], ...config, updatedAt: new Date().toISOString() }
-  saveContainerDb(db)
+export async function deleteContainerConfig(userId) {
+  await query('DELETE FROM container_configs WHERE user_id = $1', [userId])
 }
 
-export function getContainerConfig(userId) {
-  return loadContainerDb().containers[userId] || null
-}
-
-export function deleteContainerConfig(userId) {
-  const db = loadContainerDb()
-  delete db.containers[userId]
-  saveContainerDb(db)
-}
-
-export function listContainerConfigs() {
-  return loadContainerDb().containers
+export async function listContainerConfigs() {
+  const { rows } = await query('SELECT user_id, config FROM container_configs')
+  return Object.fromEntries(rows.map(r => [r.user_id, r.config]))
 }
 
 // ── Device identity helpers ──────────────────────────────────────────────────
 
-/**
- * Read the device identity file written by the OpenClaw gateway into the
- * mounted identity directory.  Returns { deviceId, publicKeyPem, privateKeyPem }
- * or null if not yet created.
- */
 export function readDeviceIdentity(userId) {
   const paths = getUserPaths(userId)
   const identityFiles = [
     path.join(paths.identity, 'device.json'),
-    path.join(paths.base, 'identity', 'device.json'), // legacy pre-mount-fix path
+    path.join(paths.base, 'identity', 'device.json'),
   ]
 
   for (const identityFile of identityFiles) {
     try {
       const raw = fs.readFileSync(identityFile, 'utf8')
       const parsed = JSON.parse(raw)
-
-      if (
-        typeof parsed?.deviceId === 'string'
-        && typeof parsed?.publicKeyPem === 'string'
-      ) {
+      if (typeof parsed?.deviceId === 'string' && typeof parsed?.publicKeyPem === 'string') {
         return parsed
       }
-    }
-    catch {}
+    } catch {}
   }
-
   return null
 }
 
 // ── Device pairing via docker exec ──────────────────────────────────────────
 
-/**
- * Run `openclaw devices list --json` inside the gateway container.
- * Returns array of paired device records: [{ deviceId, role, scopes, ... }]
- */
 async function listDevices(userId, { gatewayToken } = {}) {
   const cmd = ['node', 'dist/index.js', 'devices', 'list', '--json']
   if (gatewayToken) cmd.push('--token', gatewayToken)
 
   const { stdout } = await execInContainer(userId, cmd)
-
   try {
     const parsed = JSON.parse(stdout)
-    // Response shape: { pending: [], paired: [{ deviceId, ... }] }
     if (Array.isArray(parsed?.paired)) return parsed.paired
     if (Array.isArray(parsed)) return parsed
-  }
-  catch {}
-
+  } catch {}
   return []
 }
 
-/**
- * Run `openclaw devices rotate --device <id> --json` inside the gateway container.
- * Returns the new operator token string, or null on failure.
- */
 async function rotateDeviceToken(userId, deviceId, { gatewayToken } = {}) {
   const cmd = [
     'node', 'dist/index.js', 'devices', 'rotate',
@@ -118,40 +86,24 @@ async function rotateDeviceToken(userId, deviceId, { gatewayToken } = {}) {
   if (gatewayToken) cmd.push('--token', gatewayToken)
 
   const { stdout } = await execInContainer(userId, cmd)
-
   try {
     const parsed = JSON.parse(stdout)
-    // Response shape varies; token is typically a top-level string or { token: "..." }
     if (typeof parsed === 'string' && parsed.trim()) return parsed.trim()
     if (typeof parsed?.token === 'string') return parsed.token
     if (typeof parsed?.operatorToken === 'string') return parsed.operatorToken
     if (typeof parsed?.value === 'string') return parsed.value
-  }
-  catch {
-    // Fallback: plain text output
+  } catch {
     const token = stdout.trim().split('\n').pop()?.trim()
     if (token && /^[a-f0-9]{32,}$/.test(token)) return token
   }
-
   return null
 }
 
-/**
- * Full device pairing flow for M3-04:
- * 1. Wait for the gateway container to be healthy
- * 2. Read the device identity file that the gateway wrote to the identity mount
- * 3. Run `devices list` inside the container to confirm the device
- * 4. Run `devices rotate` to issue an operator token
- * 5. Persist the token + deviceId to the container config DB
- *
- * Returns { deviceId, operatorToken } or throws on failure.
- */
 export async function pairDevice(userId, { healthTimeoutMs = 60_000 } = {}) {
   console.log(`  [DevicePairer] Waiting for container to become healthy...`)
   await waitForHealthy(userId, healthTimeoutMs)
 
-  // Load the gateway token from saved container config (needed to authenticate CLI calls)
-  const saved = getContainerConfig(userId)
+  const saved = await getContainerConfig(userId)
   const gatewayToken = saved?.gatewayToken
 
   console.log(`  [DevicePairer] Running 'devices list --json' in container...`)
@@ -178,7 +130,7 @@ export async function pairDevice(userId, { healthTimeoutMs = 60_000 } = {}) {
     throw new Error(`Failed to obtain operator token for device ${deviceId}`)
   }
 
-  saveContainerConfig(userId, {
+  await saveContainerConfig(userId, {
     deviceId,
     operatorToken,
     pairedAt: new Date().toISOString(),

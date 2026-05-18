@@ -37,7 +37,7 @@
         <Mic class="w-5 h-5 shrink-0" />
         <span v-if="!collapsed">聲紋管理</span>
       </div>
-      <div
+      <!-- <div
         @click="$emit('navigate', 'tasks')"
         :class="{ 'bg-blue-600 text-white': currentPage === 'tasks' }"
         class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
@@ -50,7 +50,7 @@
           >{{ activeTaskCount > 9 ? '9+' : activeTaskCount }}</span>
         </div>
         <span v-if="!collapsed">任務管理</span>
-      </div>
+      </div> -->
       <div
         v-if="isAdmin"
         @click="$emit('navigate', 'account')"

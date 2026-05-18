@@ -1,14 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { query } from '../db.js'
 import { getWorkspaceFolder } from './TeamManager.js'
 import { getUserPaths } from '../containers/WorkspaceManager.js'
 import { getClientForUser, makeScopedSessionKey, sendAndStream } from './OpenClawClient.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.resolve(__dirname, '../../data')
-const TASKS_FILE = path.join(DATA_DIR, 'tasks.json')
 const CONTAINER_WORKSPACE = '/home/node/.openclaw/workspace'
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 const AUTO_ADVANCE_DELAY_MS = 10_000
@@ -18,101 +16,136 @@ const inProgressTasks = new Set()
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
-function readTasks() {
-  try {
-    if (!fs.existsSync(TASKS_FILE)) return []
-    return JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8')).tasks || []
-  } catch { return [] }
-}
-
-function writeTasks(tasks) {
-  fs.mkdirSync(path.dirname(TASKS_FILE), { recursive: true })
-  fs.writeFileSync(TASKS_FILE, JSON.stringify({ tasks }, null, 2))
+function rowToTask(row) {
+  return {
+    id: row.id,
+    teamId: row.team_id,
+    createdByUserId: row.created_by_user_id,
+    provisionUserId: row.provision_user_id,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    meetingDate: row.meeting_date,
+    audioFileName: row.audio_file_name,
+    currentStep: row.current_step,
+    status: row.status,
+    autoAdvanceAt: row.auto_advance_at instanceof Date ? row.auto_advance_at.toISOString() : row.auto_advance_at,
+    errorStep: row.error_step,
+    errorMessage: row.error_message,
+    stepStatuses: row.step_statuses,
+    data: row.data,
+  }
 }
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────
 
-export function createTask({ teamId, createdByUserId, provisionUserId, meetingDate, audioFileName, data: initialData = {} }) {
-  const tasks = readTasks()
-  const task = {
-    id: randomUUID(),
-    teamId,
-    createdByUserId,
-    provisionUserId,
-    createdAt: new Date().toISOString(),
-    meetingDate: meetingDate || new Date().toISOString().slice(0, 10),
-    audioFileName: audioFileName || '',
-    currentStep: 1,
-    status: 'waiting',
-    autoAdvanceAt: new Date(Date.now() + AUTO_ADVANCE_DELAY_MS).toISOString(),
-    errorStep: null,
-    errorMessage: null,
-    stepStatuses: { 1: 'done', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending' },
-    data: {
-      uploadedMediaPath: null,
-      uploadedOriginalName: null,
-      uploadedDocPaths: [],
-      tags: [],
-      extractionOutputPath: null,
-      transcriptJobId: null,
-      transcriptContainerPath: null,
-      transcriptRawContent: '',
-      meetingNotesOutputPath: null,
-      meetingNotesContent: '',
-      meetingNotesType: '商務會議',
-      insightsOutputDir: null,
-      insightsBeforeMtime: 0,
-      existingProjectIds: [],
-      ...initialData,
-    },
+export async function createTask({ teamId, createdByUserId, provisionUserId, meetingDate, audioFileName, data: initialData = {} }) {
+  const autoAdvanceAt = new Date(Date.now() + AUTO_ADVANCE_DELAY_MS)
+  const stepStatuses = { 1: 'done', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending' }
+  const data = {
+    uploadedMediaPath: null,
+    uploadedOriginalName: null,
+    uploadedDocPaths: [],
+    tags: [],
+    extractionOutputPath: null,
+    transcriptJobId: null,
+    transcriptContainerPath: null,
+    transcriptRawContent: '',
+    meetingNotesOutputPath: null,
+    meetingNotesContent: '',
+    meetingNotesType: '商務會議',
+    insightsOutputDir: null,
+    insightsBeforeMtime: 0,
+    existingProjectIds: [],
+    ...initialData,
   }
-  tasks.push(task)
-  writeTasks(tasks)
-  return task
+
+  const { rows } = await query(
+    `INSERT INTO tasks
+       (team_id, created_by_user_id, provision_user_id, meeting_date, audio_file_name,
+        current_step, status, auto_advance_at, step_statuses, data)
+     VALUES ($1, $2, $3, $4, $5, 1, 'waiting', $6, $7, $8)
+     RETURNING *`,
+    [
+      teamId, createdByUserId, provisionUserId,
+      meetingDate || new Date().toISOString().slice(0, 10),
+      audioFileName || '',
+      autoAdvanceAt,
+      stepStatuses,
+      data,
+    ],
+  )
+  return rowToTask(rows[0])
 }
 
-export function getTask(id) {
-  return readTasks().find(t => t.id === id) || null
+export async function getTask(id) {
+  const { rows } = await query('SELECT * FROM tasks WHERE id = $1', [id])
+  return rows[0] ? rowToTask(rows[0]) : null
 }
 
-export function listTasksForTeam(teamId) {
-  return readTasks()
-    .filter(t => t.teamId === teamId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+export async function listTasksForTeam(teamId) {
+  const { rows } = await query(
+    'SELECT * FROM tasks WHERE team_id = $1 ORDER BY created_at DESC',
+    [teamId],
+  )
+  return rows.map(rowToTask)
 }
 
-export function updateTask(id, updates) {
-  const tasks = readTasks()
-  const idx = tasks.findIndex(t => t.id === id)
-  if (idx < 0) return null
+export async function updateTask(id, updates) {
+  const sets = []
+  const vals = []
+  let i = 1
+
+  const colMap = {
+    teamId: 'team_id',
+    createdByUserId: 'created_by_user_id',
+    provisionUserId: 'provision_user_id',
+    meetingDate: 'meeting_date',
+    audioFileName: 'audio_file_name',
+    currentStep: 'current_step',
+    status: 'status',
+    autoAdvanceAt: 'auto_advance_at',
+    errorStep: 'error_step',
+    errorMessage: 'error_message',
+    stepStatuses: 'step_statuses',
+  }
+
+  for (const [key, col] of Object.entries(colMap)) {
+    if (key in updates) {
+      sets.push(`${col} = $${i++}`)
+      vals.push(updates[key])
+    }
+  }
+
   if (updates.data) {
-    tasks[idx] = { ...tasks[idx], ...updates, data: { ...tasks[idx].data, ...updates.data } }
-  } else {
-    tasks[idx] = { ...tasks[idx], ...updates }
+    // Shallow-merge JSONB data field
+    sets.push(`data = data || $${i++}`)
+    vals.push(updates.data)
   }
-  writeTasks(tasks)
-  return tasks[idx]
+
+  if (sets.length === 0) return getTask(id)
+
+  vals.push(id)
+  const { rows } = await query(
+    `UPDATE tasks SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
+    vals,
+  )
+  return rows[0] ? rowToTask(rows[0]) : null
 }
 
-export function deleteTask(id) {
-  const tasks = readTasks()
-  const idx = tasks.findIndex(t => t.id === id)
-  if (idx < 0) return false
-  tasks.splice(idx, 1)
-  writeTasks(tasks)
-  return true
+export async function deleteTask(id) {
+  const { rowCount } = await query('DELETE FROM tasks WHERE id = $1', [id])
+  return rowCount > 0
 }
 
-export function pauseTask(id) {
+export async function pauseTask(id) {
   return updateTask(id, { status: 'paused', autoAdvanceAt: null })
 }
 
-export function resumeTask(id) {
+export async function resumeTask(id) {
   return updateTask(id, { status: 'waiting', autoAdvanceAt: new Date(Date.now() + AUTO_ADVANCE_DELAY_MS).toISOString() })
 }
 
-export function retryTask(id) {
-  const task = getTask(id)
+export async function retryTask(id) {
+  const task = await getTask(id)
   if (!task || task.status !== 'error') return null
   return updateTask(id, { status: 'waiting', errorMessage: null, autoAdvanceAt: new Date(Date.now() + AUTO_ADVANCE_DELAY_MS).toISOString() })
 }
@@ -129,12 +162,12 @@ function sanitizeBaseName(value) {
     .replace(/^_+|_+$/g, '')
 }
 
-function setError(taskId, step, message) {
-  updateTask(taskId, { status: 'error', errorStep: step, errorMessage: message, autoAdvanceAt: null })
+async function setError(taskId, step, message) {
+  await updateTask(taskId, { status: 'error', errorStep: step, errorMessage: message, autoAdvanceAt: null })
 }
 
-function completeStep(taskId, completedStep, dataUpdates = {}) {
-  const current = getTask(taskId)
+async function completeStep(taskId, completedStep, dataUpdates = {}) {
+  const current = await getTask(taskId)
   if (!current) return null
   const isLast = completedStep >= 5
   return updateTask(taskId, {
@@ -153,7 +186,7 @@ function completeStep(taskId, completedStep, dataUpdates = {}) {
 async function runStep(task) {
   const { id, currentStep, provisionUserId } = task
   inProgressTasks.add(id)
-  updateTask(id, { status: 'running', autoAdvanceAt: null })
+  await updateTask(id, { status: 'running', autoAdvanceAt: null })
 
   try {
     const paths = getUserPaths(provisionUserId)
@@ -163,7 +196,7 @@ async function runStep(task) {
     else if (currentStep === 5) await runInsightsStep(task, paths)
   } catch (err) {
     console.error(`[task-worker] step ${currentStep} error for task ${id}:`, err.message)
-    setError(id, currentStep, err.message)
+    await setError(id, currentStep, err.message)
   } finally {
     inProgressTasks.delete(id)
   }
@@ -174,7 +207,7 @@ async function runExtractionStep(task, paths) {
   const docs = (data.uploadedDocPaths || []).filter(d => d.remotePath && !d.error)
 
   if (docs.length === 0) {
-    completeStep(id, 2, {})
+    await completeStep(id, 2, {})
     return
   }
 
@@ -184,7 +217,7 @@ async function runExtractionStep(task, paths) {
   const allowedPrefix = `/${task.provisionUserId}/workspace/`
 
   if (!sourcePath?.startsWith(allowedPrefix)) {
-    completeStep(id, 2, {})
+    await completeStep(id, 2, {})
     return
   }
 
@@ -208,7 +241,7 @@ async function runExtractionStep(task, paths) {
     'term 裡面不可包含特殊字元，如/或,等。',
   ].join('\n')
 
-  updateTask(id, { data: { extractionOutputPath: outputPath } })
+  await updateTask(id, { data: { extractionOutputPath: outputPath } })
 
   const client = getClientForUser(task.provisionUserId)
   await sendAndStream(client, sessionKey, prompt, () => {})
@@ -217,7 +250,7 @@ async function runExtractionStep(task, paths) {
   const hostPath = path.join(paths.workspace, relPath)
   const tags = await pollForCsvTags(hostPath, 60_000, 3_000)
 
-  completeStep(id, 2, { extractionOutputPath: outputPath, tags })
+  await completeStep(id, 2, { extractionOutputPath: outputPath, tags })
 }
 
 async function runTranscriptionStep(task, paths) {
@@ -273,11 +306,11 @@ async function runTranscriptionStep(task, paths) {
     const parsed = await uploadRes.json()
     jobId = parsed.job_id
     if (!jobId) throw new Error('WhisperX 未回傳 job_id')
-    updateTask(id, { data: { transcriptJobId: jobId, transcriptContainerPath: transcriptOutputPath } })
+    await updateTask(id, { data: { transcriptJobId: jobId, transcriptContainerPath: transcriptOutputPath } })
   }
 
   const content = await pollWhisperXJobDirect(jobId, whisperxBase, whisperxHeaders, outputHostPath)
-  completeStep(id, 3, { transcriptJobId: jobId, transcriptContainerPath: transcriptOutputPath, transcriptRawContent: content })
+  await completeStep(id, 3, { transcriptJobId: jobId, transcriptContainerPath: transcriptOutputPath, transcriptRawContent: content })
 }
 
 async function runMeetingNotesStep(task, paths) {
@@ -306,7 +339,7 @@ async function runMeetingNotesStep(task, paths) {
     '請直接執行，無需確認。',
   ].join('\n')
 
-  updateTask(id, { data: { meetingNotesOutputPath: notesOutputContainerPath } })
+  await updateTask(id, { data: { meetingNotesOutputPath: notesOutputContainerPath } })
 
   const client = getClientForUser(task.provisionUserId)
   await sendAndStream(client, sessionKey, prompt, () => {})
@@ -315,7 +348,7 @@ async function runMeetingNotesStep(task, paths) {
   const hostPath = path.join(paths.workspace, relPath)
   const content = await pollForFile(hostPath, 120_000, 5_000)
 
-  completeStep(id, 4, { meetingNotesOutputPath: notesOutputContainerPath, meetingNotesContent: content })
+  await completeStep(id, 4, { meetingNotesOutputPath: notesOutputContainerPath, meetingNotesContent: content })
 }
 
 async function runInsightsStep(task, paths) {
@@ -372,14 +405,14 @@ async function runInsightsStep(task, paths) {
     )
   }
 
-  updateTask(id, { data: { insightsOutputDir: CONTAINER_INSIGHTS_DIR, insightsBeforeMtime: beforeMtime, existingProjectIds } })
+  await updateTask(id, { data: { insightsOutputDir: CONTAINER_INSIGHTS_DIR, insightsBeforeMtime: beforeMtime, existingProjectIds } })
 
   const client = getClientForUser(task.provisionUserId)
   await sendAndStream(client, sessionKey, parts.join('\n'), () => {})
 
   await pollForProjectsUpdate(projectsJsonHostPath, beforeMtime, 120_000, 10_000)
 
-  completeStep(id, 5)
+  await completeStep(id, 5)
 }
 
 // ── Polling helpers ───────────────────────────────────────────────────────────
@@ -451,17 +484,23 @@ async function pollForProjectsUpdate(projectsJsonPath, beforeMtime, timeoutMs, i
 export function startTaskWorker() {
   setInterval(async () => {
     try {
-      const tasks = readTasks()
-      const now = Date.now()
-      for (const task of tasks) {
-        if (task.status !== 'waiting') continue
+      const now = new Date()
+      const { rows } = await query(
+        `SELECT * FROM tasks
+         WHERE status = 'waiting'
+           AND auto_advance_at IS NOT NULL
+           AND auto_advance_at <= $1`,
+        [now],
+      )
+
+      for (const row of rows) {
+        const task = rowToTask(row)
         if (inProgressTasks.has(task.id)) continue
-        if (!task.autoAdvanceAt || new Date(task.autoAdvanceAt).getTime() > now) continue
 
         const nextStep = task.currentStep + 1
         if (nextStep > 5) continue
 
-        const taskToRun = { ...task, currentStep: nextStep, data: { ...task.data } }
+        const taskToRun = { ...task, currentStep: nextStep }
         runStep(taskToRun).catch(err => console.error('[task-worker] unhandled:', err.message))
       }
     } catch (err) {

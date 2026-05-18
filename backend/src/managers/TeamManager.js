@@ -1,78 +1,64 @@
-import fs from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
+import { query } from '../db.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.resolve(__dirname, '../../data')
-const TEAMS_DB_PATH = path.join(DATA_DIR, 'teams.json')
-
-function readTeams() {
-  if (!fs.existsSync(TEAMS_DB_PATH)) return { teams: [] }
-  return JSON.parse(fs.readFileSync(TEAMS_DB_PATH, 'utf-8'))
-}
-
-function writeTeams(data) {
-  fs.mkdirSync(path.dirname(TEAMS_DB_PATH), { recursive: true })
-  fs.writeFileSync(TEAMS_DB_PATH, JSON.stringify(data, null, 2))
-}
-
-export function createTeam(name) {
-  const db = readTeams()
+export async function createTeam(name) {
   const teamId = `team_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   const workspaceFolder = `team-${teamId.split('_')[1]}`
-  const team = {
-    id: teamId,
-    name,
-    workspaceFolder,
-    setupCompleted: false,
-    setupConfig: null,
-    createdAt: new Date().toISOString()
-  }
-  db.teams.push(team)
-  writeTeams(db)
-  return team
+  const { rows } = await query(
+    `INSERT INTO teams (id, name, workspace_folder, created_at)
+     VALUES ($1, $2, $3, NOW())
+     RETURNING *`,
+    [teamId, name, workspaceFolder],
+  )
+  return rows[0]
 }
 
-export function getTeam(teamId) {
-  const db = readTeams()
-  return db.teams.find(t => t.id === teamId) ?? null
+export async function getTeam(teamId) {
+  const { rows } = await query('SELECT * FROM teams WHERE id = $1', [teamId])
+  return rows[0] ?? null
 }
 
-export function listTeams() {
-  const db = readTeams()
-  return db.teams.map(({ id, name }) => ({ id, name }))
+export async function listTeams() {
+  const { rows } = await query('SELECT id, name FROM teams ORDER BY created_at')
+  return rows
 }
 
-export function completeTeamSetup(teamId, config) {
-  const db = readTeams()
-  const team = db.teams.find(t => t.id === teamId)
-  if (!team) throw new Error('Team 不存在')
-  team.setupCompleted = true
-  team.setupCompletedAt = new Date().toISOString()
-  team.setupConfig = {
+export async function completeTeamSetup(teamId, config) {
+  const setupConfig = {
     provider: config.provider,
     apiKey: config.apiKey,
     baseUrl: config.baseUrl ?? null,
     model: config.model,
-    workspaceFolder: config.workspaceFolder
+    workspaceFolder: config.workspaceFolder,
   }
-  team.workspaceFolder = config.workspaceFolder
-  writeTeams(db)
-  return team
+  const { rows } = await query(
+    `UPDATE teams
+     SET setup_completed = true,
+         setup_completed_at = NOW(),
+         setup_config = $2,
+         workspace_folder = $3
+     WHERE id = $1
+     RETURNING *`,
+    [teamId, setupConfig, config.workspaceFolder],
+  )
+  if (rows.length === 0) throw new Error('Team 不存在')
+  return rows[0]
 }
 
-export function resetTeamSetup(teamId) {
-  const db = readTeams()
-  const team = db.teams.find(t => t.id === teamId)
-  if (!team) throw new Error('Team 不存在')
-  team.setupCompleted = false
-  delete team.setupCompletedAt
-  delete team.setupConfig
-  writeTeams(db)
-  return team
+export async function resetTeamSetup(teamId) {
+  const { rows } = await query(
+    `UPDATE teams
+     SET setup_completed = false,
+         setup_completed_at = NULL,
+         setup_config = NULL
+     WHERE id = $1
+     RETURNING *`,
+    [teamId],
+  )
+  if (rows.length === 0) throw new Error('Team 不存在')
+  return rows[0]
 }
 
-export function getWorkspaceFolder(teamId) {
-  const team = getTeam(teamId)
-  return team?.setupConfig?.workspaceFolder || team?.workspaceFolder || null
+export async function getWorkspaceFolder(teamId) {
+  const team = await getTeam(teamId)
+  return team?.setup_config?.workspaceFolder || team?.workspace_folder || null
 }

@@ -1,50 +1,47 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { query } from '../db.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-
-// Read lazily so dotenv.config() in server.js runs first
 function getPortRangeStart() { return parseInt(process.env.OPENCLAW_PORT_RANGE_START || '18800') }
 function getPortRangeEnd()   { return parseInt(process.env.OPENCLAW_PORT_RANGE_END   || '19799') }
-const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.join(__dirname, '..', '..', 'data')
-const PORT_DB_PATH = process.env.CLAWPM_PORT_DB_PATH || path.join(DATA_DIR, 'ports.json')
-
-function loadDb() {
-  try {
-    return JSON.parse(fs.readFileSync(PORT_DB_PATH, 'utf8'))
-  } catch {
-    return { allocations: {} }
-  }
-}
-
-function saveDb(db) {
-  const dir = path.dirname(PORT_DB_PATH)
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(PORT_DB_PATH, JSON.stringify(db, null, 2))
-}
 
 /**
  * Allocate a gateway+bridge port pair for a user.
  * Returns existing allocation if already assigned.
  */
-export function allocatePorts(userId) {
-  const db = loadDb()
-
-  if (db.allocations[userId]) {
-    return db.allocations[userId]
+export async function allocatePorts(userId) {
+  const { rows: existing } = await query(
+    'SELECT gateway_port, bridge_port, allocated_at FROM port_allocations WHERE user_id = $1',
+    [userId],
+  )
+  if (existing.length > 0) {
+    return {
+      gatewayPort: existing[0].gateway_port,
+      bridgePort: existing[0].bridge_port,
+      allocatedAt: existing[0].allocated_at,
+    }
   }
 
-  const usedPorts = new Set(
-    Object.values(db.allocations).flatMap(a => [a.gatewayPort, a.bridgePort]),
+  const { rows: used } = await query(
+    'SELECT gateway_port, bridge_port FROM port_allocations',
   )
+  const usedPorts = new Set(used.flatMap(r => [r.gateway_port, r.bridge_port]))
 
   for (let port = getPortRangeStart(); port < getPortRangeEnd(); port += 2) {
     if (!usedPorts.has(port) && !usedPorts.has(port + 1)) {
-      const allocation = { gatewayPort: port, bridgePort: port + 1, allocatedAt: new Date().toISOString() }
-      db.allocations[userId] = allocation
-      saveDb(db)
-      return allocation
+      const { rows } = await query(
+        `INSERT INTO port_allocations (user_id, gateway_port, bridge_port)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id) DO UPDATE
+           SET gateway_port = EXCLUDED.gateway_port,
+               bridge_port  = EXCLUDED.bridge_port,
+               allocated_at = NOW()
+         RETURNING gateway_port, bridge_port, allocated_at`,
+        [userId, port, port + 1],
+      )
+      return {
+        gatewayPort: rows[0].gateway_port,
+        bridgePort: rows[0].bridge_port,
+        allocatedAt: rows[0].allocated_at,
+      }
     }
   }
 
@@ -52,20 +49,31 @@ export function allocatePorts(userId) {
 }
 
 /** Free the port pair allocated to a user. */
-export function releasePorts(userId) {
-  const db = loadDb()
-  const had = Boolean(db.allocations[userId])
-  delete db.allocations[userId]
-  saveDb(db)
-  return had
+export async function releasePorts(userId) {
+  const { rowCount } = await query('DELETE FROM port_allocations WHERE user_id = $1', [userId])
+  return rowCount > 0
 }
 
-/** Return all current allocations: { userId: { gatewayPort, bridgePort } } */
-export function listPorts() {
-  return loadDb().allocations
+/** Return all current allocations as { userId: { gatewayPort, bridgePort } }. */
+export async function listPorts() {
+  const { rows } = await query('SELECT user_id, gateway_port, bridge_port, allocated_at FROM port_allocations')
+  return Object.fromEntries(rows.map(r => [r.user_id, {
+    gatewayPort: r.gateway_port,
+    bridgePort: r.bridge_port,
+    allocatedAt: r.allocated_at,
+  }]))
 }
 
 /** Return ports for a specific user, or null if not allocated. */
-export function getPortsForUser(userId) {
-  return loadDb().allocations[userId] || null
+export async function getPortsForUser(userId) {
+  const { rows } = await query(
+    'SELECT gateway_port, bridge_port, allocated_at FROM port_allocations WHERE user_id = $1',
+    [userId],
+  )
+  if (rows.length === 0) return null
+  return {
+    gatewayPort: rows[0].gateway_port,
+    bridgePort: rows[0].bridge_port,
+    allocatedAt: rows[0].allocated_at,
+  }
 }

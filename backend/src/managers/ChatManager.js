@@ -1,37 +1,46 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { query } from '../db.js'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DATA_DIR = process.env.CLAWPM_DATA_DIR || path.join(__dirname, '..', '..', 'data')
-const CHAT_DB_PATH = path.join(DATA_DIR, 'chats.json')
+const MAX_HISTORY = 100
+const RETENTION_HOURS = 24
 
-function loadDb() {
-  try { return JSON.parse(fs.readFileSync(CHAT_DB_PATH, 'utf8')) }
-  catch { return { conversations: {} } }
+export async function getHistory(userId, limit = 100) {
+  const { rows } = await query(
+    `SELECT id, user_id, role, content, timestamp, extra
+     FROM (
+       SELECT * FROM chat_messages
+       WHERE user_id = $1
+         AND timestamp >= NOW() - INTERVAL '${RETENTION_HOURS} hours'
+       ORDER BY timestamp DESC
+       LIMIT $2
+     ) sub
+     ORDER BY timestamp ASC`,
+    [userId, Math.min(limit, MAX_HISTORY)],
+  )
+  return rows.map(rowToMsg)
 }
 
-function saveDb(db) {
-  const dir = path.dirname(CHAT_DB_PATH)
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(CHAT_DB_PATH, JSON.stringify(db, null, 2))
-}
+export async function appendMessage(userId, msg) {
+  const id = msg.id || randomUUID()
+  const ts = msg.timestamp ? new Date(msg.timestamp) : new Date()
+  const { role, content, ...extra } = msg
+  delete extra.id
+  delete extra.timestamp
 
-export function getHistory(userId, limit = 100) {
-  const conv = loadDb().conversations[userId] || []
-  return conv.slice(-limit)
-}
+  await query(
+    `INSERT INTO chat_messages (id, user_id, role, content, timestamp, extra)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [id, userId, role, content, ts, extra],
+  )
 
-export function appendMessage(userId, msg) {
-  const db = loadDb()
-  if (!db.conversations[userId]) db.conversations[userId] = []
-  db.conversations[userId].push(msg)
-  if (db.conversations[userId].length > 300) {
-    db.conversations[userId] = db.conversations[userId].slice(-300)
-  }
-  saveDb(db)
-  return msg
+  await query(
+    `DELETE FROM chat_messages
+     WHERE user_id = $1
+       AND timestamp < NOW() - INTERVAL '${RETENTION_HOURS} hours'`,
+    [userId],
+  )
+
+  return { ...msg, id, timestamp: ts.toISOString() }
 }
 
 export function createMessage(role, content, extra = {}) {
@@ -41,5 +50,15 @@ export function createMessage(role, content, extra = {}) {
     content,
     timestamp: new Date().toISOString(),
     ...extra,
+  }
+}
+
+function rowToMsg(row) {
+  return {
+    id: row.id,
+    role: row.role,
+    content: row.content,
+    timestamp: row.timestamp instanceof Date ? row.timestamp.toISOString() : row.timestamp,
+    ...row.extra,
   }
 }
