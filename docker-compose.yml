@@ -25,7 +25,7 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
+  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
   clawpm-backend:
     build:
       context: .
