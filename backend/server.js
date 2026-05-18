@@ -156,8 +156,12 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const FRONTEND_DIST = path.resolve(__dirname, '../frontend/dist')
 
+const defaultCorsOrigins = ['http://localhost:5173', 'http://127.0.0.1:5173']
+const extraCorsOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
+  : []
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: [...defaultCorsOrigins, ...extraCorsOrigins],
   credentials: true
 }))
 app.use(express.json())
