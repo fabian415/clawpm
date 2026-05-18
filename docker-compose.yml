@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-clawpm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - clawpm_pgdata:/var/lib/postgresql/data
     healthcheck:
