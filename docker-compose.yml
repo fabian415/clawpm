@@ -25,42 +25,42 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
-  # clawpm-backend:
-  #   build:
-  #     context: .
-  #     dockerfile: backend/Dockerfile
-  #   image: clawpm-backend:latest
-  #   container_name: clawpm-backend
-  #   restart: unless-stopped
-  #   depends_on:
-  #     clawpm-db:
-  #       condition: service_healthy
-  #   env_file:
-  #     - ./backend/.env
-  #   environment:
-  #     # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
-  #     OPENCLAW_GATEWAY_HOST: host.docker.internal
-  #     FTP_HOST: host.docker.internal
-  #     FTP_USER: ${FTP_USER}
-  #     FTP_PASS: ${FTP_PASS}
-  #     DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
-  #   ports:
-  #     - "${API_PORT:-3000}:3000"
-  #   volumes:
-  #     - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
-  #     - /var/run/docker.sock:/var/run/docker.sock
-  #   healthcheck:
-  #     test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 15s
-  #   logging:
-  #     driver: "json-file"
-  #     options:
-  #       max-size: "50m"
-  #       max-file: "5"
+  ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
+  clawpm-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: clawpm-backend:latest
+    container_name: clawpm-backend
+    restart: unless-stopped
+    depends_on:
+      clawpm-db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
+      OPENCLAW_GATEWAY_HOST: host.docker.internal
+      FTP_HOST: host.docker.internal
+      FTP_USER: ${FTP_USER}
+      FTP_PASS: ${FTP_PASS}
+      DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
+    ports:
+      - "${API_PORT:-3000}:3000"
+    volumes:
+      - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
 
   # ── FTP Server ─────────────────────────────────────────────────────────────
   openclaw-ftp-server:
