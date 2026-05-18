@@ -356,7 +356,8 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
   const client = new FtpClient()
   try {
     const ftpHost = process.env.FTP_HOST || '127.0.0.1'
-    await client.access({ host: ftpHost, port: 2121, user: ftpUser, password: ftpPass, secure: false })
+    const ftpPort = parseInt(process.env.FTP_PORT || '21')
+    await client.access({ host: ftpHost, port: ftpPort, user: ftpUser, password: ftpPass, secure: false })
     client.ftp.pasvIpReplace = ftpHost
     await client.ensureDir(remoteDir)
     await client.uploadFrom(req.file.path, originalName)
@@ -408,7 +409,8 @@ app.post('/api/workflow/upload-doc', requireAuth, (req, res, next) => {
   const client = new FtpClient()
   try {
     const ftpHost = process.env.FTP_HOST || '127.0.0.1'
-    await client.access({ host: ftpHost, port: 2121, user: ftpUser, password: ftpPass, secure: false })
+    const ftpPort = parseInt(process.env.FTP_PORT || '21')
+    await client.access({ host: ftpHost, port: ftpPort, user: ftpUser, password: ftpPass, secure: false })
     client.ftp.pasvIpReplace = ftpHost
     await client.ensureDir(remoteDir)
     await client.uploadFrom(req.file.path, originalName)
@@ -439,8 +441,10 @@ app.delete('/api/workflow/delete-doc', requireAuth, async (req, res) => {
 
   const client = new FtpClient()
   try {
-    await client.access({ host: '127.0.0.1', port: 2121, user: ftpUser, password: ftpPass, secure: false })
-    client.ftp.pasvIpReplace = '127.0.0.1'
+    const ftpHost = process.env.FTP_HOST || '127.0.0.1'
+    const ftpPort = parseInt(process.env.FTP_PORT || '21')
+    await client.access({ host: ftpHost, port: ftpPort, user: ftpUser, password: ftpPass, secure: false })
+    client.ftp.pasvIpReplace = ftpHost
     await client.remove(remotePath)
     res.json({ success: true })
   } catch (err) {

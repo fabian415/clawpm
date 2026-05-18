@@ -41,10 +41,13 @@ services:
     environment:
       # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
       OPENCLAW_GATEWAY_HOST: host.docker.internal
-      FTP_HOST: host.docker.internal
+      # FTP server 與 backend 同在 compose 網路內，直接用 service name
+      FTP_HOST: openclaw-ftp-server
       FTP_USER: ${FTP_USER}
       FTP_PASS: ${FTP_PASS}
       DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${API_PORT:-3002}:${API_PORT:-3002}"
     volumes:
