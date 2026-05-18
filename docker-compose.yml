@@ -33,7 +33,6 @@ services:
     image: clawpm-backend:latest
     container_name: clawpm-backend
     restart: unless-stopped
-    user: "${DOCKER_UID:-1000}:${DOCKER_GID:-1000}"
     depends_on:
       clawpm-db:
         condition: service_healthy
