@@ -73,7 +73,7 @@ export async function registerTeam(teamName, email, password) {
   writeUsers(db)
 
   const token = signToken({ userId, email, name, role: 'admin', teamId: team.id })
-  return { userId, email, name, role: 'admin', teamId: team.id, setupCompleted: false, token }
+  return { userId, email, name, role: 'admin', teamId: team.id, teamName: team.name, setupCompleted: false, token }
 }
 
 export async function login(email, password, teamId) {
@@ -94,7 +94,7 @@ export async function login(email, password, teamId) {
   const setupCompleted = team?.setupCompleted ?? user.setupCompleted ?? false
 
   const token = signToken({ userId: user.id, email, name, role, teamId: resolvedTeamId })
-  return { userId: user.id, email, name, role, teamId: resolvedTeamId, setupCompleted, token }
+  return { userId: user.id, email, name, role, teamId: resolvedTeamId, teamName: team?.name ?? null, setupCompleted, token }
 }
 
 export function verifyToken(token) {

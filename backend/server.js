@@ -478,7 +478,7 @@ app.get('/api/workflow/extraction-tags', requireAuth, (req, res) => {
 // ── Transcription preparation ─────────────────────────────────────────────────
 
 app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) => {
-  const { mediaPath, tags } = req.body ?? {}
+  const { mediaPath, tags, team } = req.body ?? {}
   const provisionUserId = getProvisionUserId(req.user.userId)
   const allowedPrefix = `/${provisionUserId}/workspace/`
 
@@ -518,6 +518,9 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
   if (Array.isArray(tags) && tags.length > 0) {
     formData.append('terms', tags.join(', '))
   }
+  if (team && typeof team === 'string' && /^[A-Za-z0-9_-]+$/.test(team)) {
+    formData.append('team', team)
+  }
 
   const whisperxHeaders = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
 
@@ -554,21 +557,40 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
 })
 
 app.get('/api/workflow/transcription-result', requireAuth, (req, res) => {
-  const { jobId } = req.query
+  const { jobId, outputPath } = req.query
+  const provisionUserId = getProvisionUserId(req.user.userId)
 
   if (!jobId) return res.status(400).json({ error: '缺少 jobId 參數' })
 
   const job = transcriptionJobs.get(jobId)
-  if (!job) return res.json({ ready: false, content: null, status: 'unknown' })
 
-  if (job.status === 'done' && job.content) {
-    return res.json({ ready: true, content: job.content })
-  }
-  if (job.status === 'failed') {
-    return res.status(500).json({ error: job.error || '轉錄失敗' })
+  if (job) {
+    if (job.status === 'failed') {
+      return res.status(500).json({ error: job.error || '轉錄失敗' })
+    }
+    if (job.status === 'done') {
+      if (job.content) return res.json({ ready: true, content: job.content })
+      // done but content missing — fall through to disk check
+    } else {
+      return res.json({ ready: false, content: null, status: job.status })
+    }
   }
 
-  res.json({ ready: false, content: null, status: job.status })
+  // Job not in memory (restart) or done-without-content — try reading from disk
+  if (outputPath) {
+    const containerPrefix = `${CONTAINER_WORKSPACE}/`
+    if (outputPath.startsWith(containerPrefix)) {
+      const relPath = outputPath.slice(CONTAINER_WORKSPACE.length)
+      const paths = getUserPaths(provisionUserId)
+      const hostPath = path.join(paths.workspace, relPath)
+      if (hostPath.startsWith(paths.workspace) && fs.existsSync(hostPath)) {
+        const content = fs.readFileSync(hostPath, 'utf8')
+        return res.json({ ready: true, content })
+      }
+    }
+  }
+
+  res.json({ ready: false, content: null, status: job?.status ?? 'unknown' })
 })
 
 // ── Meeting notes (Step 4) ────────────────────────────────────────────────────
@@ -1588,10 +1610,14 @@ const speakerUpload = multer({
   },
 })
 
-app.get('/api/speakers', requireAuth, async (_req, res) => {
+const SPEAKER_TEAM_RE = /^[A-Za-z0-9_-]+$/
+
+app.get('/api/speakers/:team', requireAuth, async (req, res) => {
+  const { team } = req.params
+  if (!SPEAKER_TEAM_RE.test(team)) return res.status(400).json({ error: 'team 名稱格式錯誤' })
   const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
   try {
-    const upstream = await fetch(`${WHISPERX_BASE}/speakers`, { headers })
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(team)}`, { headers })
     const data = await upstream.json()
     res.status(upstream.status).json(data)
   } catch (err) {
@@ -1599,12 +1625,14 @@ app.get('/api/speakers', requireAuth, async (_req, res) => {
   }
 })
 
-app.post('/api/speakers/enroll', requireAuth, (req, res, next) => {
+app.post('/api/speakers/:team/enroll', requireAuth, (req, res, next) => {
   speakerUpload.single('audio')(req, res, (err) => {
     if (err) return res.status(400).json({ error: err.message })
     next()
   })
 }, async (req, res) => {
+  const { team } = req.params
+  if (!SPEAKER_TEAM_RE.test(team)) return res.status(400).json({ error: 'team 名稱格式錯誤' })
   if (!req.file) return res.status(400).json({ error: '未收到音訊檔案' })
   const { name, device } = req.body ?? {}
   if (!name?.trim()) return res.status(400).json({ error: '請提供 Speaker 名稱' })
@@ -1617,7 +1645,7 @@ app.post('/api/speakers/enroll', requireAuth, (req, res, next) => {
 
   const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
   try {
-    const upstream = await fetch(`${WHISPERX_BASE}/speakers/enroll`, { method: 'POST', headers, body: formData })
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(team)}/enroll`, { method: 'POST', headers, body: formData })
     const data = await upstream.json()
     res.status(upstream.status).json(data)
   } catch (err) {
@@ -1627,11 +1655,12 @@ app.post('/api/speakers/enroll', requireAuth, (req, res, next) => {
   }
 })
 
-app.get('/api/speakers/:name/audio', requireAuth, async (req, res) => {
-  const { name } = req.params
+app.get('/api/speakers/:team/:name/audio', requireAuth, async (req, res) => {
+  const { team, name } = req.params
+  if (!SPEAKER_TEAM_RE.test(team)) return res.status(400).json({ error: 'team 名稱格式錯誤' })
   const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
   try {
-    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(name)}/audio`, { headers })
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(team)}/${encodeURIComponent(name)}/audio`, { headers })
     if (!upstream.ok) return res.status(upstream.status).json({ error: '找不到聲紋音檔' })
     res.setHeader('Content-Type', upstream.headers.get('content-type') || 'audio/wav')
     const reader = upstream.body.getReader()
@@ -1646,11 +1675,12 @@ app.get('/api/speakers/:name/audio', requireAuth, async (req, res) => {
   }
 })
 
-app.delete('/api/speakers/:name', requireAuth, async (req, res) => {
-  const { name } = req.params
+app.delete('/api/speakers/:team/:name', requireAuth, async (req, res) => {
+  const { team, name } = req.params
+  if (!SPEAKER_TEAM_RE.test(team)) return res.status(400).json({ error: 'team 名稱格式錯誤' })
   const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
   try {
-    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(name)}`, { method: 'DELETE', headers })
+    const upstream = await fetch(`${WHISPERX_BASE}/speakers/${encodeURIComponent(team)}/${encodeURIComponent(name)}`, { method: 'DELETE', headers })
     const data = await upstream.json()
     res.status(upstream.status).json(data)
   } catch (err) {
