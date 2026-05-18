@@ -8,4 +8,4 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
         pdfplumber python-docx pandas openpyxl xlrd \
         google-genai markdown python-dotenv requests
 
-USER node
+
