@@ -1332,6 +1332,7 @@ function applyEnvKey(envPath, key, value) {
   const regex = new RegExp(`^${key}=.*$`, 'm')
   content = regex.test(content) ? content.replace(regex, line) : content + `\n${line}`
   fs.writeFileSync(envPath, content, 'utf8')
+  fs.chmodSync(envPath, 0o666)
 }
 
 async function getProvisionUserId(authUserId) {
@@ -1413,6 +1414,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
     // 3. Write openclaw.json
     const cfg = buildOpenClawConfig(gatewayToken, llmConfig, { hostPort: ports.gatewayPort })
     fs.writeFileSync(paths.openclawJson, JSON.stringify(cfg, null, 2), 'utf8')
+    fs.chmodSync(paths.openclawJson, 0o666)
     if (provider === 'gemini') {
       send('success', 'LLM provider: Gemini (google/gemini-2.5-flash)')
       applyEnvKey(path.join(paths.config, '.env'), 'GEMINI_API_KEY', geminiApiKey)

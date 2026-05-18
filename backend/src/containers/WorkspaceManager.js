@@ -141,10 +141,13 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
   const warnings = []
   const skillsCopied = []
 
-  // Create all directories (skip file-path entries)
+  // Create all directories (skip file-path entries).
+  // chmod 0o777 so both the OpenClaw container (node, UID 1000) and the
+  // vsftpd container (ftp, UID 14) can read/write their respective dirs.
   const dirKeys = ['base', 'config', 'workspace', 'skills', 'ftpData', 'properNounInput', 'properNounOutput', 'media', 'doc', 'identity']
   for (const key of dirKeys) {
     if (!fs.existsSync(paths[key])) fs.mkdirSync(paths[key], { recursive: true })
+    fs.chmodSync(paths[key], 0o777)
   }
 
   // Create openclaw.json in config dir (skip if already exists — preserve existing token)
@@ -163,6 +166,7 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     const config = buildOpenClawConfig({ hostPort })
     gatewayToken = config.gateway.auth.token
     fs.writeFileSync(paths.openclawJson, JSON.stringify(config, null, 2), 'utf8')
+    fs.chmodSync(paths.openclawJson, 0o666)
   }
 
   // Copy skills from source
@@ -208,6 +212,7 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
   if (!fs.existsSync(configEnvPath)) {
     const configEnvContent = `# OpenClaw gateway env — user: ${userId}\n# Maps to ~/.openclaw/.env inside the container\n`
     fs.writeFileSync(configEnvPath, configEnvContent, 'utf8')
+    fs.chmodSync(configEnvPath, 0o666)
   }
 
   // Create workspace .env (empty placeholder, skip if already exists)
@@ -224,6 +229,7 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     envContent += `LOCAL_SERVER_IP=172.22.12.162\n`
     envContent += `LOCAL_SERVER_PORT=8787\n`
     fs.writeFileSync(paths.workspaceEnv, envContent, 'utf8')
+    fs.chmodSync(paths.workspaceEnv, 0o666)
   }
 
   return { paths, gatewayToken, skillsCopied, warnings }
