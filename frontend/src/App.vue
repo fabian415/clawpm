@@ -72,13 +72,14 @@
           v-else-if="currentPage === 'workflow'"
           :projects="projects"
           :initial-task="selectedTask"
+          :team="currentUser?.teamName"
           @navigate="page => { currentPage = page; selectedTask = null }"
           @extraction-ready="handleExtractionReady"
         />
 
         <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" />
 
-        <SpeakerManagementView v-else-if="currentPage === 'speakers'" />
+        <SpeakerManagementView v-else-if="currentPage === 'speakers'" :team="currentUser?.teamName" />
 
         <TasksView
           v-else-if="currentPage === 'tasks'"

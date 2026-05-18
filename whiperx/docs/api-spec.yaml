@@ -166,6 +166,12 @@ paths:
                   nullable: true
                   description: 本次轉錄任務使用的專有名詞，多個詞以逗點分隔，可不帶。例如：WhisperX, NVIDIA, Openclaw
                   example: WhisperX, NVIDIA, Openclaw
+                team:
+                  type: string
+                  nullable: true
+                  pattern: '^[A-Za-z0-9_-]+'
+                  description: 聲紋庫群組名稱（英文，含英數字、底線、連字號）。不填則不使用聲紋比對。例如：engineering
+                  example: engineering
             encoding:
               audio:
                 contentType: audio/mpeg, audio/wav, audio/mp4, audio/ogg, audio/flac, audio/webm
@@ -456,28 +462,55 @@ paths:
           $ref: "#/components/responses/Unauthorized"
 
   # -------------------------------------------------------------------------
-  # POST /speakers/enroll
+  # GET /teams
   # -------------------------------------------------------------------------
-  /speakers/enroll:
+  /teams:
+    get:
+      tags: [聲紋庫]
+      summary: 列出所有 Team
+      description: 列出聲紋庫中所有已建立的 Team（即 SPEAKER_DIR 下的子資料夾）。
+      operationId: listTeams
+      responses:
+        "200":
+          description: Team 清單
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TeamListResponse"
+              example:
+                total: 2
+                teams: ["engineering", "sales"]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # -------------------------------------------------------------------------
+  # POST /speakers/{team}/enroll
+  # -------------------------------------------------------------------------
+  /speakers/{team}/enroll:
     post:
       tags: [聲紋庫]
-      summary: 註冊 Speaker 聲紋
+      summary: 註冊 Speaker 聲紋（含 Team）
       description: |
         上傳 **10–15 秒**單人清晰錄音，提取聲紋 embedding（512 維 ECAPA-TDNN 向量）
-        並存入聲紋庫（`/app/speaker_profiles/{name}.json`）。
+        並存入指定 Team 的聲紋庫（`/app/speaker_profiles/{team}/{name}.json`）。
 
-        後續所有轉錄任務將自動比對聲紋庫，將 `Speaker 1`、`Speaker 2` 等
-        匿名標籤置換為已知的 Speaker 名稱。
+        - `team` 名稱只能包含英文字母、數字、底線（`_`）和連字號（`-`）。
+        - 同一 Team 下的聲紋彼此隔離，不同 Team 間不共用。
+        - 後續轉錄任務帶入相同 `team` 參數時，將自動比對該 Team 的聲紋庫。
 
-        **建議錄音條件**：
-        - 安靜環境、清晰發音
-        - 單人錄音，10–15 秒（太短影響準確率）
-        - 與實際會議使用的麥克風相同或相近
-
-        **注意**：使用相同名稱重複上傳將**覆蓋**既有的聲紋資料。
+        **注意**：在同一 Team 下使用相同名稱重複上傳將**覆蓋**既有的聲紋資料。
 
         **模型**：`pyannote/embedding`（需在 Hugging Face 接受使用條款）
       operationId: enrollSpeaker
+      parameters:
+        - name: team
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]+$'
+          description: Team 名稱（英文字母、數字、底線、連字號）
+          example: engineering
       requestBody:
         required: true
         content:
@@ -510,7 +543,7 @@ paths:
                 $ref: "#/components/schemas/EnrollResponse"
               example:
                 name: Alice
-                message: "Speaker Alice 註冊成功。"
+                message: "Speaker Alice 已在 Team engineering 中註冊成功。"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -525,14 +558,23 @@ paths:
                 detail: "聲紋提取失敗：HF_TOKEN 未設定"
 
   # -------------------------------------------------------------------------
-  # GET /speakers
+  # GET /speakers/{team}
   # -------------------------------------------------------------------------
-  /speakers:
+  /speakers/{team}:
     get:
       tags: [聲紋庫]
-      summary: 列出已註冊的 Speaker
-      description: 列出聲紋庫中所有已註冊的 Speaker（依名稱排序，不含 embedding 向量）。
+      summary: 列出 Team 內已註冊的 Speaker
+      description: 列出指定 Team 聲紋庫中所有已註冊的 Speaker（依名稱排序，不含 embedding 向量）。
       operationId: listSpeakers
+      parameters:
+        - name: team
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]+$'
+          description: Team 名稱
+          example: engineering
       responses:
         "200":
           description: Speaker 清單
@@ -551,22 +593,32 @@ paths:
                     source_file: Bob.mp3
                     dim: 512
                     has_audio: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
   # -------------------------------------------------------------------------
-  # GET /speakers/{name}/audio
+  # GET /speakers/{team}/{name}/audio
   # -------------------------------------------------------------------------
-  /speakers/{name}/audio:
+  /speakers/{team}/{name}/audio:
     get:
       tags: [聲紋庫]
       summary: 試聽 Speaker 聲紋音檔
       description: |
-        串流播放指定 Speaker 註冊時上傳的聲紋音檔，供前端點擊試聽使用。
+        串流播放指定 Team 中 Speaker 註冊時上傳的聲紋音檔，供前端點擊試聽使用。
 
         若該 Speaker 尚未保存音檔（舊版註冊）則回傳 404。
       operationId: getSpeakerAudio
       parameters:
+        - name: team
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]+$'
+          description: Team 名稱
+          example: engineering
         - name: name
           in: path
           required: true
@@ -590,25 +642,35 @@ paths:
               schema:
                 type: string
                 format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
 
   # -------------------------------------------------------------------------
-  # DELETE /speakers/{name}
+  # DELETE /speakers/{team}/{name}
   # -------------------------------------------------------------------------
-  /speakers/{name}:
+  /speakers/{team}/{name}:
     delete:
       tags: [聲紋庫]
       summary: 刪除 Speaker 聲紋
       description: |
-        從聲紋庫中移除指定 Speaker 的聲紋資料。
+        從指定 Team 的聲紋庫中移除指定 Speaker 的聲紋資料。
 
         刪除後，後續轉錄任務不再辨識該 Speaker，相關語段將
         回退顯示為 `Speaker N` 匿名標籤。
       operationId: deleteSpeaker
       parameters:
+        - name: team
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]+$'
+          description: Team 名稱
+          example: engineering
         - name: name
           in: path
           required: true
@@ -624,7 +686,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeleteResponse"
               example:
-                message: "Speaker Alice 已從聲紋庫刪除。"
+                message: "Speaker Alice 已從 Team engineering 的聲紋庫刪除。"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -634,7 +698,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                detail: "找不到 Speaker：Alice"
+                detail: "找不到 Speaker：Alice（Team：engineering）"
 
   # -------------------------------------------------------------------------
   # GET /health
@@ -810,6 +874,11 @@ components:
           items:
             type: string
           example: ["WhisperX", "NVIDIA", "Openclaw"]
+        team:
+          type: string
+          nullable: true
+          description: 聲紋庫群組（Team 名稱，英文）
+          example: "engineering"
         duration_seconds:
           type: number
           format: float
@@ -955,7 +1024,7 @@ components:
           example: 512
         has_audio:
           type: boolean
-          description: 是否有可試聽的聲紋音檔（可呼叫 GET /speakers/{name}/audio）
+          description: 是否有可試聽的聲紋音檔（可呼叫 GET /speakers/{team}/{name}/audio）
           example: true
 
     SpeakerListResponse:
@@ -975,9 +1044,27 @@ components:
           items:
             $ref: "#/components/schemas/SpeakerProfile"
 
+    TeamListResponse:
+      type: object
+      description: GET /teams 的回應
+      required:
+        - total
+        - teams
+      properties:
+        total:
+          type: integer
+          description: 已建立的 Team 數量
+          example: 2
+        teams:
+          type: array
+          description: Team 名稱清單（依字母排序）
+          items:
+            type: string
+          example: ["engineering", "sales"]
+
     EnrollResponse:
       type: object
-      description: POST /speakers/enroll 的回應
+      description: POST /speakers/{team}/enroll 的回應
       required:
         - name
         - message
@@ -989,7 +1076,7 @@ components:
         message:
           type: string
           description: 說明訊息
-          example: "Speaker Alice 註冊成功。"
+          example: "Speaker Alice 已在 Team engineering 中註冊成功。"
 
     ErrorResponse:
       type: object

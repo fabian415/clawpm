@@ -195,6 +195,8 @@
 import { ref, onMounted } from 'vue'
 import { Plus, Mic, Trash2, Play, Pause, RefreshCw, Loader2, AlertCircle, CheckCircle } from 'lucide-vue-next'
 
+const props = defineProps({ team: String })
+
 const speakers = ref([])
 const isLoading = ref(false)
 const fetchError = ref('')
@@ -221,10 +223,14 @@ function authHeaders() {
 }
 
 async function fetchSpeakers() {
+  if (!props.team) {
+    fetchError.value = '無法取得 Team 資訊，請重新登入'
+    return
+  }
   isLoading.value = true
   fetchError.value = ''
   try {
-    const res = await fetch('/api/speakers', { headers: authHeaders() })
+    const res = await fetch(`/api/speakers/${encodeURIComponent(props.team)}`, { headers: authHeaders() })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     speakers.value = data.speakers ?? []
@@ -263,7 +269,7 @@ async function enrollSpeaker() {
     fd.append('audio', enrollFile.value)
     fd.append('name', enrollName.value.trim())
 
-    const res = await fetch('/api/speakers/enroll', {
+    const res = await fetch(`/api/speakers/${encodeURIComponent(props.team)}/enroll`, {
       method: 'POST',
       headers: authHeaders(),
       body: fd,
@@ -302,7 +308,7 @@ async function togglePlay(speaker) {
 
   loadingAudio.value = speaker.name
   try {
-    const res = await fetch(`/api/speakers/${encodeURIComponent(speaker.name)}/audio`, {
+    const res = await fetch(`/api/speakers/${encodeURIComponent(props.team)}/${encodeURIComponent(speaker.name)}/audio`, {
       headers: authHeaders(),
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -331,7 +337,7 @@ async function deleteSpeaker() {
   isDeleting.value = true
   deleteError.value = ''
   try {
-    const res = await fetch(`/api/speakers/${encodeURIComponent(deletingName.value)}`, {
+    const res = await fetch(`/api/speakers/${encodeURIComponent(props.team)}/${encodeURIComponent(deletingName.value)}`, {
       method: 'DELETE',
       headers: authHeaders(),
     })

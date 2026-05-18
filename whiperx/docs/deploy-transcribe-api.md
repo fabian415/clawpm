@@ -275,6 +275,7 @@ curl -X POST http://<server-ip>:8787/transcribe \
 | `num_speakers` | int | null | 語者人數（不填自動偵測）|
 | `no_punctuation` | bool | `false` | `true` = 跳過標點補強 |
 | `terms` | string | 空字串 | 本次任務使用的專有名詞，多個詞以逗點分隔；可不帶 |
+| `team` | string | 空（不比對）| 聲紋庫群組名稱（英文）；填入後自動比對該 Team 的聲紋庫 |
 
 **模型對照表（model 可選值）：**
 
@@ -373,7 +374,7 @@ import requests
 BASE_URL = "http://<server-ip>:8787"
 HEADERS = {"X-API-Key": "your-secret-api-key-here"}
 
-# 1. 上傳音訊
+# 1. 上傳音訊（指定 team 以啟用聲紋比對）
 with open("meeting.mp3", "rb") as f:
     resp = requests.post(
         f"{BASE_URL}/transcribe",
@@ -384,6 +385,7 @@ with open("meeting.mp3", "rb") as f:
             "device": "cuda",
             "model": "large-v3",
             "terms": "WhisperX, NVIDIA, Openclaw",
+            "team": "engineering",   # 比對 engineering Team 的聲紋庫
         },
     )
 resp.raise_for_status()
@@ -416,13 +418,16 @@ print("已儲存 transcript.md")
 ### 概述
 
 聲紋庫功能讓系統能將轉錄結果中的匿名標籤（`Speaker 1`、`Speaker 2`）
-自動置換為真實姓名。
+自動置換為真實姓名。聲紋庫以 **Team** 為單位進行隔離，不同 Team 的聲紋互不干擾。
+
+**Team 名稱規則：** 只能包含英文字母、數字、底線（`_`）和連字號（`-`），例如 `engineering`、`sales-team`。
 
 **流程：**
 ```
-1. 上傳每位 Speaker 的 10-15 秒錄音 → POST /speakers/enroll
-2. 照常呼叫 POST /transcribe 上傳會議錄音
-3. 系統自動比對聲紋，逐字稿中直接顯示姓名
+1. 建立 Team（第一次 enroll 時自動建立資料夾）
+2. 上傳每位 Speaker 的 10-15 秒錄音 → POST /speakers/{team}/enroll
+3. 呼叫 POST /transcribe 上傳會議錄音，帶入 team 參數
+4. 系統自動比對該 Team 的聲紋庫，逐字稿中直接顯示姓名
 ```
 
 **技術細節：**
@@ -440,16 +445,18 @@ print("已儲存 transcript.md")
 
 ---
 
-### 步驟二：註冊 Speaker
+### 步驟二：註冊 Speaker（指定 Team）
 
 ```bash
 # Linux / macOS
-curl -X POST http://<server-ip>:8787/speakers/enroll \
+curl -X POST http://<server-ip>:8787/speakers/engineering/enroll \
+  -H "X-API-Key: your-secret-api-key-here" \
   -F "name=Alice" \
   -F "audio=@/path/to/alice_sample.wav"
 
 # Windows CMD
-curl -X POST http://<server-ip>:8787/speakers/enroll ^
+curl -X POST http://<server-ip>:8787/speakers/engineering/enroll ^
+  -H "X-API-Key: your-secret-api-key-here" ^
   -F "name=Alice" ^
   -F "audio=@C:\path\to\alice_sample.wav"
 ```
@@ -458,12 +465,16 @@ curl -X POST http://<server-ip>:8787/speakers/enroll ^
 ```json
 {
   "name": "Alice",
-  "message": "Speaker Alice 註冊成功。"
+  "message": "Speaker Alice 已在 Team engineering 中註冊成功。"
 }
 ```
 
-| 參數 | 型別 | 必填 | 說明 |
-|------|------|------|------|
+| 參數（路徑）| 型別 | 必填 | 說明 |
+|-------------|------|------|------|
+| `{team}` | string | ✓ | Team 名稱（英文，自動建立資料夾）|
+
+| 參數（Form）| 型別 | 必填 | 說明 |
+|-------------|------|------|------|
 | `audio` | file | ✓ | 10–15 秒單人錄音（wav / mp3 / m4a 等）|
 | `name`  | string | ✓ | Speaker 名稱（英數字、中文、底線、連字號）|
 | `device` | string | | `auto`（預設）/ `cpu` / `cuda` |
@@ -475,7 +486,20 @@ curl -X POST http://<server-ip>:8787/speakers/enroll ^
 ### 步驟三：確認已註冊的 Speaker
 
 ```bash
-curl http://<server-ip>:8787/speakers
+# 列出所有 Team
+curl http://<server-ip>:8787/teams \
+  -H "X-API-Key: your-secret-api-key-here"
+```
+
+**回應：**
+```json
+{"total": 2, "teams": ["engineering", "sales"]}
+```
+
+```bash
+# 列出特定 Team 的 Speaker
+curl http://<server-ip>:8787/speakers/engineering \
+  -H "X-API-Key: your-secret-api-key-here"
 ```
 
 **回應：**
@@ -483,21 +507,23 @@ curl http://<server-ip>:8787/speakers
 {
   "total": 2,
   "speakers": [
-    {"name": "Alice", "source_file": "alice_sample.wav", "dim": 512},
-    {"name": "Bob",   "source_file": "bob_sample.mp3",   "dim": 512}
+    {"name": "Alice", "source_file": "Alice.wav", "dim": 512, "has_audio": true},
+    {"name": "Bob",   "source_file": "Bob.mp3",   "dim": 512, "has_audio": true}
   ]
 }
 ```
 
 ---
 
-### 步驟四：上傳會議錄音（照常操作）
+### 步驟四：上傳會議錄音（帶入 team 參數）
 
 ```bash
 curl -X POST http://<server-ip>:8787/transcribe \
+  -H "X-API-Key: your-secret-api-key-here" \
   -F "audio=@meeting.mp3" \
   -F "lang=zh" \
-  -F "terms=WhisperX, NVIDIA, Openclaw"
+  -F "terms=WhisperX, NVIDIA, Openclaw" \
+  -F "team=engineering"
 ```
 
 聲紋比對在背景自動執行，逐字稿中會直接顯示姓名：
@@ -513,17 +539,30 @@ curl -X POST http://<server-ip>:8787/transcribe \
 （未辨識的語者仍顯示為 Speaker N）
 ```
 
+> 若 `POST /transcribe` 未帶入 `team` 參數，則跳過聲紋比對，輸出 `Speaker 1`、`Speaker 2` 等匿名標籤。
+
+---
+
+### 試聽 Speaker 聲紋音檔
+
+```bash
+curl http://<server-ip>:8787/speakers/engineering/Alice/audio \
+  -H "X-API-Key: your-secret-api-key-here" \
+  -o alice.wav
+```
+
 ---
 
 ### 刪除 Speaker
 
 ```bash
-curl -X DELETE http://<server-ip>:8787/speakers/Alice
+curl -X DELETE http://<server-ip>:8787/speakers/engineering/Alice \
+  -H "X-API-Key: your-secret-api-key-here"
 ```
 
 **回應：**
 ```json
-{"message": "Speaker Alice 已從聲紋庫刪除。"}
+{"message": "Speaker Alice 已從 Team engineering 的聲紋庫刪除。"}
 ```
 
 ---
@@ -713,9 +752,15 @@ docker compose restart
 volumes/
 ├── hf_cache         # HuggingFace 模型快取（~5 GB，重啟後不重複下載）
 ├── uploads          # 音訊暫存（轉錄完成後自動刪除）
-├── speaker_profiles # 聲紋庫（{name}.json，每人約 8 KB）
+├── speaker_profiles # 聲紋庫（以 Team 為子資料夾隔離）
+│   ├── engineering/ #   Team：engineering
+│   │   ├── Alice.json   #   聲紋 embedding（~8 KB）
+│   │   └── Alice.wav    #   聲紋音檔（供試聽）
+│   └── sales/       #   Team：sales
+│       ├── Bob.json
+│       └── Bob.mp3
 └── outputs/
-    ├── _jobs/           # 工作狀態 JSON（job_id.json）
+    ├── _jobs/           # 工作狀態 SQLite DB
     └── <job_id>/        # 每個工作的輸出
         └── <name>_逐字稿.md
 ```

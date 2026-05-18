@@ -401,7 +401,7 @@ import {
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar
 } from 'lucide-vue-next'
 
-const props = defineProps({ projects: Array, initialTask: Object })
+const props = defineProps({ projects: Array, initialTask: Object, team: String })
 const emit = defineEmits(['navigate', 'extraction-ready'])
 
 const step = ref(1)
@@ -569,19 +569,19 @@ async function nextStep() {
   }
   if (step.value === 2) {
     step.value++
-    syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: tags.value, extractionOutputPath: extractionOutputPath.value } })
+    syncTask({ currentStep: 3, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: tags.value, extractionOutputPath: extractionOutputPath.value } })
     startTranscription()
     return
   }
   if (step.value === 3) {
     step.value++
-    syncTask({ currentStep: 3, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'pending', 5: 'pending' }, data: { transcriptJobId: transcriptJobId.value, transcriptContainerPath: transcriptContainerPath.value, transcriptRawContent: transcriptRawContent.value } })
+    syncTask({ currentStep: 4, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'pending', 5: 'pending' }, data: { transcriptJobId: transcriptJobId.value, transcriptContainerPath: transcriptContainerPath.value, transcriptRawContent: transcriptRawContent.value } })
     startMeetingNotes()
     return
   }
   if (step.value === 4) {
     step.value++
-    syncTask({ currentStep: 4, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: meetingNotesContent.value } })
+    syncTask({ currentStep: 5, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: meetingNotesContent.value } })
     startInsights()
     return
   }
@@ -636,7 +636,7 @@ async function startTranscription() {
     const res = await fetch('/api/workflow/prepare-transcription', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mediaPath: uploadedMediaPath.value, tags: tags.value }),
+      body: JSON.stringify({ mediaPath: uploadedMediaPath.value, tags: tags.value, team: props.team || undefined }),
     })
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || '準備轉錄失敗')
@@ -657,8 +657,11 @@ function startTranscriptionPolling() {
     if (!transcriptJobId.value) return
     const token = localStorage.getItem('clawpm_token')
     try {
+      const outputPathParam = transcriptContainerPath.value
+        ? `&outputPath=${encodeURIComponent(transcriptContainerPath.value)}`
+        : ''
       const res = await fetch(
-        `/api/workflow/transcription-result?jobId=${encodeURIComponent(transcriptJobId.value)}`,
+        `/api/workflow/transcription-result?jobId=${encodeURIComponent(transcriptJobId.value)}${outputPathParam}`,
         { headers: { Authorization: `Bearer ${token}` } },
       )
       if (!res.ok) {

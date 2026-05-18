@@ -76,6 +76,7 @@ _worker_stop = threading.Event()
 _worker_thread: Optional[threading.Thread] = None
 NOUN_TERM_PATTERN = re.compile(r"^[\w .-]+$")
 MAX_TERMS = int(os.environ.get("MAX_TERMS", "48"))
+TEAM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class JobStatus(str, Enum):
@@ -136,6 +137,11 @@ class JobRecord(BaseModel):
         default_factory=list,
         description="本次轉錄任務使用的專有名詞清單",
         examples=[["WhisperX", "NVIDIA", "Openclaw"]],
+    )
+    team: Optional[str] = Field(
+        default=None,
+        description="聲紋庫群組（Team 名稱，英文）",
+        examples=["engineering"],
     )
     duration_seconds: Optional[float] = Field(
         default=None,
@@ -243,10 +249,17 @@ class SpeakerListResponse(BaseModel):
 
 
 class EnrollResponse(BaseModel):
-    """POST /speakers/enroll 的回應"""
+    """POST /speakers/{team}/enroll 的回應"""
 
     name: str = Field(description="已註冊的 Speaker 名稱", examples=["Alice"])
-    message: str = Field(description="說明訊息", examples=["Speaker Alice 註冊成功。"])
+    message: str = Field(description="說明訊息", examples=["Speaker Alice 已在 Team engineering 中註冊成功。"])
+
+
+class TeamListResponse(BaseModel):
+    """GET /teams 的回應"""
+
+    total: int = Field(description="已建立的 Team 數量", examples=[2])
+    teams: List[str] = Field(description="Team 名稱清單（依字母排序）", examples=[["engineering", "sales"]])
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +313,18 @@ def init_jobs_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN terms TEXT NOT NULL DEFAULT ''")
         if "model" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT 'large-v3'")
+        if "team" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN team TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)")
+
+
+def _validate_team_name(team: str) -> str:
+    if not team or not TEAM_NAME_PATTERN.fullmatch(team):
+        raise HTTPException(
+            status_code=400,
+            detail="team 名稱只能包含英文字母、數字、底線（_）和連字號（-）。",
+        )
+    return team
 
 
 def _parse_terms_csv(value: Optional[str]) -> List[str]:
@@ -352,6 +376,7 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         num_speakers=row["num_speakers"],
         add_punctuation=bool(row["add_punctuation"]),
         terms=_parse_terms_csv(row["terms"] if "terms" in keys else ""),
+        team=row["team"] if "team" in keys else None,
         duration_seconds=row["duration_seconds"],
         num_speakers_detected=row["num_speakers_detected"],
         output_path=row["output_path"],
@@ -373,6 +398,7 @@ def _record_values(record: JobRecord, audio_path: Optional[Path] = None) -> dict
         "num_speakers": record.num_speakers,
         "add_punctuation": 1 if record.add_punctuation else 0,
         "terms": _terms_to_csv(record.terms),
+        "team": record.team,
         "duration_seconds": record.duration_seconds,
         "num_speakers_detected": record.num_speakers_detected,
         "output_path": record.output_path,
@@ -386,12 +412,12 @@ def enqueue_job(record: JobRecord, audio_path: Path):
             """
             INSERT INTO jobs (
                 job_id, status, created_at, updated_at, audio_filename, audio_path,
-                language, device, model, num_speakers, add_punctuation, terms, duration_seconds,
+                language, device, model, num_speakers, add_punctuation, terms, team, duration_seconds,
                 num_speakers_detected, output_path, error
             )
             VALUES (
                 :job_id, :status, :created_at, :updated_at, :audio_filename, :audio_path,
-                :language, :device, :model, :num_speakers, :add_punctuation, :terms, :duration_seconds,
+                :language, :device, :model, :num_speakers, :add_punctuation, :terms, :team, :duration_seconds,
                 :num_speakers_detected, :output_path, :error
             )
             """,
@@ -418,6 +444,7 @@ def save_job(record: JobRecord):
                 num_speakers = :num_speakers,
                 add_punctuation = :add_punctuation,
                 terms = :terms,
+                team = :team,
                 duration_seconds = :duration_seconds,
                 num_speakers_detected = :num_speakers_detected,
                 output_path = :output_path,
@@ -634,8 +661,10 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
         cmd += ["--terms", _terms_to_csv(record.terms)]
     if not record.add_punctuation:
         cmd.append("--no-punctuation")
-    if SPEAKER_DIR.exists() and any(SPEAKER_DIR.glob("*.json")):
-        cmd += ["--speaker-dir", str(SPEAKER_DIR)]
+    if record.team:
+        team_dir = SPEAKER_DIR / record.team
+        if team_dir.exists() and any(team_dir.glob("*.json")):
+            cmd += ["--speaker-dir", str(team_dir)]
 
     log_path = out_base / "subprocess.log"
     print(f"[{job_id}] 啟動 subprocess: {' '.join(cmd)}", flush=True)
@@ -872,6 +901,10 @@ async def transcribe(
         default=DEFAULT_WHISPER_MODEL,
         description=f"Whisper 模型名稱（預設：{DEFAULT_WHISPER_MODEL}）。可選：{', '.join(WHISPER_MODELS)}",
     ),
+    team: Optional[str] = Form(
+        default=None,
+        description="聲紋庫群組名稱（英文，含英數字、底線、連字號）。不填則不使用聲紋比對。例如：engineering",
+    ),
 ):
     if model not in WHISPER_MODELS:
         raise HTTPException(
@@ -887,6 +920,8 @@ async def transcribe(
         )
 
     parsed_terms = _validate_terms_csv(terms)
+    if team:
+        _validate_team_name(team)
 
     job_id = str(uuid.uuid4())
     upload_path = UPLOAD_DIR / f"{job_id}{suffix}"
@@ -921,6 +956,7 @@ async def transcribe(
         num_speakers=num_speakers,
         add_punctuation=not no_punctuation,
         terms=parsed_terms,
+        team=team,
     )
     enqueue_job(record, upload_path)
 
@@ -1071,34 +1107,55 @@ def list_all_jobs(
 # 聲紋庫 Routes
 # ---------------------------------------------------------------------------
 
-@app.post(
-    "/speakers/enroll",
+@app.get(
+    "/teams",
     tags=["聲紋庫"],
-    summary="註冊 Speaker 聲紋",
-    description="""
-上傳 **10–15 秒**單人錄音，提取聲紋 embedding 並存入聲紋庫。
+    summary="列出所有 Team",
+    description="列出聲紋庫中所有已建立的 Team（即 SPEAKER_DIR 下的子資料夾）。",
+    response_model=TeamListResponse,
+    responses={
+        200: {"description": "Team 清單", "model": TeamListResponse},
+        401: {"description": "API Key 錯誤", "model": ErrorResponse},
+    },
+    dependencies=[Depends(verify_api_key)],
+)
+def list_teams():
+    if not SPEAKER_DIR.exists():
+        return TeamListResponse(total=0, teams=[])
+    teams = sorted([d.name for d in SPEAKER_DIR.iterdir() if d.is_dir()])
+    return TeamListResponse(total=len(teams), teams=teams)
 
-後續轉錄任務將自動比對聲紋庫，將 `Speaker 1`、`Speaker 2` 等標籤
-置換為已知的 Speaker 名稱。
+
+@app.post(
+    "/speakers/{team}/enroll",
+    tags=["聲紋庫"],
+    summary="註冊 Speaker 聲紋（含 Team）",
+    description="""
+上傳 **10–15 秒**單人錄音，提取聲紋 embedding 並存入指定 Team 的聲紋庫。
+
+- `team` 名稱只能包含英文字母、數字、底線（`_`）和連字號（`-`）。
+- 同一 Team 下的聲紋彼此隔離，不同 Team 間不共用。
+- 後續轉錄任務帶入相同 `team` 參數時，將自動比對該 Team 的聲紋庫。
 
 **建議錄音條件**：
 - 安靜環境、清晰發音
 - 10–15 秒（太短會影響準確率）
 - 與實際會議使用的麥克風相同或相近
 
-**注意**：若使用相同名稱重複上傳，將**覆蓋**既有的聲紋資料。
+**注意**：若在同一 Team 下使用相同 Speaker 名稱重複上傳，將**覆蓋**既有聲紋資料。
 """,
     response_model=EnrollResponse,
     status_code=201,
     responses={
         201: {"description": "註冊成功", "model": EnrollResponse},
-        400: {"description": "檔案格式錯誤或名稱無效", "model": ErrorResponse},
+        400: {"description": "檔案格式錯誤、名稱無效或 team 名稱非英文", "model": ErrorResponse},
         401: {"description": "API Key 錯誤", "model": ErrorResponse},
         500: {"description": "聲紋提取失敗（HF_TOKEN 未設定或模型載入失敗）", "model": ErrorResponse},
     },
     dependencies=[Depends(verify_api_key)],
 )
 async def enroll_speaker(
+    team: str,
     audio: UploadFile = File(
         ...,
         description="10–15 秒單人錄音（wav / mp3 / m4a 等）",
@@ -1113,9 +1170,10 @@ async def enroll_speaker(
         description="提取 embedding 使用的裝置（auto / cpu / cuda）",
     ),
 ):
-    # 驗證名稱
-    import re
-    if not name or not re.match(r'^[\w\u4e00-\u9fff\- ]+$', name):
+    _validate_team_name(team)
+
+    import re as _re
+    if not name or not _re.match(r'^[\w一-鿿\- ]+$', name):
         raise HTTPException(
             status_code=400,
             detail="名稱無效：僅允許英數字、中文、底線、連字號、空格。",
@@ -1132,8 +1190,10 @@ async def enroll_speaker(
     if not hf_token:
         raise HTTPException(status_code=500, detail="HF_TOKEN 未設定，無法載入 pyannote/embedding 模型。")
 
-    # 儲存上傳音訊（暫存）
-    enroll_path = UPLOAD_DIR / f"enroll_{name}{suffix}"
+    team_dir = SPEAKER_DIR / team
+    team_dir.mkdir(parents=True, exist_ok=True)
+
+    enroll_path = UPLOAD_DIR / f"enroll_{team}_{name}{suffix}"
     content = await audio.read()
     if not content:
         raise HTTPException(status_code=400, detail="上傳檔案為空。")
@@ -1148,14 +1208,13 @@ async def enroll_speaker(
             except ImportError:
                 resolved_device = "cpu"
 
-        # 若重新註冊，先刪除舊的音檔（避免殘留不同副檔名的舊檔）
-        old_profile_path = SPEAKER_DIR / f"{name}.json"
+        old_profile_path = team_dir / f"{name}.json"
         if old_profile_path.exists():
             try:
                 old_data = json.loads(old_profile_path.read_text(encoding="utf-8"))
                 old_audio = old_data.get("source_file", "")
                 if old_audio:
-                    (SPEAKER_DIR / old_audio).unlink(missing_ok=True)
+                    (team_dir / old_audio).unlink(missing_ok=True)
             except Exception:
                 pass
 
@@ -1163,17 +1222,15 @@ async def enroll_speaker(
         _enroll(
             name=name,
             audio_path=enroll_path,
-            speaker_dir=SPEAKER_DIR,
+            speaker_dir=team_dir,
             hf_token=hf_token,
             device=resolved_device,
         )
 
-        # 將音檔移至聲紋庫目錄以供試聽（覆蓋舊檔）
-        audio_dest = SPEAKER_DIR / f"{name}{suffix}"
+        audio_dest = team_dir / f"{name}{suffix}"
         shutil.move(str(enroll_path), str(audio_dest))
 
-        # 更新 JSON profile 的 source_file 為實際存放的檔名
-        profile_path = SPEAKER_DIR / f"{name}.json"
+        profile_path = team_dir / f"{name}.json"
         profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
         profile_data["source_file"] = audio_dest.name
         profile_path.write_text(json.dumps(profile_data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1189,26 +1246,28 @@ async def enroll_speaker(
         status_code=201,
         content=EnrollResponse(
             name=name,
-            message=f"Speaker {name} 註冊成功。",
+            message=f"Speaker {name} 已在 Team {team} 中註冊成功。",
         ).model_dump(),
     )
 
 
 @app.get(
-    "/speakers",
+    "/speakers/{team}",
     tags=["聲紋庫"],
-    summary="列出已註冊的 Speaker",
-    description="列出聲紋庫中所有已註冊的 Speaker（不含 embedding 向量）。",
+    summary="列出 Team 內已註冊的 Speaker",
+    description="列出指定 Team 聲紋庫中所有已註冊的 Speaker（不含 embedding 向量）。",
     response_model=SpeakerListResponse,
     responses={
         200: {"description": "Speaker 清單", "model": SpeakerListResponse},
+        400: {"description": "team 名稱格式錯誤", "model": ErrorResponse},
         401: {"description": "API Key 錯誤", "model": ErrorResponse},
     },
     dependencies=[Depends(verify_api_key)],
 )
-def list_speakers():
+def list_speakers(team: str):
+    _validate_team_name(team)
     from speaker_db import list_speaker_profiles
-    speakers = list_speaker_profiles(SPEAKER_DIR)
+    speakers = list_speaker_profiles(SPEAKER_DIR / team)
     return SpeakerListResponse(total=len(speakers), speakers=speakers)
 
 
@@ -1225,21 +1284,24 @@ _AUDIO_MEDIA_TYPES = {
 
 
 @app.get(
-    "/speakers/{name}/audio",
+    "/speakers/{team}/{name}/audio",
     tags=["聲紋庫"],
     summary="試聽 Speaker 聲紋音檔",
-    description="串流播放指定 Speaker 註冊時上傳的聲紋音檔，供前端試聽使用。",
+    description="串流播放指定 Team 中 Speaker 註冊時上傳的聲紋音檔，供前端試聽使用。",
     responses={
         200: {"description": "音訊串流", "content": {"audio/*": {}}},
+        400: {"description": "team 名稱格式錯誤", "model": ErrorResponse},
         401: {"description": "API Key 錯誤", "model": ErrorResponse},
         404: {"description": "找不到 Speaker 或無音檔", "model": ErrorResponse},
     },
     dependencies=[Depends(verify_api_key)],
 )
-def get_speaker_audio(name: str):
-    profile_path = SPEAKER_DIR / f"{name}.json"
+def get_speaker_audio(team: str, name: str):
+    _validate_team_name(team)
+    team_dir = SPEAKER_DIR / team
+    profile_path = team_dir / f"{name}.json"
     if not profile_path.exists():
-        raise HTTPException(status_code=404, detail=f"找不到 Speaker：{name}")
+        raise HTTPException(status_code=404, detail=f"找不到 Speaker：{name}（Team：{team}）")
 
     try:
         data = json.loads(profile_path.read_text(encoding="utf-8"))
@@ -1247,7 +1309,7 @@ def get_speaker_audio(name: str):
         raise HTTPException(status_code=500, detail="讀取聲紋資料失敗。")
 
     source_file = data.get("source_file", "")
-    audio_path = SPEAKER_DIR / source_file if source_file else None
+    audio_path = team_dir / source_file if source_file else None
     if not source_file or not audio_path.exists():
         raise HTTPException(status_code=404, detail=f"Speaker {name} 沒有可試聽的音檔。")
 
@@ -1256,24 +1318,25 @@ def get_speaker_audio(name: str):
 
 
 @app.delete(
-    "/speakers/{name}",
+    "/speakers/{team}/{name}",
     tags=["聲紋庫"],
     summary="刪除 Speaker 聲紋",
-    description="從聲紋庫中移除指定 Speaker 的聲紋資料。",
+    description="從指定 Team 的聲紋庫中移除指定 Speaker 的聲紋資料。",
     response_model=DeleteResponse,
     responses={
         200: {"description": "刪除成功", "model": DeleteResponse},
+        400: {"description": "team 名稱格式錯誤", "model": ErrorResponse},
         401: {"description": "API Key 錯誤", "model": ErrorResponse},
         404: {"description": "找不到 Speaker", "model": ErrorResponse},
     },
     dependencies=[Depends(verify_api_key)],
 )
-def delete_speaker(name: str):
+def delete_speaker(team: str, name: str):
+    _validate_team_name(team)
     from speaker_db import delete_speaker as _delete
-    if not _delete(name, SPEAKER_DIR):
-        raise HTTPException(status_code=404, detail=f"找不到 Speaker：{name}")
-    return DeleteResponse(message=f"Speaker {name} 已從聲紋庫刪除。")
-
+    if not _delete(name, SPEAKER_DIR / team):
+        raise HTTPException(status_code=404, detail=f"找不到 Speaker：{name}（Team：{team}）")
+    return DeleteResponse(message=f"Speaker {name} 已從 Team {team} 的聲紋庫刪除。")
 
 # ---------------------------------------------------------------------------
 # 自訂 OpenAPI schema，補上 API Key security scheme

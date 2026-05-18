@@ -21,9 +21,12 @@
               type="text"
               required
               v-model="teamName"
-              placeholder="例：研發一組"
-              class="w-full px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="例：DeviceOn"
+              class="w-full px-4 py-2 rounded-lg border focus:ring-2 focus:ring-blue-500 outline-none dark:bg-slate-800"
+              :class="teamNameError ? 'border-red-400 dark:border-red-600' : 'border-slate-300 dark:border-slate-700'"
             />
+            <p v-if="teamNameError" class="text-xs text-red-500 mt-1">{{ teamNameError }}</p>
+            <p v-else class="text-xs text-slate-400 mt-1">只能使用英文字母、數字、底線（_）和連字號（-）</p>
           </div>
           <div>
             <label class="block text-sm font-medium mb-1">管理員 Email</label>
@@ -53,7 +56,7 @@
           </div>
           <button
             type="submit"
-            :disabled="props.isLoading"
+            :disabled="props.isLoading || !!teamNameError || !teamName"
             class="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2 rounded-lg transition-colors"
           >
             <span v-if="props.isLoading">建立中...</span>
@@ -171,6 +174,12 @@ const teamName = ref('')
 const email = ref('')
 const password = ref('')
 
+const TEAM_NAME_RE = /^[A-Za-z0-9_-]+$/
+const teamNameError = computed(() => {
+  if (!teamName.value) return ''
+  return TEAM_NAME_RE.test(teamName.value) ? '' : 'Team 名稱只能包含英文字母、數字、底線（_）和連字號（-）'
+})
+
 const strength = computed(() => {
   if (!password.value) return 0
   let s = 0
@@ -218,6 +227,7 @@ function handleLogin() {
 }
 
 function handleRegisterTeam() {
+  if (teamNameError.value || !teamName.value) return
   emit('auth', {
     action: 'register-team',
     teamName: teamName.value,

@@ -184,6 +184,7 @@ export function useApp() {
         name: data.name ?? data.email.split('@')[0],
         role: data.role ?? 'user',
         teamId: data.teamId ?? null,
+        teamName: data.teamName ?? null,
         setupCompleted: data.setupCompleted ?? false
       }
       localStorage.setItem('clawpm_user', JSON.stringify(user))
