@@ -22,7 +22,7 @@ import {
   normalizeHistory,
 } from './src/managers/OpenClawClient.js'
 import { allocatePorts, releasePorts, getPortsForUser } from './src/containers/PortManager.js'
-import { createTask, getTask, listTasksForTeam, updateTask, deleteTask, pauseTask, resumeTask, retryTask, startTaskWorker } from './src/managers/TaskManager.js'
+import { createTask, getTask, listTasksForTeam, updateTask, deleteTask, retryTask } from './src/managers/TaskManager.js'
 import { initializeWorkspace } from './src/containers/WorkspaceManager.js'
 import {
   createAndStartContainer,
@@ -59,7 +59,7 @@ const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
 // jobId → { status, content, error }
 const transcriptionJobs = new Map()
 
-async function pollWhisperXJob(jobId, outputHostPath) {
+async function pollWhisperXJob(jobId, outputHostPath, taskId) {
   const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
 
   const poll = async () => {
@@ -80,6 +80,20 @@ async function pollWhisperXJob(jobId, outputHostPath) {
           fs.mkdirSync(path.dirname(outputHostPath), { recursive: true })
           fs.writeFileSync(outputHostPath, content, 'utf8')
           transcriptionJobs.set(jobId, { status: 'done', content, error: null })
+
+          // Update task DB so the task list reflects completion without requiring WorkflowView to be open
+          if (taskId) {
+            try {
+              const task = await getTask(taskId)
+              if (task && task.status !== 'completed' && task.status !== 'error') {
+                await updateTask(taskId, {
+                  stepStatuses: { ...task.stepStatuses, 3: 'done' },
+                })
+              }
+            } catch (e) {
+              console.error('[whisperx-poll] task DB update failed:', e.message)
+            }
+          }
         } else {
           transcriptionJobs.set(jobId, { status: 'failed', content: null, error: '無法下載轉錄結果' })
         }
@@ -101,6 +115,40 @@ async function pollWhisperXJob(jobId, outputHostPath) {
   }
 
   setTimeout(poll, 15000)
+}
+
+async function monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMtime) {
+  const MAX_CHECKS = 72  // 72 × 10s = 12 minutes max
+  let checks = 0
+
+  const check = async () => {
+    checks++
+    if (checks > MAX_CHECKS) return
+
+    try {
+      if (fs.existsSync(projectsJsonHostPath)) {
+        const mtime = fs.statSync(projectsJsonHostPath).mtimeMs
+        if (mtime > beforeMtime) {
+          const task = await getTask(taskId)
+          if (task && task.status !== 'completed' && task.status !== 'error') {
+            await updateTask(taskId, {
+              status: 'completed',
+              currentStep: 5,
+              stepStatuses: { ...task.stepStatuses, 5: 'done' },
+              autoAdvanceAt: null,
+            })
+          }
+          return
+        }
+      }
+    } catch (e) {
+      console.error('[insights-monitor] error:', e.message)
+    }
+
+    setTimeout(check, 10000)
+  }
+
+  setTimeout(check, 10000)
 }
 const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
@@ -479,7 +527,7 @@ app.get('/api/workflow/extraction-tags', requireAuth, async (req, res) => {
 // ── Transcription preparation ─────────────────────────────────────────────────
 
 app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) => {
-  const { mediaPath, tags, team } = req.body ?? {}
+  const { mediaPath, tags, team, taskId } = req.body ?? {}
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const allowedPrefix = `/${provisionUserId}/workspace/`
 
@@ -511,21 +559,21 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
   const appSettings = readAppSettings()
   const whisperModel = appSettings.whisperModel || 'large-v3'
 
-  const formData = new FormData()
-  const audioBuffer = fs.readFileSync(hostAudioPath)
-  formData.append('audio', new Blob([audioBuffer]), path.basename(hostAudioPath))
-  formData.append('lang', 'zh')
-  formData.append('model', whisperModel)
-  if (Array.isArray(tags) && tags.length > 0) {
-    formData.append('terms', tags.join(', '))
-  }
-  if (team && typeof team === 'string' && /^[A-Za-z0-9_-]+$/.test(team)) {
-    formData.append('team', team)
-  }
-
   const whisperxHeaders = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
 
   try {
+    const formData = new FormData()
+    const audioBuffer = fs.readFileSync(hostAudioPath)
+    formData.append('audio', new Blob([audioBuffer]), path.basename(hostAudioPath))
+    formData.append('lang', 'zh')
+    formData.append('model', whisperModel)
+    if (Array.isArray(tags) && tags.length > 0) {
+      formData.append('terms', tags.join(', '))
+    }
+    if (team && typeof team === 'string' && /^[A-Za-z0-9_-]+$/.test(team)) {
+      formData.append('team', team)
+    }
+
     const uploadRes = await fetch(`${WHISPERX_BASE}/transcribe`, {
       method: 'POST',
       body: formData,
@@ -548,7 +596,7 @@ app.post('/api/workflow/prepare-transcription', requireAuth, async (req, res) =>
       return res.status(502).json({ error: 'WhisperX 未回傳 job_id，請確認服務是否正常運作' })
     }
     transcriptionJobs.set(job_id, { status: 'pending', content: null, error: null })
-    pollWhisperXJob(job_id, outputHostPath)
+    pollWhisperXJob(job_id, outputHostPath, taskId || null)
 
     res.json({ success: true, jobId: job_id, transcriptOutputPath })
   } catch (err) {
@@ -737,7 +785,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 
 app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
-  const { transcriptContainerPath, notesContainerPath, meetingDate } = req.body ?? {}
+  const { transcriptContainerPath, notesContainerPath, meetingDate, taskId } = req.body ?? {}
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -811,6 +859,11 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
     beforeMtime,
     existingProjectIds,
   })
+
+  // Spawn backend monitor so the task DB is updated even when WorkflowView is not open
+  if (taskId) {
+    monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMtime)
+  }
 })
 
 app.get('/api/workflow/insights-result', requireAuth, async (req, res) => {
@@ -1953,19 +2006,6 @@ app.delete('/api/tasks/:id', requireAuth, async (req, res) => {
   res.json({ success: true })
 })
 
-app.post('/api/tasks/:id/pause', requireAuth, async (req, res) => {
-  const task = await getTask(req.params.id)
-  if (!task) return res.status(404).json({ error: '找不到任務' })
-  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  res.json(await pauseTask(req.params.id))
-})
-
-app.post('/api/tasks/:id/resume', requireAuth, async (req, res) => {
-  const task = await getTask(req.params.id)
-  if (!task) return res.status(404).json({ error: '找不到任務' })
-  if (task.teamId !== req.user.teamId) return res.status(403).json({ error: '無權限' })
-  res.json(await resumeTask(req.params.id))
-})
 
 app.post('/api/tasks/:id/retry', requireAuth, async (req, res) => {
   const task = await getTask(req.params.id)
@@ -1985,7 +2025,6 @@ app.get('{*any}', (_req, res) => {
 runMigrations()
   .then(() => migrateUsers())
   .then(() => {
-    startTaskWorker()
     listenOnAvailablePort(getStartPort())
   })
   .catch(err => {

@@ -90,35 +90,8 @@
 
         <!-- Countdown + controls -->
         <div class="flex items-center gap-3 flex-wrap">
-          <!-- Waiting countdown -->
-          <template v-if="task.status === 'waiting' && task.autoAdvanceAt">
-            <div class="flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/30 rounded-lg">
-              <Timer class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-              <span class="text-xs font-medium text-amber-700 dark:text-amber-300">
-                {{ countdowns[task.id] ?? 10 }}s 後自動推進至步驟 {{ task.currentStep + 1 }}
-              </span>
-            </div>
-            <button @click.stop="pause(task)" class="text-xs px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors font-medium">
-              暫停
-            </button>
-            <button @click.stop="advanceNow(task)" class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium">
-              立即推進
-            </button>
-          </template>
-
-          <!-- Paused -->
-          <template v-else-if="task.status === 'paused'">
-            <div class="flex items-center gap-2 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg">
-              <PauseCircle class="w-3.5 h-3.5 text-slate-500" />
-              <span class="text-xs font-medium text-slate-600 dark:text-slate-400">已暫停自動推進</span>
-            </div>
-            <button @click.stop="resume(task)" class="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium">
-              繼續
-            </button>
-          </template>
-
           <!-- Error retry -->
-          <template v-else-if="task.status === 'error'">
+          <template v-if="task.status === 'error'">
             <button @click.stop="retry(task)" class="text-xs px-3 py-1.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium flex items-center gap-1.5">
               <RefreshCw class="w-3 h-3" /> 重試
             </button>
@@ -158,10 +131,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, reactive } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import {
-  Plus, ListTodo, Loader2, Check, AlertCircle, Trash2, Timer,
-  PauseCircle, RefreshCw
+  Plus, ListTodo, Loader2, Check, AlertCircle, Trash2, RefreshCw
 } from 'lucide-vue-next'
 
 const emit = defineEmits(['navigate', 'select-task'])
@@ -170,11 +142,9 @@ const stepLabels = ['上傳', '標語萃取', '語音轉錄', '會議記錄', '�
 
 const tasks = ref([])
 const isLoading = ref(true)
-const countdowns = reactive({})
 const deleteTarget = ref(null)
 
 let pollTimer = null
-let countdownInterval = null
 
 function token() { return localStorage.getItem('clawpm_token') }
 
@@ -187,41 +157,11 @@ async function fetchTasks() {
   isLoading.value = false
 }
 
-function updateCountdowns() {
-  const now = Date.now()
-  for (const task of tasks.value) {
-    if (task.status === 'waiting' && task.autoAdvanceAt) {
-      const remaining = Math.max(0, Math.ceil((new Date(task.autoAdvanceAt).getTime() - now) / 1000))
-      countdowns[task.id] = remaining
-    } else {
-      delete countdowns[task.id]
-    }
-  }
-}
-
-async function pause(task) {
-  await fetch(`/api/tasks/${task.id}/pause`, { method: 'POST', headers: { Authorization: `Bearer ${token()}` } })
-  await fetchTasks()
-}
-
-async function resume(task) {
-  await fetch(`/api/tasks/${task.id}/resume`, { method: 'POST', headers: { Authorization: `Bearer ${token()}` } })
-  await fetchTasks()
-}
-
 async function retry(task) {
   await fetch(`/api/tasks/${task.id}/retry`, { method: 'POST', headers: { Authorization: `Bearer ${token()}` } })
   await fetchTasks()
 }
 
-async function advanceNow(task) {
-  await fetch(`/api/tasks/${task.id}`, {
-    method: 'PATCH',
-    headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ autoAdvanceAt: new Date().toISOString() }),
-  })
-  await fetchTasks()
-}
 
 function confirmDelete(task) { deleteTarget.value = task }
 
@@ -236,17 +176,15 @@ async function confirmDeleteExecute() {
 }
 
 function statusLabel(status) {
-  return { waiting: '等待推進', running: '處理中', paused: '已暫停', error: '發生錯誤', completed: '已完成' }[status] || status
+  return { running: '處理中', error: '發生錯誤', completed: '已完成' }[status] || '處理中'
 }
 
 function statusBadgeClass(status) {
   return {
-    waiting: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
     running: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-    paused: 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400',
     error: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300',
     completed: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300',
-  }[status] || 'bg-slate-100 text-slate-500'
+  }[status] || 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
 }
 
 function stepCircleClass(task, step) {
@@ -278,12 +216,9 @@ function formatDate(iso) {
 onMounted(async () => {
   await fetchTasks()
   pollTimer = setInterval(fetchTasks, 5000)
-  countdownInterval = setInterval(updateCountdowns, 500)
-  updateCountdowns()
 })
 
 onUnmounted(() => {
   clearInterval(pollTimer)
-  clearInterval(countdownInterval)
 })
 </script>

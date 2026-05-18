@@ -608,6 +608,7 @@ async function startExtraction() {
     if (!res.ok || !data.success) throw new Error(data.error || '準備萃取失敗')
 
     extractionOutputPath.value = data.outputPath
+    syncTask({ data: { extractionOutputPath: data.outputPath } })
     emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
     startExtractionPolling()
   } catch (err) {
@@ -636,13 +637,14 @@ async function startTranscription() {
     const res = await fetch('/api/workflow/prepare-transcription', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mediaPath: uploadedMediaPath.value, tags: tags.value, team: props.team || undefined }),
+      body: JSON.stringify({ mediaPath: uploadedMediaPath.value, tags: tags.value, team: props.team || undefined, taskId: taskId.value || undefined }),
     })
-    const data = await res.json()
-    if (!res.ok || !data.success) throw new Error(data.error || '準備轉錄失敗')
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data.success) throw new Error(data.error || '無法啟動轉錄，請確認 WhisperX 服務是否正常運作')
 
     transcriptJobId.value = data.jobId
     transcriptContainerPath.value = data.transcriptOutputPath
+    syncTask({ data: { transcriptJobId: data.jobId, transcriptContainerPath: data.transcriptOutputPath } })
     startTranscriptionPolling()
   } catch (err) {
     console.error('[transcription] prepare error:', err.message)
@@ -676,7 +678,7 @@ function startTranscriptionPolling() {
         transcriptLines.value = parseTranscript(data.content)
         transcriptWordCount.value = countWords(data.content)
         isProcessing.value = false
-        syncTask({ currentStep: 3, status: 'waiting', autoAdvanceAt: new Date(Date.now() + 10000).toISOString(), stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'pending', 5: 'pending' }, data: { transcriptRawContent: data.content, transcriptJobId: transcriptJobId.value, transcriptContainerPath: transcriptContainerPath.value } })
+        syncTask({ currentStep: 3, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'pending', 5: 'pending' }, data: { transcriptRawContent: data.content, transcriptJobId: transcriptJobId.value, transcriptContainerPath: transcriptContainerPath.value } })
         return
       }
     } catch {}
@@ -725,7 +727,7 @@ function startMeetingNotesPolling() {
       if (data.ready && data.content) {
         meetingNotesContent.value = data.content
         isProcessing.value = false
-        syncTask({ currentStep: 4, status: 'waiting', autoAdvanceAt: new Date(Date.now() + 10000).toISOString(), stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: data.content } })
+        syncTask({ currentStep: 4, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: data.content } })
         return
       }
     } catch {}
@@ -819,7 +821,7 @@ function startExtractionPolling() {
       if (data.ready) {
         tags.value = data.tags || []
         isProcessing.value = false
-        syncTask({ currentStep: 2, status: 'waiting', autoAdvanceAt: new Date(Date.now() + 10000).toISOString(), stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: data.tags || [], extractionOutputPath: extractionOutputPath.value } })
+        syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: data.tags || [], extractionOutputPath: extractionOutputPath.value } })
         return
       }
     } catch {}
@@ -887,6 +889,7 @@ async function startInsights() {
         transcriptContainerPath: transcriptContainerPath.value || undefined,
         notesContainerPath: meetingNotesOutputPath.value || undefined,
         meetingDate: meetingDate.value,
+        taskId: taskId.value || undefined,
       }),
     })
     const data = await res.json()
@@ -981,16 +984,29 @@ function restoreFromTask(task) {
   insightsBeforeMtime.value = task.data.insightsBeforeMtime || 0
   existingProjectIds.value = task.data.existingProjectIds || []
 
-  // Set current step and processing state
+  // Set current step
   step.value = task.currentStep || 1
-  isProcessing.value = task.status === 'running'
 
-  // Resume polling if step was mid-processing when user left
+  // Resume polling only when data is available; isProcessing follows whether polling started.
+  // If we set isProcessing=true without starting a matching poll the spinner never clears.
   if (task.status === 'running') {
-    if (task.currentStep === 2 && task.data.extractionOutputPath) startExtractionPolling()
-    else if (task.currentStep === 3 && task.data.transcriptJobId) startTranscriptionPolling()
-    else if (task.currentStep === 4 && task.data.meetingNotesOutputPath) startMeetingNotesPolling()
-    else if (task.currentStep === 5 && task.data.insightsOutputDir) startInsightsPolling()
+    if (task.currentStep === 2 && task.data.extractionOutputPath) {
+      isProcessing.value = true
+      startExtractionPolling()
+    } else if (task.currentStep === 3 && task.data.transcriptJobId) {
+      isProcessing.value = true
+      startTranscriptionPolling()
+    } else if (task.currentStep === 3) {
+      // Job ID not saved (navigated away before it was recorded) — prompt to retry
+      transcriptError.value = '轉錄任務記錄遺失，請點擊「重試」重新送出'
+    } else if (task.currentStep === 4 && task.data.meetingNotesOutputPath) {
+      isProcessing.value = true
+      startMeetingNotesPolling()
+    } else if (task.currentStep === 5 && task.data.insightsOutputDir) {
+      isProcessing.value = true
+      startInsightsPolling()
+    }
+    // else: insufficient data to resume — leave isProcessing false so UI isn't stuck
   }
 }
 
