@@ -12,6 +12,7 @@ WORKDIR /app
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
 COPY backend/ .
+COPY version.txt ./
 # server.js resolves ../frontend/dist → /frontend/dist (relative to /app)
 COPY --from=frontend-builder /build/dist /frontend/dist
 EXPOSE 3000

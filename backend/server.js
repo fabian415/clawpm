@@ -828,7 +828,7 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
     '',
     `本次會議日期：${today}`,
   ]
-  if (transcriptContainerPath) parts.push(`本次會議逐字稿路徑：${transcriptContainerPath}`)
+  // if (transcriptContainerPath) parts.push(`本次會議逐字稿路徑：${transcriptContainerPath}`)
   if (notesContainerPath) parts.push(`本次會議記錄路徑：${notesContainerPath}`)
   parts.push('', `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`, '')
 
@@ -2024,6 +2024,22 @@ app.post('/api/tasks/:id/retry', requireAuth, async (req, res) => {
   const updated = await retryTask(req.params.id)
   if (!updated) return res.status(400).json({ error: '任務不在錯誤狀態' })
   res.json(updated)
+})
+
+// ── Version ───────────────────────────────────────────────────────────────────
+
+// Docker: /app/version.txt (COPY version.txt ./); dev: ../version.txt
+const VERSION_FILE = fs.existsSync(path.resolve(__dirname, 'version.txt'))
+  ? path.resolve(__dirname, 'version.txt')
+  : path.resolve(__dirname, '../version.txt')
+
+app.get('/api/version', (_req, res) => {
+  try {
+    const version = fs.readFileSync(VERSION_FILE, 'utf8').trim()
+    res.json({ version })
+  } catch {
+    res.json({ version: 'unknown' })
+  }
 })
 
 // SPA fallback — must be after all API routes

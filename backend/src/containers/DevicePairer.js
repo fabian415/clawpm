@@ -86,16 +86,20 @@ async function rotateDeviceToken(userId, deviceId, { gatewayToken } = {}) {
   if (gatewayToken) cmd.push('--token', gatewayToken)
 
   const { stdout } = await execInContainer(userId, cmd)
+  console.log(`  [DevicePairer] devices rotate stdout: ${stdout.slice(0, 200)}`)
   try {
     const parsed = JSON.parse(stdout)
     if (typeof parsed === 'string' && parsed.trim()) return parsed.trim()
-    if (typeof parsed?.token === 'string') return parsed.token
-    if (typeof parsed?.operatorToken === 'string') return parsed.operatorToken
-    if (typeof parsed?.value === 'string') return parsed.value
+    // try every common key name the gateway might use
+    for (const key of ['token', 'operatorToken', 'deviceToken', 'value', 'accessToken', 'secret']) {
+      if (typeof parsed?.[key] === 'string' && parsed[key].trim()) return parsed[key].trim()
+    }
   } catch {
+    // fallback: last non-empty line that looks like a token
     const token = stdout.trim().split('\n').pop()?.trim()
-    if (token && /^[a-f0-9]{32,}$/.test(token)) return token
+    if (token && /^[A-Za-z0-9+/=_-]{20,}$/.test(token)) return token
   }
+  console.error(`  [DevicePairer] Could not parse token from: ${stdout.slice(0, 300)}`)
   return null
 }
 

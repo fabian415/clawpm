@@ -8,7 +8,10 @@
       <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center shrink-0">
         <Terminal class="text-white w-5 h-5" />
       </div>
-      <span v-if="!collapsed" class="text-xl font-bold text-white tracking-tight">ClawPM</span>
+      <div v-if="!collapsed" class="flex flex-col leading-none">
+        <span class="text-xl font-bold text-white tracking-tight">ClawPM</span>
+        <span v-if="appVersion" class="text-[10px] text-slate-500 mt-0.5">{{ appVersion }}</span>
+      </div>
     </div>
 
     <!-- Navigation -->
@@ -139,6 +142,7 @@ defineEmits(['navigate', 'open-reviewer-project', 'toggle-theme', 'update:collap
 const isLoading = ref(false)
 const recentReviewerProjects = ref([])
 const activeTaskCount = ref(0)
+const appVersion = ref('')
 let taskPollTimer = null
 
 async function fetchRecentProjects() {
@@ -174,9 +178,19 @@ async function fetchActiveTaskCount() {
   } catch {}
 }
 
+async function fetchAppVersion() {
+  try {
+    const res = await fetch('/api/version')
+    if (!res.ok) return
+    const data = await res.json()
+    appVersion.value = data.version || ''
+  } catch {}
+}
+
 onMounted(() => {
   fetchRecentProjects()
   fetchActiveTaskCount()
+  fetchAppVersion()
   taskPollTimer = setInterval(fetchActiveTaskCount, 10000)
 })
 

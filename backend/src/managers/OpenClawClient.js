@@ -199,11 +199,25 @@ class OpenClawGatewayClient {
       }
     }
     if (this.connectPromise) return this.connectPromise
-    this.connectPromise = this._connect()
+    this.connectPromise = this._connectWithAutoRepair()
     try {
       await this.connectPromise
     } finally {
       this.connectPromise = null
+    }
+  }
+
+  async _connectWithAutoRepair() {
+    try {
+      await this._connect()
+    } catch (err) {
+      if (err.message?.toLowerCase().includes('token mismatch')) {
+        console.log(`[OpenClaw] Device token mismatch for user ${this.userId} — auto-rotating token`)
+        await pairDevice(this.userId, { healthTimeoutMs: 30_000 })
+        await this._connect()
+      } else {
+        throw err
+      }
     }
   }
 
