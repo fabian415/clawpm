@@ -12,8 +12,8 @@ import multer from 'multer'
 import { Client as FtpClient } from 'basic-ftp'
 import nodemailer from 'nodemailer'
 import { runMigrations } from './src/migrate.js'
-import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers } from './src/managers/UserManager.js'
-import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder } from './src/managers/TeamManager.js'
+import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers, deleteAllTeamMembers } from './src/managers/UserManager.js'
+import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder, deleteTeam } from './src/managers/TeamManager.js'
 import {
   getClientForUser, disconnectClientForUser,
   getDefaultSessionKey, makeScopedSessionKey,
@@ -293,6 +293,28 @@ app.delete('/api/team/members/:memberId', requireAuth, requireAdmin, async (req,
     res.json({ success: true })
   } catch (err) {
     res.status(400).json({ error: err.message })
+  }
+})
+
+// Delete entire team: destroy container, release ports, delete all members, then delete team
+app.delete('/api/team', requireAuth, requireAdmin, async (req, res) => {
+  const teamId = req.user.teamId
+  if (!teamId) return res.status(400).json({ error: '找不到所屬 Team' })
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    try {
+      const status = await getContainerStatus(provisionUserId)
+      if (status.exists) await destroyContainer(provisionUserId)
+      await releasePorts(provisionUserId)
+      await deleteContainerConfig(provisionUserId)
+    } catch (e) {
+      console.error('[delete-team] container cleanup error:', e.message)
+    }
+    await deleteAllTeamMembers(teamId)
+    await deleteTeam(teamId)
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
   }
 })
 
@@ -1532,6 +1554,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
           sandbox: { mode: 'off' },
           models: { 'google/gemini-2.5-flash': {} },
           model: { primary: 'google/gemini-2.5-flash' },
+          llm: { idleTimeoutSeconds: 0 },
         },
       },
       gateway,
@@ -1540,6 +1563,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
       plugins: {
         entries: {
           google: { enabled: true },
+          tokenjuice: { enabled: true },
         },
       },
       meta: {
@@ -1555,8 +1579,10 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     agents: {
       defaults: {
         workspace: '/home/node/.openclaw/workspace',
+        sandbox: { mode: 'off' },
         model: { primary: modelRef },
         models: { [modelRef]: {} },
+        llm: { idleTimeoutSeconds: 0 },
       },
     },
     models: {
@@ -1583,6 +1609,11 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     gateway,
     session: { dmScope: 'per-channel-peer' },
     tools: { profile: 'coding' },
+    plugins: {
+      entries: {
+        tokenjuice: { enabled: true },
+      },
+    },
     meta: {
       lastTouchedVersion: OPENCLAW_VERSION,
       lastTouchedAt: new Date().toISOString(),

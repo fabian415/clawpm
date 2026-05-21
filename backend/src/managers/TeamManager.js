@@ -62,3 +62,7 @@ export async function getWorkspaceFolder(teamId) {
   const team = await getTeam(teamId)
   return team?.setup_config?.workspaceFolder || team?.workspace_folder || null
 }
+
+export async function deleteTeam(teamId) {
+  await query('DELETE FROM teams WHERE id = $1', [teamId])
+}

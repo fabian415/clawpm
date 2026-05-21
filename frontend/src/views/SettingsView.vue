@@ -1,5 +1,12 @@
 <template>
   <div class="max-w-4xl mx-auto space-y-8 pb-20">
+  <DeleteTeamModal
+    :show="showDeleteTeamModal"
+    :is-deleting="isDeletingTeam"
+    :team-name="currentTeamName"
+    @close="showDeleteTeamModal = false"
+    @confirm="handleDeleteTeam"
+  />
     <div class="flex justify-between items-center gap-4">
       <h2 class="text-2xl font-bold">系統設定</h2>
     </div>
@@ -73,22 +80,11 @@
         <div v-else-if="!llmProvider" class="text-sm text-slate-400 italic">尚未選擇 LLM Provider。</div>
 
         <template v-else-if="llmProvider === 'gemini'">
-          <SecretField
-            label="GEMINI API KEY"
-            :value="llmConfig.apiKey"
-            :visible="showKeys"
-            @toggle="showKeys = !showKeys"
-          />
+          <ReadOnlyField label="模型名稱" :value="llmConfig.model" mono />
         </template>
 
         <template v-else-if="llmProvider === 'custom'">
-          <ReadOnlyField label="BASE URL" :value="llmConfig.baseUrl" />
-          <SecretField
-            label="API Key"
-            :value="llmConfig.apiKey"
-            :visible="showKeys"
-            @toggle="showKeys = !showKeys"
-          />
+          <ReadOnlyField label="Endpoint" :value="llmConfig.baseUrl" />
           <ReadOnlyField label="模型名稱" :value="llmConfig.model" mono />
         </template>
       </div>
@@ -142,19 +138,43 @@
       </button>
     </div>
 
+    <!-- Danger Zone -->
+    <section class="rounded-2xl border-2 border-red-300 dark:border-red-800 overflow-hidden">
+      <div class="p-6 border-b border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/20">
+        <h3 class="font-bold flex items-center gap-2 text-red-700 dark:text-red-400">
+          <TriangleAlert class="w-5 h-5" /> 危險區域
+        </h3>
+        <p class="text-xs text-red-500 dark:text-red-500 mt-1">以下操作不可復原，請謹慎操作。</p>
+      </div>
+      <div class="p-8 bg-white dark:bg-slate-900">
+        <div class="flex items-center justify-between gap-6">
+          <div>
+            <p class="font-semibold text-slate-800 dark:text-slate-100">刪除團隊</p>
+            <p class="text-sm text-slate-500 mt-1">永久刪除此團隊、所有帳號以及所屬的容器。此操作無法復原。</p>
+          </div>
+          <button
+            @click="showDeleteTeamModal = true"
+            class="shrink-0 bg-red-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-red-700 shadow-lg shadow-red-500/20 transition-all text-sm"
+          >
+            刪除團隊
+          </button>
+        </div>
+      </div>
+    </section>
+
   </div>
 </template>
 
 <script setup>
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
-import { KeyRound, Eye, EyeOff, AudioWaveform, Mail, Server, FolderOpen } from 'lucide-vue-next'
+import { KeyRound, Eye, EyeOff, AudioWaveform, Mail, Server, FolderOpen, TriangleAlert } from 'lucide-vue-next'
+import DeleteTeamModal from '../components/DeleteTeamModal.vue'
 
 const props = defineProps({
   containerConfig: { type: Object, default: null },
 })
-const emit = defineEmits(['save'])
+const emit = defineEmits(['save', 'logout'])
 
-const showKeys = ref(false)
 const showToken = ref(false)
 const selectedModel = ref('large-v3')
 const userSettings = ref(null)
@@ -162,6 +182,10 @@ const isLoadingUserSettings = ref(false)
 const settingsError = ref('')
 const notificationEmails = ref('')
 const isSaving = ref(false)
+const showDeleteTeamModal = ref(false)
+const isDeletingTeam = ref(false)
+
+const currentTeamName = computed(() => userSettings.value?.team?.name ?? userSettings.value?.teamName ?? '')
 
 const whisperModels = [
   { name: 'large-v3', desc: '高準確度' },
@@ -169,7 +193,7 @@ const whisperModels = [
   { name: 'small', desc: '快速處理' }
 ]
 
-const llmConfig = computed(() => userSettings.value?.team?.setupConfig ?? userSettings.value?.setupConfig ?? {})
+const llmConfig = computed(() => userSettings.value?.team?.setup_config ?? userSettings.value?.setup_config ?? {})
 const llmProvider = computed(() => llmConfig.value.provider ?? '')
 const providerLabel = computed(() => {
   if (llmProvider.value === 'gemini') return 'Google Gemini'
@@ -194,37 +218,6 @@ const ReadOnlyField = defineComponent({
   }
 })
 
-const SecretField = defineComponent({
-  name: 'SecretField',
-  props: {
-    label: { type: String, required: true },
-    value: { type: String, default: '' },
-    visible: { type: Boolean, default: false }
-  },
-  emits: ['toggle'],
-  setup(props, { emit }) {
-    return () => h('div', { class: 'space-y-2' }, [
-      h('label', { class: 'text-sm font-medium' }, props.label),
-      h('div', { class: 'relative' }, [
-        h('div', { class: `${fieldBaseClass} pr-12 font-mono` }, props.visible ? (props.value || '--') : maskSecret(props.value)),
-        h('button', {
-          class: 'absolute right-3 top-3 text-slate-400 hover:text-slate-600',
-          type: 'button',
-          'aria-label': '切換金鑰顯示',
-          onClick: () => emit('toggle')
-        }, [
-          h(props.visible ? EyeOff : Eye, { class: 'w-4 h-4' })
-        ])
-      ])
-    ])
-  }
-})
-
-function maskSecret(value) {
-  if (!value) return '--'
-  if (value.length <= 10) return '*'.repeat(value.length)
-  return `${value.slice(0, 6)}${'*'.repeat(12)}${value.slice(-4)}`
-}
 
 function maskToken(token) {
   if (!token) return '--'
@@ -276,6 +269,26 @@ async function handleSave() {
   } catch {}
   isSaving.value = false
   emit('save')
+}
+
+async function handleDeleteTeam() {
+  isDeletingTeam.value = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/team', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || '刪除團隊失敗')
+    localStorage.removeItem('clawpm_token')
+    localStorage.removeItem('clawpm_user')
+    emit('logout')
+  } catch (err) {
+    alert(`刪除失敗：${err.message}`)
+    isDeletingTeam.value = false
+    showDeleteTeamModal.value = false
+  }
 }
 
 onMounted(() => {

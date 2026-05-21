@@ -106,6 +106,7 @@
           v-else-if="currentPage === 'settings'"
           :container-config="containerConfig"
           @save="saveSettings"
+          @logout="logout"
         />
 
         <AccountView

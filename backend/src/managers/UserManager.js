@@ -146,3 +146,7 @@ export async function deleteMember(adminId, memberId) {
   )
   if (rowCount === 0) throw new Error('用戶不存在或不屬於此 Team')
 }
+
+export async function deleteAllTeamMembers(teamId) {
+  await query('DELETE FROM users WHERE team_id = $1', [teamId])
+}
