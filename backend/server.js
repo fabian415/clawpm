@@ -14,12 +14,11 @@ import nodemailer from 'nodemailer'
 import { runMigrations } from './src/migrate.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers } from './src/managers/UserManager.js'
 import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder } from './src/managers/TeamManager.js'
-import { getHistory as getChatHistory, appendMessage, createMessage } from './src/managers/ChatManager.js'
 import {
   getClientForUser, disconnectClientForUser,
   getDefaultSessionKey, makeScopedSessionKey,
   sendAndStream, getHistory as getGatewayHistory,
-  normalizeHistory,
+  startPassiveSessionWatcher,
 } from './src/managers/OpenClawClient.js'
 import { allocatePorts, releasePorts, getPortsForUser } from './src/containers/PortManager.js'
 import { createTask, getTask, listTasksForTeam, updateTask, deleteTask, retryTask } from './src/managers/TaskManager.js'
@@ -306,13 +305,6 @@ app.patch('/api/team/members/:memberId/role', requireAuth, requireAdmin, async (
   } catch (err) {
     res.status(400).json({ error: err.message })
   }
-})
-
-// ── Chat history REST endpoint ────────────────────────────────────────────────
-
-app.get('/api/chat/history', requireAuth, async (req, res) => {
-  const history = await getChatHistory(req.user.userId)
-  res.json({ messages: history })
 })
 
 // ── Media upload via FTP ──────────────────────────────────────────────────────
@@ -844,6 +836,7 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
       '4. 完成後回報各專案更新情況、目前進度、對外發表成熟度與主要缺口',
       '',
       '請直接執行，無需確認。',
+      '最後檢查所有的Markdown檔案寫入時，\n 要取代成斷行。',
     )
   } else {
     parts.push(
@@ -856,6 +849,7 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
       '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
       '',
       '請直接執行，無需確認。',
+      '最後檢查所有的Markdown檔案寫入時，\n 要取代成斷行。',
     )
   }
 
@@ -1236,6 +1230,272 @@ ${cards ? `<div class="grid">${cards}</div>` : '<div class="empty">尚未建立�
 </body></html>`)
 })
 
+// ── Session management helpers ────────────────────────────────────────────────
+
+const SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function getSessionsDir(provisionUserId) {
+  return path.join(getUserPaths(provisionUserId).config, 'agents', 'main', 'sessions')
+}
+
+function parseSessionsIndex(raw) {
+  if (Array.isArray(raw)) return raw
+  if (Array.isArray(raw?.sessions)) return raw.sessions
+  // Object format: { "sessionKey": "uuid" } or { "sessionKey": { id, ... } }
+  return Object.entries(raw || {}).map(([key, val]) => ({
+    key,
+    id: typeof val === 'string' ? val : (val?.id || val?.sessionId || null),
+    ...(typeof val === 'object' && val !== null ? val : {}),
+  }))
+}
+
+// ── Session list / delete routes ──────────────────────────────────────────────
+
+app.get('/api/chat/sessions', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const sessionsDir = getSessionsDir(provisionUserId)
+
+  if (!fs.existsSync(sessionsDir)) return res.json({ sessions: [] })
+
+  let indexEntries = []
+  try {
+    const indexPath = path.join(sessionsDir, 'sessions.json')
+    if (fs.existsSync(indexPath)) {
+      indexEntries = parseSessionsIndex(JSON.parse(fs.readFileSync(indexPath, 'utf8')))
+    }
+  } catch {}
+
+  // Build a map: sessionId → sessionKey
+  const idToKey = {}
+  for (const entry of indexEntries) {
+    const id = entry?.id || entry?.sessionId
+    const key = entry?.key || entry?.sessionKey
+    if (id && key) idToKey[id] = key
+  }
+
+  const sessions = fs.readdirSync(sessionsDir)
+    .filter(f => f.endsWith('.jsonl') && !f.includes('.trajectory'))
+    .map(f => {
+      const sessionId = f.replace('.jsonl', '')
+      const stat = fs.statSync(path.join(sessionsDir, f))
+      return {
+        sessionId,
+        sessionKey: idToKey[sessionId] || null,
+        size: stat.size,
+        lastModified: stat.mtime.toISOString(),
+      }
+    })
+    .sort((a, b) => b.lastModified.localeCompare(a.lastModified))
+
+  res.json({ sessions })
+})
+
+app.delete('/api/chat/sessions/:sessionId', requireAuth, async (req, res) => {
+  const { sessionId } = req.params
+  if (!SESSION_UUID_RE.test(sessionId)) {
+    return res.status(400).json({ error: '無效的 session ID' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const sessionsDir = getSessionsDir(provisionUserId)
+
+  // Security: ensure resolved paths stay inside sessionsDir
+  const filesToDelete = [
+    `${sessionId}.jsonl`,
+    `${sessionId}.trajectory.jsonl`,
+    `${sessionId}.trajectory-path.json`,
+  ]
+
+  let deleted = false
+  for (const fname of filesToDelete) {
+    const fpath = path.join(sessionsDir, fname)
+    if (!fpath.startsWith(sessionsDir + path.sep) && fpath !== sessionsDir) {
+      return res.status(403).json({ error: '無權限' })
+    }
+    if (fs.existsSync(fpath)) {
+      fs.unlinkSync(fpath)
+      deleted = true
+    }
+  }
+
+  if (!deleted) return res.status(404).json({ error: '找不到 session' })
+
+  // Remove from sessions.json index
+  const indexPath = path.join(sessionsDir, 'sessions.json')
+  if (fs.existsSync(indexPath)) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(indexPath, 'utf8'))
+      if (Array.isArray(raw)) {
+        const filtered = raw.filter(s => (s?.id || s?.sessionId) !== sessionId)
+        fs.writeFileSync(indexPath, JSON.stringify(filtered, null, 2), 'utf8')
+      } else if (Array.isArray(raw?.sessions)) {
+        raw.sessions = raw.sessions.filter(s => (s?.id || s?.sessionId) !== sessionId)
+        fs.writeFileSync(indexPath, JSON.stringify(raw, null, 2), 'utf8')
+      } else if (typeof raw === 'object') {
+        // Object format: find key whose value references this id
+        for (const [key, val] of Object.entries(raw)) {
+          const id = typeof val === 'string' ? val : (val?.id || val?.sessionId)
+          if (id === sessionId) { delete raw[key]; break }
+        }
+        fs.writeFileSync(indexPath, JSON.stringify(raw, null, 2), 'utf8')
+      }
+    } catch {}
+  }
+
+  res.json({ success: true, sessionId })
+})
+
+app.get('/api/chat/sessions/:sessionId/history', requireAuth, async (req, res) => {
+  const { sessionId } = req.params
+  if (!SESSION_UUID_RE.test(sessionId)) {
+    return res.status(400).json({ error: '無效的 session ID' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const sessionsDir = getSessionsDir(provisionUserId)
+  const filePath = path.join(sessionsDir, `${sessionId}.jsonl`)
+
+  if (!fs.existsSync(filePath)) return res.json({ messages: [] })
+
+  const messages = []
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let obj
+      try { obj = JSON.parse(trimmed) } catch { continue }
+
+      const msgObj = (obj.message && typeof obj.message === 'object') ? obj.message : obj
+      const rawRole = (msgObj?.role ?? '').toLowerCase()
+
+      if (rawRole === 'user' || rawRole === 'assistant') {
+        let textContent = ''
+        const contentArr = Array.isArray(msgObj.content) ? msgObj.content : []
+        for (const block of contentArr) {
+          if (block?.type === 'text') textContent += block.text || ''
+        }
+        if (!textContent && typeof msgObj.content === 'string') textContent = msgObj.content
+        if (!textContent) continue
+
+        messages.push({
+          id: obj.id ?? msgObj.id ?? `${sessionId}-${messages.length}`,
+          role: rawRole,
+          content: textContent,
+          events: [],
+          timestamp: obj.timestamp ?? msgObj.timestamp ?? null,
+          isStreaming: false,
+        })
+      } else if (rawRole === 'toolresult' || rawRole === 'tool_result') {
+        const contentArr = Array.isArray(msgObj.content) ? msgObj.content : []
+        let textContent = ''
+        for (const block of contentArr) {
+          if (block?.type === 'text') textContent += block.text || ''
+        }
+        if (!textContent && typeof msgObj.content === 'string') textContent = msgObj.content
+
+        const toolName = msgObj.toolName ?? msgObj.name ?? null
+        const isError = msgObj.isError ?? false
+
+        // Attach to the most recent assistant message
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+        if (lastAssistant) {
+          lastAssistant.events.push({ role: 'toolresult', name: toolName, content: textContent, isError })
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[session-history] parse error:', err.message)
+    return res.status(500).json({ error: '讀取歷史記錄失敗' })
+  }
+
+  res.json({ messages })
+})
+
+app.get('/api/chat/sessions/:sessionId/raw', requireAuth, async (req, res) => {
+  const { sessionId } = req.params
+  if (!SESSION_UUID_RE.test(sessionId)) {
+    return res.status(400).json({ error: '無效的 session ID' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const sessionsDir = getSessionsDir(provisionUserId)
+  const filePath = path.join(sessionsDir, `${sessionId}.jsonl`)
+
+  if (!filePath.startsWith(sessionsDir + path.sep)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.json({ lines: [], exists: false })
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const lines = raw.split('\n').filter(l => l.trim()).map(line => {
+      try { return JSON.parse(line) } catch { return { raw: line } }
+    })
+    res.json({ lines, exists: true })
+  } catch {
+    res.status(500).json({ error: '讀取 JSONL 失敗' })
+  }
+})
+
+app.get('/api/chat/sessions/:sessionId/trajectory', requireAuth, async (req, res) => {
+  const { sessionId } = req.params
+  if (!SESSION_UUID_RE.test(sessionId)) {
+    return res.status(400).json({ error: '無效的 session ID' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const sessionsDir = getSessionsDir(provisionUserId)
+  const filePath = path.join(sessionsDir, `${sessionId}.trajectory.jsonl`)
+
+  if (!filePath.startsWith(sessionsDir + path.sep)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.json({ lines: [], exists: false })
+  }
+
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    const lines = raw.split('\n').filter(l => l.trim()).map(line => {
+      try { return JSON.parse(line) } catch { return { raw: line } }
+    })
+    res.json({ lines, exists: true })
+  } catch {
+    res.status(500).json({ error: '讀取 trajectory 失敗' })
+  }
+})
+
+app.delete('/api/chat/sessions', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const sessionsDir = getSessionsDir(provisionUserId)
+
+  if (!fs.existsSync(sessionsDir)) return res.json({ success: true, deleted: 0 })
+
+  const files = fs.readdirSync(sessionsDir).filter(f =>
+    (f.endsWith('.jsonl') || f.endsWith('.trajectory-path.json')) && f !== 'sessions.json'
+  )
+  let deleted = 0
+  for (const fname of files) {
+    const fpath = path.join(sessionsDir, fname)
+    if (fpath.startsWith(sessionsDir + path.sep)) {
+      fs.unlinkSync(fpath)
+      deleted++
+    }
+  }
+
+  const indexPath = path.join(sessionsDir, 'sessions.json')
+  if (fs.existsSync(indexPath)) {
+    fs.writeFileSync(indexPath, JSON.stringify([]), 'utf8')
+  }
+
+  res.json({ success: true, deleted })
+})
+
 // ── Provision helpers ─────────────────────────────────────────────────────────
 
 function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
@@ -1313,8 +1573,8 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
               reasoning: false,
               input: ['text'],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 1050000,
-              maxTokens: 128000,
+              contextWindow: 131072,
+              maxTokens: 16384,
             },
           ],
         },
@@ -1756,11 +2016,9 @@ app.delete('/api/speakers/:team/:name', requireAuth, async (req, res) => {
 // ── WebSocket chat ────────────────────────────────────────────────────────────
 
 /**
- * Send a user message to OpenClaw via the gateway WebSocket protocol
- * and stream incremental history updates back to the frontend WebSocket.
- *
- * Protocol: WebSocket JSON-RPC (not REST/SSE).
- * We call chat.send, then poll chat.history until the reply stabilises.
+ * Send a user message to OpenClaw and stream the response back to the frontend.
+ * Content is read directly from the session JSONL file (source of truth).
+ * Falls back to gateway chat.history polling if the file cannot be resolved.
  */
 async function handleChatMessage(ws, authUserId, sessionKey, content) {
   const provisionUserId = await getProvisionUserId(authUserId)
@@ -1793,10 +2051,13 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
       if (lastAssistantMsg && lastAssistantMsg.id !== currentGatewayMsgId) {
         if (currentGatewayMsgId !== null) {
           // A second (or later) assistant message appeared — complete the previous one.
-          const prevMsg = createMessage('assistant', lastSentText, {
-            messageId: frontendMsgId, sessionKey, events: processEntries,
-          })
-          appendMessage(authUserId, prevMsg).catch(() => {})
+          const prevMsg = {
+            id: frontendMsgId,
+            role: 'assistant',
+            content: lastSentText,
+            timestamp: new Date().toISOString(),
+            events: processEntries,
+          }
           send({ type: 'message_complete', messageId: frontendMsgId, message: prevMsg })
 
           frontendMsgId = randomUUID()
@@ -1819,12 +2080,13 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
 
       if (done) {
         if (lastSentText) {
-          const assistantMsg = createMessage('assistant', lastSentText, {
-            messageId: frontendMsgId,
-            sessionKey,
+          const assistantMsg = {
+            id: frontendMsgId,
+            role: 'assistant',
+            content: lastSentText,
+            timestamp: new Date().toISOString(),
             events: latestProcessEntries,
-          })
-          appendMessage(authUserId, assistantMsg)
+          }
           send({ type: 'message_complete', messageId: frontendMsgId, message: assistantMsg })
         } else {
           // Gateway returned nothing — cancel the placeholder bubble.
@@ -1890,8 +2152,78 @@ function listenOnAvailablePort(port, remainingRetries = getPortRetryLimit()) {
   server.listen(port)
 }
 
+async function loadLatestSessionHistory(provisionUserId) {
+  const sessionsDir = getSessionsDir(provisionUserId)
+  if (!fs.existsSync(sessionsDir)) return { history: [], sessionKey: getDefaultSessionKey() }
+
+  // Find the most recently modified .jsonl (excluding .trajectory)
+  let latestFile = null
+  let latestMtime = 0
+  try {
+    for (const fname of fs.readdirSync(sessionsDir)) {
+      if (!fname.endsWith('.jsonl') || fname.includes('.trajectory')) continue
+      const fpath = path.join(sessionsDir, fname)
+      const mtime = fs.statSync(fpath).mtimeMs
+      if (mtime > latestMtime) { latestMtime = mtime; latestFile = fname }
+    }
+  } catch {}
+
+  if (!latestFile) return { history: [], sessionKey: getDefaultSessionKey() }
+
+  const sessionId = latestFile.replace('.jsonl', '')
+
+  const filePath = path.join(sessionsDir, latestFile)
+  const messages = []
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8')
+    for (const line of raw.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      let obj
+      try { obj = JSON.parse(trimmed) } catch { continue }
+      const msgObj = (obj.message && typeof obj.message === 'object') ? obj.message : obj
+      const rawRole = (msgObj?.role ?? '').toLowerCase()
+      if (rawRole === 'user' || rawRole === 'assistant') {
+        let textContent = ''
+        const contentArr = Array.isArray(msgObj.content) ? msgObj.content : []
+        for (const block of contentArr) {
+          if (block?.type === 'text') textContent += block.text || ''
+        }
+        if (!textContent && typeof msgObj.content === 'string') textContent = msgObj.content
+        if (!textContent) continue
+        messages.push({
+          id: obj.id ?? msgObj.id ?? `${sessionId}-${messages.length}`,
+          role: rawRole,
+          content: textContent,
+          events: [],
+          timestamp: obj.timestamp ?? msgObj.timestamp ?? null,
+          isStreaming: false,
+        })
+      } else if (rawRole === 'toolresult' || rawRole === 'tool_result') {
+        let textContent = ''
+        const contentArr = Array.isArray(msgObj.content) ? msgObj.content : []
+        for (const block of contentArr) {
+          if (block?.type === 'text') textContent += block.text || ''
+        }
+        if (!textContent && typeof msgObj.content === 'string') textContent = msgObj.content
+        const toolName = msgObj.toolName ?? msgObj.name ?? null
+        const isError = msgObj.isError ?? false
+        const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant')
+        if (lastAssistant) {
+          lastAssistant.events.push({ role: 'toolresult', name: toolName, content: textContent, isError })
+        }
+      }
+    }
+  } catch {}
+
+  // Always use the default 'agent:main:main' key for active session so streaming
+  // remains stable. History is loaded from the latest file purely for display context.
+  return { history: messages, sessionKey: getDefaultSessionKey() }
+}
+
 wss.on('connection', (ws) => {
   let authUserId = null
+  let provisionUserId = null
   let sessionKey = getDefaultSessionKey()
 
   // Per-connection message queue: allows the user to send multiple messages
@@ -1904,9 +2236,70 @@ wss.on('connection', (ws) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj))
   }
 
+  // Passive session watcher: forwards new JSONL entries to the frontend in
+  // real-time when an external process (another OpenClaw client or agent) is
+  // writing to the session file between user messages.
+  let stopPassiveWatcher = null
+
+  function restartPassiveWatcher() {
+    if (stopPassiveWatcher) { stopPassiveWatcher(); stopPassiveWatcher = null }
+    if (!provisionUserId) return
+
+    let currentMsgId = null
+    let lastSentText = ''
+    let lastGatewayMsgId = null
+
+    stopPassiveWatcher = startPassiveSessionWatcher(provisionUserId, sessionKey, ({ lastAssistantMsg, processEntries, done }) => {
+      // Open a new bubble the first time we see any activity
+      if (!currentMsgId && (processEntries.length > 0 || lastAssistantMsg)) {
+        currentMsgId = randomUUID()
+        send({ type: 'message_start', messageId: currentMsgId, sessionKey })
+      }
+
+      // New gateway assistant message — complete the previous bubble and start a new one
+      if (lastAssistantMsg && lastAssistantMsg.id !== lastGatewayMsgId) {
+        if (lastGatewayMsgId !== null && currentMsgId) {
+          send({ type: 'message_complete', messageId: currentMsgId, message: {
+            id: currentMsgId, role: 'assistant', content: lastSentText,
+            timestamp: new Date().toISOString(), events: processEntries,
+          }})
+          lastSentText = ''
+          currentMsgId = randomUUID()
+          send({ type: 'message_start', messageId: currentMsgId, sessionKey })
+        }
+        lastGatewayMsgId = lastAssistantMsg.id
+      }
+
+      // Stream new characters
+      if (lastAssistantMsg?.content && lastAssistantMsg.content.length > lastSentText.length) {
+        const delta = lastAssistantMsg.content.slice(lastSentText.length)
+        send({ type: 'chunk', messageId: currentMsgId, text: delta })
+        lastSentText = lastAssistantMsg.content
+      }
+
+      // Forward tool events
+      if (processEntries.length > 0 && currentMsgId) {
+        send({ type: 'process_entries', entries: processEntries })
+      }
+
+      // Done: settle the completed message
+      if (done && currentMsgId) {
+        send({ type: 'message_complete', messageId: currentMsgId, message: {
+          id: currentMsgId, role: 'assistant', content: lastSentText,
+          timestamp: new Date().toISOString(), events: processEntries,
+        }})
+        currentMsgId = null
+        lastSentText = ''
+        lastGatewayMsgId = null
+      }
+    })
+  }
+
   async function drainQueue() {
     if (queueRunning) return
     queueRunning = true
+    // Suspend passive watcher during active send to avoid duplicate events
+    if (stopPassiveWatcher) { stopPassiveWatcher(); stopPassiveWatcher = null }
     while (msgQueue.length > 0) {
       const { content, sk } = msgQueue.shift()
       try {
@@ -1917,6 +2310,8 @@ wss.on('connection', (ws) => {
       }
     }
     queueRunning = false
+    // Resume passive watcher after the send/stream cycle finishes
+    restartPassiveWatcher()
   }
 
   ws.on('message', async (raw) => {
@@ -1924,15 +2319,24 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(raw) } catch { return }
 
     if (msg.type === 'auth') {
+      let decoded
       try {
-        const decoded = verifyToken(msg.token)
-        authUserId = decoded.userId
-        const history = await getChatHistory(authUserId)
-        send({ type: 'auth_ok', history, sessionKey })
+        decoded = verifyToken(msg.token)
       } catch {
         send({ type: 'auth_error', message: 'Token 無效' })
         ws.close()
+        return
       }
+      authUserId = decoded.userId
+      let history = []
+      try {
+        provisionUserId = await getProvisionUserId(authUserId)
+        const result = await loadLatestSessionHistory(provisionUserId)
+        history = result.history
+        sessionKey = result.sessionKey
+      } catch {}
+      send({ type: 'auth_ok', history, sessionKey })
+      restartPassiveWatcher()
       return
     }
 
@@ -1942,8 +2346,13 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'message' && typeof msg.content === 'string' && msg.content.trim()) {
-      const userMsg = createMessage('user', msg.content.trim(), { sessionKey })
-      appendMessage(authUserId, userMsg).catch(() => {})
+      const userMsg = {
+        id: randomUUID(),
+        role: 'user',
+        content: msg.content.trim(),
+        timestamp: new Date().toISOString(),
+        events: [],
+      }
       send({ type: 'user_message', message: userMsg })
       // Enqueue and process in background — caller returns immediately.
       msgQueue.push({ content: msg.content.trim(), sk: sessionKey })
@@ -1961,11 +2370,13 @@ wss.on('connection', (ws) => {
       msgQueue.length = 0
       sessionKey = msg.sessionKey.trim()
       send({ type: 'session_changed', sessionKey })
+      restartPassiveWatcher()
     }
   })
 
   ws.on('close', () => {
     msgQueue.length = 0
+    if (stopPassiveWatcher) { stopPassiveWatcher(); stopPassiveWatcher = null }
   })
 
   ws.on('error', (err) => {

@@ -18,9 +18,10 @@ import { getContainerConfig, pairDevice } from '../containers/DevicePairer.js'
 const PROTOCOL_VERSION = 3
 const CONNECT_CHALLENGE_TIMEOUT_MS = 5000
 const DEFAULT_HISTORY_LIMIT = 200
-const POLL_INTERVAL_MS = 800
+const POLL_INTERVAL_MS = 300
 const POLL_STABLE_COUNT = 2          // consecutive unchanged polls before declaring done
-const POLL_TIMEOUT_MS = 120_000
+const POLL_TIMEOUT_MS = 120_000      // chat.send RPC call timeout
+const FILE_WATCH_TIMEOUT_MS = 30 * 60 * 1000  // 30-min hard ceiling for JSONL watching
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
 
 function resolveClientPlatform() {
@@ -473,6 +474,196 @@ export function normalizeHistory(payload) {
     .filter(m => m.content && !isInternalNotice(m.content))
 }
 
+// ── Session JSONL file helpers ────────────────────────────────────────────────
+
+function getSessionsDir(userId) {
+  return path.join(getUserPaths(userId).config, 'agents', 'main', 'sessions')
+}
+
+function findSessionJsonlFile(sessionsDir, sessionKey) {
+  const indexPath = path.join(sessionsDir, 'sessions.json')
+  if (!fs.existsSync(indexPath)) return null
+  try {
+    const raw = JSON.parse(fs.readFileSync(indexPath, 'utf8'))
+    let entries = Array.isArray(raw) ? raw
+      : Array.isArray(raw?.sessions) ? raw.sessions
+      : Object.entries(raw).map(([k, v]) => ({
+          key: k,
+          id: typeof v === 'string' ? v : (v?.id || v?.sessionId),
+        }))
+    const found = entries.find(s => s.key === sessionKey || s.sessionKey === sessionKey)
+    const id = found?.id || found?.sessionId
+    if (!id) return null
+    const candidate = path.join(sessionsDir, `${id}.jsonl`)
+    return fs.existsSync(candidate) ? candidate : null
+  } catch { return null }
+}
+
+async function resolveSessionJsonlFile(sessionsDir, sessionKey) {
+  let found = findSessionJsonlFile(sessionsDir, sessionKey)
+  if (found) return found
+  // For new sessions the file is created after chat.send — poll up to 5s
+  for (let i = 0; i < 10; i++) {
+    await new Promise(r => setTimeout(r, 500))
+    found = findSessionJsonlFile(sessionsDir, sessionKey)
+    if (found) return found
+  }
+  return null
+}
+
+// ── JSONL line parser ─────────────────────────────────────────────────────────
+
+function parseJsonlMsgLine(line) {
+  try {
+    const obj = JSON.parse(line.trim())
+    if (!obj) return null
+    // Primary format: { message: { role, content, stopReason }, id, timestamp, ... }
+    // Fallback format: { role, content, id, timestamp }
+    const msg = (obj.message && typeof obj.message === 'object') ? obj.message : obj
+    const rawRole = msg?.role || ''
+    const role = normalizeRole(rawRole)
+    if (!role) return null
+    const content = pickText(msg?.content ?? msg?.text ?? '')
+    const id = obj.id ?? msg?.id ?? null
+    const name = msg?.toolName ?? msg?.name ?? msg?.function?.name ?? null
+    const isError = msg?.isError ?? false
+    const isThought = isThoughtEntry(obj) || isThoughtEntry(msg)
+    const isProcess = isProcessRole(role) || isInternalNotice(content)
+    // stopReason:"stop" = LLM finished naturally (no more tool calls)
+    // stopReason:"toolUse"/"tool_calls" = still mid-task
+    const stopReason = msg?.stopReason ?? obj?.stopReason ?? null
+    return { id, role, name, content, isError, timestamp: obj.timestamp ?? null, isThought, isProcess, stopReason }
+  } catch { return null }
+}
+
+// ── File-based streaming (primary) ───────────────────────────────────────────
+
+async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate }) {
+  // Wait up to 5s for file to appear on new sessions
+  if (!fs.existsSync(watchFile)) {
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, 500))
+      if (fs.existsSync(watchFile)) break
+    }
+  }
+
+  return new Promise((resolve) => {
+    let filePos = fileBaseline
+    let lastAssistantMsg = null
+    let processEntries = []
+    let finishTimer = null
+    let pollTimer = null
+    let watcher = null
+    let finished = false
+
+    const finish = () => {
+      if (finished) return
+      finished = true
+      clearTimeout(finishTimer)
+      clearInterval(pollTimer)
+      try { watcher?.close() } catch {}
+      if (lastAssistantMsg) {
+        onUpdate({ lastAssistantMsg, processEntries, done: true })
+      }
+      resolve()
+    }
+
+    // Schedule finish with a small flush delay so any last JSONL writes can land.
+    const scheduleFinish = (delayMs = 300) => {
+      if (finished) return
+      clearTimeout(finishTimer)
+      finishTimer = setTimeout(() => { readNewContent(); finish() }, delayMs)
+    }
+
+    const readNewContent = () => {
+      if (finished || !fs.existsSync(watchFile)) return
+      let stat
+      try { stat = fs.statSync(watchFile) } catch { return }
+      if (stat.size <= filePos) return
+
+      try {
+        const len = stat.size - filePos
+        const buf = Buffer.alloc(len)
+        const fd = fs.openSync(watchFile, 'r')
+        fs.readSync(fd, buf, 0, len, filePos)
+        fs.closeSync(fd)
+
+        const rawText = buf.toString('utf8')
+        // Only parse up to the last complete newline — partial JSON line stays for next read.
+        const lastNl = rawText.lastIndexOf('\n')
+        if (lastNl < 0) return
+
+        const completeText = rawText.slice(0, lastNl + 1)
+        filePos += Buffer.byteLength(completeText, 'utf8')
+
+        for (const line of completeText.split('\n')) {
+          if (!line.trim()) continue
+          const msg = parseJsonlMsgLine(line)
+          if (!msg) continue
+          if (msg.isThought || isInternalNotice(msg.content)) continue
+
+          if (msg.role === 'assistant' && !prevIdSet.has(msg.id)) {
+            if (msg.content) {
+              lastAssistantMsg = msg
+              onUpdate({ lastAssistantMsg: msg, processEntries, done: false })
+            }
+            // stopReason:"stop" = LLM finished naturally with no further tool calls.
+            // stopReason:"toolUse"/"tool_calls" = mid-task, more turns coming.
+            if (msg.stopReason === 'stop') {
+              scheduleFinish(300)
+            }
+          } else if (msg.isProcess) {
+            processEntries = [...processEntries, msg]
+            onUpdate({ lastAssistantMsg, processEntries, done: false })
+          }
+        }
+      } catch {}
+    }
+
+    // fs.watch for immediate events; 500ms poll as Docker-volume fallback
+    try { watcher = fs.watch(watchFile, { persistent: false }, readNewContent) } catch {}
+    pollTimer = setInterval(readNewContent, 500)
+
+    // Hard overall timeout (separate from chat.send RPC timeout)
+    setTimeout(finish, FILE_WATCH_TIMEOUT_MS)
+
+    // Immediate read
+    readNewContent()
+  })
+}
+
+// ── Gateway-polling fallback (when JSONL file cannot be found) ────────────────
+
+async function _streamFromPolling({ client, sessionKey, prevMessages, prevIdSet, onUpdate }) {
+  const startedAt = Date.now()
+  let prevContentSig = conversationSignature(prevMessages)
+  let stableCount = 0
+
+  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+
+    let current
+    try { current = await getHistory(client, sessionKey) } catch { continue }
+
+    const currentSig = conversationSignature(current)
+    const newMessages = current.filter(m => !prevIdSet.has(m.id))
+    const lastAssistantMsg = getLastNewAssistantEntry(current, prevIdSet)
+    const processEntries = newMessages.filter(m => m.isProcess && !m.isThought)
+
+    if (currentSig !== prevContentSig) {
+      prevContentSig = currentSig
+      stableCount = 0
+      onUpdate({ lastAssistantMsg, processEntries, done: false })
+    } else {
+      stableCount++
+      if (lastAssistantMsg && stableCount >= POLL_STABLE_COUNT) {
+        onUpdate({ lastAssistantMsg, processEntries, done: true })
+        break
+      }
+    }
+  }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export function getDefaultSessionKey() {
@@ -508,17 +699,23 @@ function getLastNewAssistantEntry(messages, prevIdSet) {
 
 /**
  * Send a message and stream incremental updates via onUpdate callback.
- * Resolves when the assistant has finished replying.
  *
- * onUpdate receives { lastAssistantMsg, processEntries, done }
- *   lastAssistantMsg — the most-recent new assistant message {id, content, …}, or null
- *   processEntries   — all new tool/process entries since the send
- *   done             — true on final stable call
+ * Primary path: directly reads the session JSONL file for correct, real-time content.
+ * Fallback: gateway chat.history polling (when JSONL file cannot be resolved).
+ *
+ * onUpdate({ lastAssistantMsg, processEntries, done })
  */
 export async function sendAndStream(client, sessionKey, userMessage, onUpdate) {
+  const sessionsDir = getSessionsDir(client.userId)
   const prevMessages = await getHistory(client, sessionKey).catch(() => [])
-  const prevSig = conversationSignature(prevMessages)
   const prevIdSet = new Set(prevMessages.map(m => m.id))
+
+  // Snapshot file offset before sending so we only read NEW content
+  let watchFile = findSessionJsonlFile(sessionsDir, sessionKey)
+  let fileBaseline = 0
+  if (watchFile && fs.existsSync(watchFile)) {
+    fileBaseline = fs.statSync(watchFile).size
+  }
 
   await client.call('chat.send', {
     sessionKey,
@@ -526,39 +723,105 @@ export async function sendAndStream(client, sessionKey, userMessage, onUpdate) {
     idempotencyKey: randomUUID(),
   }, POLL_TIMEOUT_MS)
 
-  const startedAt = Date.now()
-  let prevContentSig = prevSig
-  let stableCount = 0
-  let latestMessages = prevMessages
-
-  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
-
-    let current
-    try {
-      current = await getHistory(client, sessionKey)
-    } catch {
-      continue
-    }
-
-    const currentSig = conversationSignature(current)
-    const newMessages = current.filter(m => !prevIdSet.has(m.id))
-    const lastAssistantMsg = getLastNewAssistantEntry(current, prevIdSet)
-    const processEntries = newMessages.filter(m => m.isProcess && !m.isThought)
-
-    if (currentSig !== prevContentSig) {
-      prevContentSig = currentSig
-      latestMessages = current
-      stableCount = 0
-      onUpdate({ lastAssistantMsg, processEntries, done: false })
-    } else {
-      stableCount++
-      if (lastAssistantMsg && stableCount >= POLL_STABLE_COUNT) {
-        onUpdate({ lastAssistantMsg, processEntries, done: true })
-        break
-      }
-    }
+  // For new sessions the file didn't exist yet — try to resolve it now
+  if (!watchFile) {
+    watchFile = await resolveSessionJsonlFile(sessionsDir, sessionKey)
   }
 
-  return latestMessages
+  if (watchFile) {
+    return _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
+  }
+
+  console.warn(`[chat] JSONL file not found for session ${sessionKey}, falling back to polling`)
+  return _streamFromPolling({ client, sessionKey, prevMessages, prevIdSet, onUpdate })
+}
+
+/**
+ * Passively watch a session's JSONL file for new entries written by an external
+ * process (e.g. another OpenClaw client). Calls onUpdate() with the same
+ * { lastAssistantMsg, processEntries, done } shape as sendAndStream.
+ *
+ * Returns a stop() function. The watcher runs until stop() is called.
+ */
+export function startPassiveSessionWatcher(userId, sessionKey, onUpdate) {
+  const sessionsDir = getSessionsDir(userId)
+  let watchFile = findSessionJsonlFile(sessionsDir, sessionKey)
+
+  let filePos = 0
+  if (watchFile && fs.existsSync(watchFile)) {
+    filePos = fs.statSync(watchFile).size
+  }
+
+  let stopped = false
+  let watcher = null
+  let pollTimer = null
+  let processEntries = []
+  let lastAssistantMsg = null
+  const prevIdSet = new Set()
+
+  const readNewContent = () => {
+    if (stopped) return
+
+    if (!watchFile) {
+      watchFile = findSessionJsonlFile(sessionsDir, sessionKey)
+      if (!watchFile) return
+      filePos = 0
+    }
+
+    if (!fs.existsSync(watchFile)) return
+    let stat
+    try { stat = fs.statSync(watchFile) } catch { return }
+    if (stat.size <= filePos) return
+
+    try {
+      const len = stat.size - filePos
+      const buf = Buffer.alloc(len)
+      const fd = fs.openSync(watchFile, 'r')
+      fs.readSync(fd, buf, 0, len, filePos)
+      fs.closeSync(fd)
+
+      const rawText = buf.toString('utf8')
+      const lastNl = rawText.lastIndexOf('\n')
+      if (lastNl < 0) return
+
+      const completeText = rawText.slice(0, lastNl + 1)
+      filePos += Buffer.byteLength(completeText, 'utf8')
+
+      for (const line of completeText.split('\n')) {
+        if (!line.trim()) continue
+        const msg = parseJsonlMsgLine(line)
+        if (!msg) continue
+        if (msg.isThought || isInternalNotice(msg.content)) continue
+
+        if (msg.role === 'assistant' && !prevIdSet.has(msg.id)) {
+          prevIdSet.add(msg.id)
+          if (msg.content) {
+            lastAssistantMsg = msg
+            onUpdate({ lastAssistantMsg: msg, processEntries, done: false })
+          }
+          if (msg.stopReason === 'stop') {
+            setTimeout(() => {
+              if (!stopped) {
+                onUpdate({ lastAssistantMsg, processEntries, done: true })
+                lastAssistantMsg = null
+                processEntries = []
+              }
+            }, 300)
+          }
+        } else if (msg.isProcess) {
+          processEntries = [...processEntries, msg]
+          onUpdate({ lastAssistantMsg, processEntries, done: false })
+        }
+      }
+    } catch {}
+  }
+
+  try { watcher = fs.watch(watchFile || sessionsDir, { persistent: false }, readNewContent) } catch {}
+  pollTimer = setInterval(readNewContent, 500)
+
+  return function stop() {
+    stopped = true
+    try { watcher?.close() } catch {}
+    clearInterval(pollTimer)
+  }
 }

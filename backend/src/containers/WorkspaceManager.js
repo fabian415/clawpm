@@ -74,6 +74,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
         sandbox: { mode: 'off' },
         models: { 'google/gemini-2.5-flash': {} },
         model: { primary: 'google/gemini-2.5-flash' },
+        llm: { idleTimeoutSeconds: 0 },
       },
     },
     gateway: {
@@ -102,6 +103,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
     plugins: {
       entries: {
         google: { enabled: true },
+        tokenjuice: { enabled: true },
       },
     },
     meta: {

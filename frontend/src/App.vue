@@ -87,6 +87,20 @@
           @select-task="openTaskDetail"
         />
 
+        <SessionsView
+          v-else-if="currentPage === 'sessions'"
+          :fetch-sessions="chat.fetchSessions"
+          :delete-session="chat.deleteSession"
+          :delete-all-sessions="chat.deleteAllSessions"
+          :fetch-trajectory="chat.fetchTrajectory"
+          :fetch-raw="chat.fetchRaw"
+          :sessions="chat.sessions.value"
+          :sessions-loading="chat.sessionsLoading.value"
+          :current-session-key="chat.sessionKey.value"
+          @toast="(msg, type) => showToast(msg, type)"
+          @select-session="handleSelectSession"
+        />
+
 
         <SettingsView
           v-else-if="currentPage === 'settings'"
@@ -168,6 +182,7 @@ import DestroyModal from './components/DestroyModal.vue'
 import SetupWizard from './components/SetupWizard.vue'
 import ChatButton from './components/ChatButton.vue'
 import ChatPanel from './components/ChatPanel.vue'
+import SessionsView from './views/SessionsView.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import ProjectListView from './views/ProjectListView.vue'
@@ -215,6 +230,11 @@ function handleNavigate(page) {
 
 const chat = useChat()
 
+async function handleSelectSession(session) {
+  await chat.switchSession(session)
+  chat.openPanel()
+}
+
 // Connect WebSocket when user logs in; disconnect on logout
 watch(currentPage, (page) => {
   const loggedIn = page !== 'login' && page !== 'register'
@@ -228,8 +248,12 @@ watch(currentPage, (page) => {
   }
 }, { immediate: true })
 
-function handleExtractionReady({ sessionKey, prompt }) {
-  chat.setSession(sessionKey)
+function handleExtractionReady({ sessionKey, prompt, newSession }) {
+  if (newSession) {
+    chat.newSession()
+  } else {
+    chat.setSession(sessionKey)
+  }
   chat.sendMessage(prompt)
   chat.openPanel()
 }

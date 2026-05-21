@@ -705,7 +705,7 @@ async function startMeetingNotes() {
     if (!res.ok || !data.success) throw new Error(data.error || '準備會議記錄失敗')
 
     meetingNotesOutputPath.value = data.notesOutputContainerPath
-    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt, newSession: true })
     startMeetingNotesPolling()
   } catch (err) {
     console.error('[meeting-notes] prepare error:', err.message)
@@ -898,7 +898,7 @@ async function startInsights() {
     insightsOutputDir.value = data.insightsContainerDir
     insightsBeforeMtime.value = data.beforeMtime || 0
     existingProjectIds.value = data.existingProjectIds || []
-    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt })
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt, newSession: true })
     startInsightsPolling()
   } catch (err) {
     console.error('[insights] prepare error:', err.message)
