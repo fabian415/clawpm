@@ -12,7 +12,7 @@ const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:
 const OPENCLAW_VERSION = OPENCLAW_IMAGE.split(':').pop() || '2026.4.22'
 
 const SKILLS_SOURCE = process.env.OPENCLAW_SKILLS_SOURCE_PATH
-  || path.join(__dirname, '..', '..', '..', 'skills')
+  || path.join(__dirname, '..', '..', 'skills')
 
 
 const SKILL_NAMES = [
@@ -20,6 +20,11 @@ const SKILL_NAMES = [
   'meeting-proper-noun-extractor',
   'project-insight-synthesizer',
 ]
+
+// Always overwrite on init to keep assistant character and workspace instructions current.
+const IDENTITY_FILES = ['AGENTS.md', 'IDENTITY.md', 'SOUL.md']
+// Copied only on first init — users may customize these files over time.
+const IDENTITY_FILES_ONCE = ['HEARTBEAT.md', 'TOOLS.md', 'USER.md']
 
 /**
  * Returns all relevant paths for a user's workspace.
@@ -36,6 +41,7 @@ export function getUserPaths(userId) {
     ftpData: path.join(base, 'workspace', 'ftp_data'),
     properNounInput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'input'),
     properNounOutput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'output'),
+    doc: path.join(base, 'workspace', 'ftp_data', 'doc'),
     media: path.join(base, 'workspace', 'ftp_data', 'media'),
     // The container mounts config/ to /home/node/.openclaw, so the gateway
     // writes its approved device identity under config/identity on the host.
@@ -68,6 +74,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
         sandbox: { mode: 'off' },
         models: { 'google/gemini-2.5-flash': {} },
         model: { primary: 'google/gemini-2.5-flash' },
+        llm: { idleTimeoutSeconds: 0 },
       },
     },
     gateway: {
@@ -96,6 +103,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
     plugins: {
       entries: {
         google: { enabled: true },
+        tokenjuice: { enabled: true },
       },
     },
     meta: {
@@ -135,10 +143,13 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
   const warnings = []
   const skillsCopied = []
 
-  // Create all directories (skip file-path entries)
-  const dirKeys = ['base', 'config', 'workspace', 'skills', 'ftpData', 'properNounInput', 'properNounOutput', 'media', 'identity']
+  // Create all directories (skip file-path entries).
+  // chmod 0o777 so both the OpenClaw container (node, UID 1000) and the
+  // vsftpd container (ftp, UID 14) can read/write their respective dirs.
+  const dirKeys = ['base', 'config', 'workspace', 'skills', 'ftpData', 'properNounInput', 'properNounOutput', 'media', 'doc', 'identity']
   for (const key of dirKeys) {
     if (!fs.existsSync(paths[key])) fs.mkdirSync(paths[key], { recursive: true })
+    fs.chmodSync(paths[key], 0o777)
   }
 
   // Create openclaw.json in config dir (skip if already exists — preserve existing token)
@@ -157,6 +168,7 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     const config = buildOpenClawConfig({ hostPort })
     gatewayToken = config.gateway.auth.token
     fs.writeFileSync(paths.openclawJson, JSON.stringify(config, null, 2), 'utf8')
+    fs.chmodSync(paths.openclawJson, 0o666)
   }
 
   // Copy skills from source
@@ -171,17 +183,55 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     }
   }
 
+  // Copy identity files (always overwrite to stay current)
+  for (const filename of IDENTITY_FILES) {
+    const src = path.join(SKILLS_SOURCE, filename)
+    const dest = path.join(paths.workspace, filename)
+    if (fs.existsSync(src)) {
+      fs.copyFileSync(src, dest)
+    }
+    else {
+      warnings.push(`Identity file not found: ${src}`)
+    }
+  }
+
+  // Copy USER.md only on first init (preserve user customizations)
+  for (const filename of IDENTITY_FILES_ONCE) {
+    const src = path.join(SKILLS_SOURCE, filename)
+    const dest = path.join(paths.workspace, filename)
+    if (!fs.existsSync(dest)) {
+      if (fs.existsSync(src)) {
+        fs.copyFileSync(src, dest)
+      }
+      else {
+        warnings.push(`Identity file not found: ${src}`)
+      }
+    }
+  }
+
   // Create config/.env (maps to ~/.openclaw/.env inside container — API keys written here by provision)
   const configEnvPath = path.join(paths.config, '.env')
   if (!fs.existsSync(configEnvPath)) {
     const configEnvContent = `# OpenClaw gateway env — user: ${userId}\n# Maps to ~/.openclaw/.env inside the container\n`
     fs.writeFileSync(configEnvPath, configEnvContent, 'utf8')
+    fs.chmodSync(configEnvPath, 0o666)
   }
 
   // Create workspace .env (empty placeholder, skip if already exists)
   if (!fs.existsSync(paths.workspaceEnv)) {
-    const envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
+    let envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
+    envContent += `SMTP_USER=aa107g2@gmail.com\n`
+    envContent += `SMTP_PASS=pewfcqsemkuhjfga\n`
+    envContent += `EMAIL_FROM_NAME=Jarvis 會議助理\n`
+    envContent += `SMTP_HOST=smtp.gmail.com\n`
+    envContent += `SMTP_PORT=587\n`
+    envContent += `EMAIL_RECIPIENTS=fabian.chung@advantech.com.tw\n`
+    envContent += `\n`
+    envContent += `# 本地轉錄伺服器\n`
+    envContent += `LOCAL_SERVER_IP=172.22.12.162\n`
+    envContent += `LOCAL_SERVER_PORT=8787\n`
     fs.writeFileSync(paths.workspaceEnv, envContent, 'utf8')
+    fs.chmodSync(paths.workspaceEnv, 0o666)
   }
 
   return { paths, gatewayToken, skillsCopied, warnings }

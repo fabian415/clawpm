@@ -1,9 +1,77 @@
 services:
+
+  # ── PostgreSQL Database ────────────────────────────────────────────────────
+  clawpm-db:
+    image: postgres:16-alpine
+    container_name: clawpm-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-clawpm}
+      POSTGRES_USER: ${POSTGRES_USER:-clawpm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "5433:5432"
+    volumes:
+      - clawpm_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clawpm} -d ${POSTGRES_DB:-clawpm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
+  clawpm-backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: clawpm-backend:latest
+    container_name: clawpm-backend
+    restart: unless-stopped
+    depends_on:
+      clawpm-db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
+      OPENCLAW_GATEWAY_HOST: host.docker.internal
+      # FTP server 與 backend 同在 compose 網路內，直接用 service name
+      FTP_HOST: openclaw-ftp-server
+      FTP_USER: ${FTP_USER}
+      FTP_PASS: ${FTP_PASS}
+      DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_PORT:-3002}:${API_PORT:-3002}"
+    volumes:
+      - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${API_PORT:-3002}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── FTP Server ─────────────────────────────────────────────────────────────
   openclaw-ftp-server:
     image: fauria/vsftpd
     container_name: openclaw-ftp-server
+    restart: always
     ports:
-      - "21:21"
+      - "2121:21"
       - "21100-21110:21100-21110"
     volumes:
       - ${CLAWPM_WORKSPACE_BASE}:/home/vsftpd/${FTP_USER}
@@ -13,7 +81,53 @@ services:
       PASV_ADDRESS: ${FTP_SERVER_IP}
       PASV_MIN_PORT: 21100
       PASV_MAX_PORT: 21110
-      LOCAL_UMASK: "022"
+      LOCAL_UMASK: "000"
       FILE_OPEN_MODE: "0666"
       REVERSE_LOOKUP_ENABLE: "NO"
-    restart: always
+
+  # # ── WhisperX Transcribe API ────────────────────────────────────────────────
+  # # 需要 NVIDIA GPU，僅在 GPU 伺服器上啟動：docker compose --profile gpu up -d
+  # transcribe-api:
+  #   profiles: [gpu]
+  #   build:
+  #     context: ./whiperx
+  #     dockerfile: Dockerfile
+  #   image: transcribe-api:latest
+  #   container_name: transcribe-api
+  #   restart: unless-stopped
+  #   env_file:
+  #     - ./whiperx/.env
+  #   ports:
+  #     - "${TRANSCRIBE_PORT:-8787}:8000"
+  #   volumes:
+  #     - transcribe_uploads:/app/uploads
+  #     - transcribe_outputs:/app/outputs
+  #     - speaker_profiles:/app/speaker_profiles
+  #     - hf_cache:/root/.cache/huggingface
+  #     - modelscope_cache:/root/.cache/modelscope
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 60s
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "50m"
+  #       max-file: "5"
+
+volumes:
+  clawpm_pgdata:
+  transcribe_uploads:
+  transcribe_outputs:
+  speaker_profiles:
+  hf_cache:
+  modelscope_cache:

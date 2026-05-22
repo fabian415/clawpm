@@ -1,4 +1,4 @@
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 
 function getStoredUser() {
   try {
@@ -32,6 +32,7 @@ export function useApp() {
   const authError = ref('')
   const isAuthLoading = ref(false)
   const currentUser = ref(storedUser)
+  const isAdmin = computed(() => currentUser.value?.role === 'admin')
   const showRestartConfirm = ref(false)
   const isRestarting = ref(false)
   const restartProgress = ref(0)
@@ -41,7 +42,9 @@ export function useApp() {
   const showNewProjectModal = ref(false)
   const toast = ref({ show: false, message: '', icon: 'CheckCircle' })
   const containerStatus = ref('Running')
+  const containerStats = ref(null)
   const editingProjectInfo = ref(false)
+  let statsInterval = null
 
   const projects = ref([
     { id: 1, name: 'OpenClaw 前端 UI 設計', desc: '負責設計全新的 AI 輔助專案管理平台介面。', created: '2024-05-01', updated: '2小時前', meetings: 3 },
@@ -62,7 +65,7 @@ export function useApp() {
     { id: 1, time: '00:00', speaker: 'Jason', text: '大家好，今天我們要討論 ClawPM 的前端介面設計。' },
     { id: 2, time: '00:15', speaker: 'Alice', text: '我覺得側邊欄應該支援折疊，這樣使用者在小螢幕上比較好操作。' },
     { id: 3, time: '00:32', speaker: 'Jason', text: '沒錯，我們還要加上容器狀態指示燈，讓用戶知道後端 AI 是否運行中。' },
-    { id: 4, time: '00:50', speaker: 'Bob', text: '關於 Markdown Reviewer，我希望能有雙欄即時預覽功能。' }
+    { id: 4, time: '00:50', speaker: 'Bob', text: '關於專案列表，我希望能有雙欄即時預覽功能。' }
   ]
 
   const containerStatusColor = computed(() => {
@@ -112,7 +115,7 @@ export function useApp() {
       projects: '所有專案',
       projectDetail: selectedProject.value?.name ?? '',
       workflow: '會議處理流程',
-      reviewer: 'Markdown Reviewer',
+      reviewer: '專案列表',
       settings: '系統設定'
     }
     return map[currentPage.value] ?? ''
@@ -154,15 +157,20 @@ export function useApp() {
     currentPage.value = 'projectDetail'
   }
 
-  async function handleAuth({ mode, email, password }) {
+  async function handleAuth({ action, teamId, teamName, email, password }) {
     authError.value = ''
     isAuthLoading.value = true
     try {
-      const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login'
+      const isRegister = action === 'register-team'
+      const endpoint = isRegister ? '/api/auth/register-team' : '/api/auth/login'
+      const body = isRegister
+        ? { teamName, email, password }
+        : { teamId, email, password }
+
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify(body)
       })
       const data = await res.json()
       if (!res.ok) {
@@ -174,11 +182,15 @@ export function useApp() {
         userId: data.userId,
         email: data.email,
         name: data.name ?? data.email.split('@')[0],
+        role: data.role ?? 'user',
+        teamId: data.teamId ?? null,
+        teamName: data.teamName ?? null,
         setupCompleted: data.setupCompleted ?? false
       }
       localStorage.setItem('clawpm_user', JSON.stringify(user))
       currentUser.value = user
-      if (mode === 'register') {
+      startStatsPolling()
+      if (isRegister) {
         isConfiguring.value = true
         configProgress.value = 0
         const interval = setInterval(() => {
@@ -204,6 +216,7 @@ export function useApp() {
   }
 
   function logout() {
+    stopStatsPolling()
     localStorage.removeItem('clawpm_token')
     localStorage.removeItem('clawpm_user')
     currentUser.value = null
@@ -214,7 +227,7 @@ export function useApp() {
   async function completeSetup(config) {
     const token = localStorage.getItem('clawpm_token')
     try {
-      await fetch('/api/user/setup', {
+      await fetch('/api/team/setup', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -258,7 +271,7 @@ export function useApp() {
   }
 
   function saveSettings() {
-    showToast('設定已更新，重啟 container 以套用')
+    showToast('設定已更新')
   }
 
   async function fetchContainerConfig() {
@@ -280,6 +293,34 @@ export function useApp() {
       syncContainerStatus(null)
     }
   }
+
+  async function fetchContainerStats() {
+    const token = localStorage.getItem('clawpm_token')
+    if (!token) return
+    try {
+      const res = await fetch('/api/container/stats', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) containerStats.value = await res.json()
+    } catch {}
+  }
+
+  function startStatsPolling() {
+    if (statsInterval) return
+    fetchContainerStats()
+    statsInterval = setInterval(fetchContainerStats, 15000)
+  }
+
+  function stopStatsPolling() {
+    if (statsInterval) { clearInterval(statsInterval); statsInterval = null }
+    containerStats.value = null
+  }
+
+  onMounted(() => {
+    if (localStorage.getItem('clawpm_token')) startStatsPolling()
+  })
+
+  onUnmounted(() => stopStatsPolling())
 
   async function handleRestart() {
     isRestarting.value = true
@@ -338,7 +379,6 @@ export function useApp() {
       if (currentUser.value) {
         currentUser.value = {
           ...currentUser.value,
-          ...(data.user ?? {}),
           setupCompleted: false
         }
         localStorage.setItem('clawpm_user', JSON.stringify(currentUser.value))
@@ -352,7 +392,7 @@ export function useApp() {
   }
 
   watch(currentPage, (page) => {
-    if (page === 'settings') fetchContainerConfig()
+    if (page === 'settings' || page === 'container') fetchContainerConfig()
   })
 
   return {
@@ -360,11 +400,11 @@ export function useApp() {
     workflowStep, workflowStepLabels, isProcessing, uploadProgress, uploadedDocs,
     tags, newTag, reviewerMode, showKeys, showRestartConfirm, isRestarting,
     restartProgress, showDestroyConfirm, isDestroying, containerConfig,
-    showNewProjectModal, toast, containerStatus, editingProjectInfo,
+    showNewProjectModal, toast, containerStatus, containerStats, editingProjectInfo,
     isNewUser, projects, recentProjects, selectedProject, mockMeetings, mockTranscript,
     containerStatusColor, containerStatusTextColor, breadcrumb,
     passwordStrength, passwordStrengthText, passwordStrengthClass,
-    authError, isAuthLoading, currentUser,
+    authError, isAuthLoading, currentUser, isAdmin,
     toggleTheme, selectProject, handleAuth, logout, simulateUpload, nextWorkflowStep,
     addTag, saveSettings, handleRestart, handleDestroy, showToast, completeSetup
   }

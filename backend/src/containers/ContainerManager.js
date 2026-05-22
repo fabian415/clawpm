@@ -1,6 +1,6 @@
 import Docker from 'dockerode'
 
-const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
+const getImage = () => process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:2026.4.22'
 
 // Build dockerode client — supports Unix socket and Windows named pipe
 function buildDockerClient() {
@@ -41,7 +41,7 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
 
   const container = await docker.createContainer({
     name: containerName,
-    Image: OPENCLAW_IMAGE,
+    Image: getImage(),
     Env: env,
     ExposedPorts: {
       '18789/tcp': {},
@@ -52,6 +52,7 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
         '18789/tcp': [{ HostPort: String(gatewayPort) }],
         '18790/tcp': [{ HostPort: String(bridgePort) }],
       },
+      ExtraHosts: ['host.docker.internal:host-gateway'],
       Binds: [
         `${configDir}:/home/node/.openclaw`,
         `${workspaceDir}:/home/node/.openclaw/workspace`,
@@ -214,7 +215,7 @@ export async function waitForHealthy(userId, timeoutMs = 60_000) {
 /** Pull the OpenClaw image from the registry, streaming progress to a callback. */
 export async function pullImage(onProgress) {
   return new Promise((resolve, reject) => {
-    docker.pull(OPENCLAW_IMAGE, (error, stream) => {
+    docker.pull(getImage(), (error, stream) => {
       if (error) return reject(error)
 
       docker.modem.followProgress(stream, (err, output) => {
@@ -227,10 +228,72 @@ export async function pullImage(onProgress) {
   })
 }
 
+/** Get one-shot CPU + memory stats for a running container. Returns null if unavailable. */
+export async function getContainerResourceStats(userId) {
+  const containerName = getContainerName(userId)
+  try {
+    const container = docker.getContainer(containerName)
+    const stats = await container.stats({ stream: false })
+
+    const memUsage = stats.memory_stats?.usage ?? 0
+    const memLimit = stats.memory_stats?.limit ?? 0
+
+    const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) -
+                     (stats.precpu_stats?.cpu_usage?.total_usage ?? 0)
+    const sysDelta = (stats.cpu_stats?.system_cpu_usage ?? 0) -
+                     (stats.precpu_stats?.system_cpu_usage ?? 0)
+    const numCpus = stats.cpu_stats?.online_cpus ||
+                    stats.cpu_stats?.cpu_usage?.percpu_usage?.length || 1
+    const cpuPercent = sysDelta > 0 ? Math.round((cpuDelta / sysDelta) * numCpus * 100 * 10) / 10 : 0
+
+    return {
+      cpuPercent,
+      memoryUsedMB: Math.round(memUsage / 1024 / 1024 * 10) / 10,
+      memoryLimitMB: Math.round(memLimit / 1024 / 1024),
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Stream container logs via Docker logs API. Returns a Docker multiplexed stream (follow=true)
+ * or a Buffer (follow=false). Use demuxDockerLogStream() to extract plain text lines.
+ */
+export async function getContainerLogStream(userId, { follow = true, tail = 200, timestamps = true } = {}) {
+  const container = docker.getContainer(getContainerName(userId))
+  return container.logs({
+    follow,
+    stdout: true,
+    stderr: true,
+    timestamps,
+    tail: follow ? tail : 'all',
+  })
+}
+
+/**
+ * Execute a command in a container and return the live multiplexed output stream.
+ * Suitable for long-running commands like `node dist/index.js logs --follow`.
+ */
+export async function execStreamInContainer(userId, cmd) {
+  const container = docker.getContainer(getContainerName(userId))
+  const exec = await container.exec({
+    Cmd: cmd,
+    AttachStdout: true,
+    AttachStderr: true,
+  })
+  return new Promise((resolve, reject) => {
+    exec.start({ hijack: true }, (error, stream) => {
+      if (error) return reject(error)
+      resolve(stream)
+    })
+  })
+}
+
 /** Check whether the OpenClaw image exists locally. */
 export async function imageExists() {
   try {
-    await docker.getImage(OPENCLAW_IMAGE).inspect()
+    await docker.getImage(getImage()).inspect()
     return true
   }
   catch {

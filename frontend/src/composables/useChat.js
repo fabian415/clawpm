@@ -8,6 +8,8 @@ export function useChat() {
   const isConnected = ref(false)
   const isLoading = ref(false)
   const sessionKey = ref(null)
+  const sessions = ref([])
+  const sessionsLoading = ref(false)
 
   let ws = null
   let reconnectTimer = null
@@ -213,6 +215,100 @@ export function useChat() {
     unreadCount.value = 0
   }
 
+  function setSession(sk) {
+    if (ws?.readyState === WebSocket.OPEN && sk) {
+      ws.send(JSON.stringify({ type: 'set_session', sessionKey: sk }))
+      messages.value = []
+      streamingMessages.value = []
+      streamingMsgs.clear()
+      unreadCount.value = 0
+    }
+  }
+
+  async function fetchSessionHistory(sessionId) {
+    try {
+      const token = localStorage.getItem('clawpm_token')
+      const res = await fetch(`/api/chat/sessions/${sessionId}/history`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) return []
+      const data = await res.json()
+      return (data.messages ?? []).map(m => ({ ...m, events: m.events ?? [], isStreaming: false }))
+    } catch {
+      return []
+    }
+  }
+
+  async function switchSession(session) {
+    const sk = session?.sessionKey ?? (typeof session === 'string' ? session : null)
+    setSession(sk)
+    if (session?.sessionId) {
+      messages.value = await fetchSessionHistory(session.sessionId)
+    }
+  }
+
+  async function fetchSessions() {
+    sessionsLoading.value = true
+    try {
+      const token = localStorage.getItem('clawpm_token')
+      const res = await fetch('/api/chat/sessions', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      sessions.value = data.sessions ?? []
+    } catch {
+      sessions.value = []
+    } finally {
+      sessionsLoading.value = false
+    }
+  }
+
+  async function deleteSession(sessionId) {
+    const token = localStorage.getItem('clawpm_token')
+    const res = await fetch(`/api/chat/sessions/${sessionId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || '刪除失敗')
+    }
+    sessions.value = sessions.value.filter(s => s.sessionId !== sessionId)
+    return true
+  }
+
+  async function deleteAllSessions() {
+    const token = localStorage.getItem('clawpm_token')
+    const res = await fetch('/api/chat/sessions', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(data.error || '刪除失敗')
+    }
+    sessions.value = []
+    return true
+  }
+
+  async function fetchTrajectory(sessionId) {
+    const token = localStorage.getItem('clawpm_token')
+    const res = await fetch(`/api/chat/sessions/${sessionId}/trajectory`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return { lines: [], exists: false }
+    return await res.json()
+  }
+
+  async function fetchRaw(sessionId) {
+    const token = localStorage.getItem('clawpm_token')
+    const res = await fetch(`/api/chat/sessions/${sessionId}/raw`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return { lines: [], exists: false }
+    return await res.json()
+  }
+
   function disconnect() {
     clearTimeout(reconnectTimer)
     if (ws) {
@@ -232,6 +328,8 @@ export function useChat() {
 
   return {
     isOpen, messages, streamingMessages, unreadCount, isConnected, isLoading, sessionKey,
-    connect, disconnect, sendMessage, openPanel, closePanel, newSession,
+    sessions, sessionsLoading,
+    connect, disconnect, sendMessage, openPanel, closePanel, newSession, setSession, switchSession,
+    fetchSessions, deleteSession, deleteAllSessions, fetchTrajectory, fetchRaw,
   }
 }

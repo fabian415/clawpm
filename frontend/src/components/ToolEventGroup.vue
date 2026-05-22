@@ -25,14 +25,16 @@
         <!-- Role badge -->
         <div class="flex items-center gap-1.5 font-mono font-semibold text-slate-600 dark:text-slate-300">
           <span class="w-1.5 h-1.5 rounded-full shrink-0"
-            :class="ev.role === 'toolresult' || ev.role === 'functionresult' ? 'bg-green-400' : 'bg-amber-400'" />
-          <span class="capitalize">{{ ev.name ?? ev.role ?? 'tool' }}</span>
+            :class="ev.isError ? 'bg-red-400' : ev.role === 'toolresult' || ev.role === 'functionresult' ? 'bg-green-400' : 'bg-amber-400'" />
+          <span>{{ ev.name ?? ev.role ?? 'tool' }}</span>
+          <span v-if="ev.isError" class="text-red-400 font-normal">(error)</span>
         </div>
 
         <!-- Content -->
         <pre
           v-if="ev.content"
-          class="whitespace-pre-wrap break-all text-slate-500 dark:text-slate-400 leading-relaxed"
+          class="whitespace-pre-wrap break-all leading-relaxed"
+          :class="ev.isError ? 'text-red-500 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'"
         >{{ formatContent(ev.content) }}</pre>
       </div>
     </div>
