@@ -120,6 +120,8 @@
           @restart="showRestartConfirm = true"
           @destroy="showDestroyConfirm = true"
         />
+
+        <ReleaseNoteView v-else-if="currentPage === 'releaseNote'" />
       </div>
     </main>
   </div>
@@ -195,6 +197,7 @@ import AccountView from './views/AccountView.vue'
 import ContainerView from './views/ContainerView.vue'
 import SpeakerManagementView from './views/SpeakerManagementView.vue'
 import TasksView from './views/TasksView.vue'
+import ReleaseNoteView from './views/ReleaseNoteView.vue'
 
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,

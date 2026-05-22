@@ -55,14 +55,6 @@
         <span v-if="!collapsed">任務管理</span>
       </div>
       <div
-        @click="$emit('navigate', 'sessions')"
-        :class="{ 'bg-blue-600 text-white': currentPage === 'sessions' }"
-        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
-      >
-        <History class="w-5 h-5 shrink-0" />
-        <span v-if="!collapsed">會話紀錄</span>
-      </div>
-      <div
         v-if="isAdmin"
         @click="$emit('navigate', 'account')"
         :class="{ 'bg-blue-600 text-white': currentPage === 'account' }"
@@ -79,6 +71,22 @@
       >
         <Container class="w-5 h-5 shrink-0" />
         <span v-if="!collapsed">容器設定</span>
+      </div>
+      <div
+        @click="$emit('navigate', 'sessions')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'sessions' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <History class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">會話紀錄</span>
+      </div>
+      <div
+        @click="$emit('navigate', 'releaseNote')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'releaseNote' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <ScrollText class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">更新紀錄</span>
       </div>
 
       <template v-if="!collapsed">
@@ -132,7 +140,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container, History
+  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container, History, ScrollText
 } from 'lucide-vue-next'
 
 defineProps({

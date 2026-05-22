@@ -2475,12 +2475,25 @@ const VERSION_FILE = fs.existsSync(path.resolve(__dirname, 'version.txt'))
   ? path.resolve(__dirname, 'version.txt')
   : path.resolve(__dirname, '../version.txt')
 
+const RELEASE_NOTE_FILE = fs.existsSync(path.resolve(__dirname, 'release_note.txt'))
+  ? path.resolve(__dirname, 'release_note.txt')
+  : path.resolve(__dirname, '../release_note.txt')
+
 app.get('/api/version', (_req, res) => {
   try {
     const version = fs.readFileSync(VERSION_FILE, 'utf8').trim()
     res.json({ version })
   } catch {
     res.json({ version: 'unknown' })
+  }
+})
+
+app.get('/api/release-notes', (_req, res) => {
+  try {
+    const text = fs.readFileSync(RELEASE_NOTE_FILE, 'utf8')
+    res.json({ content: text })
+  } catch {
+    res.json({ content: '' })
   }
 })
 

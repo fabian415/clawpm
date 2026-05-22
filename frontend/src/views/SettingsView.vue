@@ -139,7 +139,7 @@
     </div>
 
     <!-- Danger Zone -->
-    <section class="rounded-2xl border-2 border-red-300 dark:border-red-800 overflow-hidden">
+    <section v-if="isAdmin" class="rounded-2xl border-2 border-red-300 dark:border-red-800 overflow-hidden">
       <div class="p-6 border-b border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/20">
         <h3 class="font-bold flex items-center gap-2 text-red-700 dark:text-red-400">
           <TriangleAlert class="w-5 h-5" /> 危險區域
@@ -186,6 +186,7 @@ const showDeleteTeamModal = ref(false)
 const isDeletingTeam = ref(false)
 
 const currentTeamName = computed(() => userSettings.value?.team?.name ?? userSettings.value?.teamName ?? '')
+const isAdmin = computed(() => userSettings.value?.role === 'admin')
 
 const whisperModels = [
   { name: 'large-v3', desc: '高準確度' },
