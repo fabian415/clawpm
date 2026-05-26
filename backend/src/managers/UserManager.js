@@ -31,27 +31,28 @@ export async function migrateUsers() {
 }
 
 export async function registerTeam(teamName, email, password) {
-  const { rows: existing } = await query('SELECT id FROM users WHERE email = $1', [email])
+  const normalizedEmail = email.toLowerCase()
+  const { rows: existing } = await query('SELECT id FROM users WHERE LOWER(email) = $1', [normalizedEmail])
   if (existing.length > 0) throw new Error('此電子郵件已被註冊')
 
   const hashed = await bcrypt.hash(password, 10)
   const userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  const name = email.split('@')[0]
+  const name = normalizedEmail.split('@')[0]
 
   const team = await createTeam(teamName)
 
   await query(
     `INSERT INTO users (id, email, name, password_hash, role, team_id, created_at)
      VALUES ($1, $2, $3, $4, 'admin', $5, NOW())`,
-    [userId, email, name, hashed, team.id],
+    [userId, normalizedEmail, name, hashed, team.id],
   )
 
-  const token = signToken({ userId, email, name, role: 'admin', teamId: team.id })
-  return { userId, email, name, role: 'admin', teamId: team.id, teamName: team.name, setupCompleted: false, token }
+  const token = signToken({ userId, email: normalizedEmail, name, role: 'admin', teamId: team.id })
+  return { userId, email: normalizedEmail, name, role: 'admin', teamId: team.id, teamName: team.name, setupCompleted: false, token }
 }
 
 export async function login(email, password, teamId) {
-  const { rows } = await query('SELECT * FROM users WHERE email = $1', [email])
+  const { rows } = await query('SELECT * FROM users WHERE LOWER(email) = $1', [email.toLowerCase()])
   const user = rows[0]
   if (!user) throw new Error('帳號或密碼錯誤')
 
@@ -88,18 +89,19 @@ export async function createMember(adminId, email, password, name) {
   if (!admin) throw new Error('管理員不存在')
   if (admin.role !== 'admin') throw new Error('此操作需要 Admin 權限')
 
-  const { rows: existing } = await query('SELECT id FROM users WHERE email = $1', [email])
+  const normalizedEmail = email.toLowerCase()
+  const { rows: existing } = await query('SELECT id FROM users WHERE LOWER(email) = $1', [normalizedEmail])
   if (existing.length > 0) throw new Error('此電子郵件已被註冊')
 
   const hashed = await bcrypt.hash(password, 10)
   const userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  const memberName = name || email.split('@')[0]
+  const memberName = name || normalizedEmail.split('@')[0]
 
   const { rows } = await query(
     `INSERT INTO users (id, email, name, password_hash, role, team_id, created_at)
      VALUES ($1, $2, $3, $4, 'user', $5, NOW())
      RETURNING id, email, name, role, team_id, created_at`,
-    [userId, email, memberName, hashed, admin.team_id],
+    [userId, normalizedEmail, memberName, hashed, admin.team_id],
   )
   return rows[0]
 }
