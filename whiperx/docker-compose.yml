@@ -7,6 +7,11 @@ services:
     container_name: transcribe-api
     restart: unless-stopped
 
+    environment:
+      - PYTHONUNBUFFERED=1  # 固定開啟，確保即時輸出能力，請勿改為 0
+      - VERBOSE_LOGS=0      # 設為 0 關閉轉錄 subprocess 的詳細 logs（log 檔案仍會寫入）
+      - ENABLE_TIMING=0     # 設為 1 開啟 Step 1~6 各步驟耗時紀錄
+
     # 載入環境變數（敏感資訊放 .env，不入 git）
     env_file:
       - .env

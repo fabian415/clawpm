@@ -664,6 +664,25 @@ app.get('/api/workflow/transcription-result', requireAuth, async (req, res) => {
   res.json({ ready: false, content: null, status: job?.status ?? 'unknown' })
 })
 
+app.delete('/api/workflow/transcription/:jobId', requireAuth, async (req, res) => {
+  const { jobId } = req.params
+  if (!jobId || typeof jobId !== 'string' || !/^[A-Za-z0-9_-]+$/.test(jobId)) {
+    return res.status(400).json({ error: '無效的 jobId' })
+  }
+  const headers = WHISPERX_API_KEY ? { 'X-API-Key': WHISPERX_API_KEY } : {}
+  try {
+    const deleteRes = await fetch(`${WHISPERX_BASE}/jobs/${jobId}`, { method: 'DELETE', headers })
+    if (!deleteRes.ok && deleteRes.status !== 404) {
+      return res.status(deleteRes.status).json({ error: `WhisperX 回傳 HTTP ${deleteRes.status}` })
+    }
+    transcriptionJobs.delete(jobId)
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[cancel-transcription] error:', err.message)
+    res.status(502).json({ error: `無法連接轉錄伺服器：${err.message}` })
+  }
+})
+
 // ── Meeting notes (Step 4) ────────────────────────────────────────────────────
 
 app.post('/api/workflow/prepare-meeting-notes', requireAuth, async (req, res) => {

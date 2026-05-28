@@ -192,6 +192,34 @@
         <p class="text-slate-500">OpenClaw 正在透過本地 Whisper 模型進行語者分離與轉錄</p>
         <p v-if="tags.length > 0" class="text-xs text-blue-500 mt-3">已帶入 {{ tags.length }} 個專有名詞提升辨識準確率</p>
         <p class="text-xs text-slate-400 mt-6">轉錄進度可在右下角聊天視窗查看</p>
+        <button
+          @click="showCancelConfirm = true"
+          class="mt-6 px-5 py-2 text-sm border border-slate-300 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl transition-colors flex items-center gap-2 mx-auto"
+        >
+          <X class="w-4 h-4" /> 取消並返回上一步
+        </button>
+
+        <!-- Cancel confirmation dialog -->
+        <div v-if="showCancelConfirm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 w-full max-w-sm mx-4 shadow-xl">
+            <h4 class="font-bold text-base mb-2">確認取消轉錄？</h4>
+            <p class="text-sm text-slate-500 mb-5">此操作將終止 WhisperX 伺服器上的轉錄任務，進度將無法恢復，確定要取消嗎？</p>
+            <div class="flex gap-3 justify-end">
+              <button
+                @click="showCancelConfirm = false"
+                class="px-4 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+              >繼續等待</button>
+              <button
+                @click="cancelTranscription"
+                :disabled="isCancelling"
+                class="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white rounded-xl font-medium transition-colors flex items-center gap-1.5"
+              >
+                <Loader2 v-if="isCancelling" class="w-3.5 h-3.5 animate-spin" />
+                {{ isCancelling ? '取消中...' : '確認取消' }}
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div v-else class="space-y-4">
         <!-- Transcription error -->
@@ -375,7 +403,7 @@
 
     <!-- Footer Actions -->
     <div class="mt-12 flex justify-between">
-      <button v-if="step > 1" @click="prevStep" class="px-6 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2">
+      <button v-if="step > 1" @click="step === 3 && isProcessing ? showCancelConfirm = true : prevStep()" class="px-6 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors flex items-center gap-2">
         <ArrowLeft class="w-4 h-4" /> 上一步
       </button>
       <div v-else></div>
@@ -431,6 +459,8 @@ const transcriptContainerPath = ref(null)
 const transcriptRawContent = ref('')
 const transcriptWordCount = ref(0)
 let transcriptionPollTimer = null
+const showCancelConfirm = ref(false)
+const isCancelling = ref(false)
 
 const meetingDate = ref(new Date().toISOString().slice(0, 10))
 
@@ -558,6 +588,33 @@ function prevStep() {
   extractionError.value = ''
   transcriptError.value = ''
   step.value--
+}
+
+async function cancelTranscription() {
+  isCancelling.value = true
+  clearTimeout(transcriptionPollTimer)
+
+  const jobId = transcriptJobId.value
+  if (jobId) {
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      await fetch(`/api/workflow/transcription/${encodeURIComponent(jobId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    } catch {}
+  }
+
+  transcriptJobId.value = null
+  transcriptContainerPath.value = null
+  transcriptRawContent.value = ''
+  transcriptLines.value = []
+  transcriptWordCount.value = 0
+  transcriptError.value = ''
+  isProcessing.value = false
+  isCancelling.value = false
+  showCancelConfirm.value = false
+  step.value = 2
 }
 
 async function nextStep() {

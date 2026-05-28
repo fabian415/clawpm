@@ -671,14 +671,33 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
 
     try:
         with open(log_path, "w", encoding="utf-8") as log_f:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                stdout=log_f,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=os.environ.copy(),
-                timeout=JOB_TIMEOUT_SECONDS,
             )
+
+            _verbose = os.environ.get("VERBOSE_LOGS", "1").lower() in ("1", "true", "yes")
+
+            def _tee():
+                for line in proc.stdout:
+                    if _verbose:
+                        sys.stdout.write(f"[{job_id}] {line}")
+                        sys.stdout.flush()
+                    log_f.write(line)
+                    log_f.flush()
+
+            tee_thread = threading.Thread(target=_tee, daemon=True)
+            tee_thread.start()
+            try:
+                proc.wait(timeout=JOB_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                tee_thread.join(timeout=5)
+                raise
+            tee_thread.join()
 
         print(f"[{job_id}] subprocess 結束，returncode={proc.returncode}", flush=True)
 
