@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import sys
 import threading
@@ -74,6 +75,9 @@ _jobs_lock = threading.Lock()
 _queue_cv = threading.Condition()
 _worker_stop = threading.Event()
 _worker_thread: Optional[threading.Thread] = None
+_active_procs: dict = {}  # job_id -> subprocess.Popen（正在執行轉錄的子行程）
+_pending_cancels: set = set()  # job_ids：Popen 前收到 DELETE，等 proc 啟動後立即殺
+_procs_lock = threading.Lock()
 NOUN_TERM_PATTERN = re.compile(r"^[\w .-]+$")
 MAX_TERMS = int(os.environ.get("MAX_TERMS", "48"))
 TEAM_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -667,6 +671,13 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
             cmd += ["--speaker-dir", str(team_dir)]
 
     log_path = out_base / "subprocess.log"
+
+    # 若在 Popen 之前就收到 DELETE，直接放棄
+    with _procs_lock:
+        if job_id in _pending_cancels:
+            _pending_cancels.discard(job_id)
+            raise RuntimeError("Job was cancelled before subprocess started.")
+
     print(f"[{job_id}] 啟動 subprocess: {' '.join(cmd)}", flush=True)
 
     try:
@@ -677,7 +688,20 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=os.environ.copy(),
+                start_new_session=True,
             )
+            # 登記後立即檢查是否在 Popen 期間收到 DELETE
+            with _procs_lock:
+                if job_id in _pending_cancels:
+                    _pending_cancels.discard(job_id)
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                        print(f"[{job_id}] 已於啟動後立即 kill（race-cancel），pgid={proc.pid}", flush=True)
+                    except (ProcessLookupError, OSError) as e:
+                        print(f"[{job_id}] killpg race-cancel 失敗: {e}", flush=True)
+                    raise RuntimeError("Job was cancelled during subprocess startup.")
+                _active_procs[job_id] = proc
+                print(f"[{job_id}] subprocess 已登記，pid={proc.pid}", flush=True)
 
             _verbose = os.environ.get("VERBOSE_LOGS", "1").lower() in ("1", "true", "yes")
 
@@ -694,7 +718,10 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
             try:
                 proc.wait(timeout=JOB_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, OSError):
+                    pass
                 tee_thread.join(timeout=5)
                 raise
             tee_thread.join()
@@ -729,6 +756,9 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
         record.updated_at = _now_iso()
 
     finally:
+        with _procs_lock:
+            _active_procs.pop(job_id, None)
+            _pending_cancels.discard(job_id)
         try:
             audio_path.unlink(missing_ok=True)
         except Exception:
@@ -1089,10 +1119,23 @@ def delete_job(job_id: str):
     if not record:
         raise HTTPException(status_code=404, detail=f"找不到工作 {job_id}")
 
+    with _procs_lock:
+        proc = _active_procs.pop(job_id, None)
+        if proc is None and record.status == JobStatus.RUNNING:
+            _pending_cancels.add(job_id)
+            print(f"[{job_id}] DELETE 到達時 proc 尚未登記，加入 pending_cancels", flush=True)
+
+    if proc is not None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            print(f"[{job_id}] killpg({proc.pid}, SIGKILL) 已送出", flush=True)
+        except (ProcessLookupError, OSError) as e:
+            print(f"[{job_id}] killpg 失敗: {e}", flush=True)
+
+    delete_job_record(job_id)
     out_dir = OUTPUT_DIR / job_id
     if out_dir.exists():
         shutil.rmtree(out_dir, ignore_errors=True)
-    delete_job_record(job_id)
 
     return DeleteResponse(message=f"工作 {job_id} 已刪除。")
 
