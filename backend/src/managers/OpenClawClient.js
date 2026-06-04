@@ -22,6 +22,14 @@ const POLL_INTERVAL_MS = 300
 const POLL_STABLE_COUNT = 2          // consecutive unchanged polls before declaring done
 const POLL_TIMEOUT_MS = 120_000      // chat.send RPC call timeout
 const FILE_WATCH_TIMEOUT_MS = 30 * 60 * 1000  // 30-min hard ceiling for JSONL watching
+const FIRST_CONTENT_TIMEOUT_MS = 90_000       // give up if no assistant content after 90s
+
+const dbg = (...a) => { if (process.env.DEBUG_LOGS) console.log(...a) }
+const dbgErr = (...a) => { if (process.env.DEBUG_LOGS) console.error(...a) }
+const dbgWarn = (...a) => { if (process.env.DEBUG_LOGS) console.warn(...a) }
+
+// LLM stop reasons that indicate the turn is complete (normalized to lowercase)
+const FINAL_STOP_REASONS = new Set(['stop', 'end_turn', 'max_tokens', 'length', 'stop_sequence', 'content_filter'])
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
 
 function resolveClientPlatform() {
@@ -555,15 +563,20 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
     let pollTimer = null
     let watcher = null
     let finished = false
+    let firstContentTimer = null
 
     const finish = () => {
       if (finished) return
       finished = true
       clearTimeout(finishTimer)
+      clearTimeout(firstContentTimer)
       clearInterval(pollTimer)
       try { watcher?.close() } catch {}
       if (lastAssistantMsg) {
         onUpdate({ lastAssistantMsg, processEntries, done: true })
+      } else {
+        // Timed out with no content — signal done so callers can surface an error.
+        onUpdate({ lastAssistantMsg: null, processEntries, done: true })
       }
       resolve()
     }
@@ -574,6 +587,14 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
       clearTimeout(finishTimer)
       finishTimer = setTimeout(() => { readNewContent(); finish() }, delayMs)
     }
+
+    // If no assistant content appears within FIRST_CONTENT_TIMEOUT_MS, give up.
+    firstContentTimer = setTimeout(() => {
+      if (!lastAssistantMsg && !finished) {
+        dbgWarn(`[streamFromFile] no content after ${FIRST_CONTENT_TIMEOUT_MS/1000}s, giving up. watchFile=${watchFile}`)
+        finish()
+      }
+    }, FIRST_CONTENT_TIMEOUT_MS)
 
     const readNewContent = () => {
       if (finished || !fs.existsSync(watchFile)) return
@@ -604,15 +625,20 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
 
           if (msg.role === 'assistant' && !prevIdSet.has(msg.id)) {
             if (msg.content) {
+              // First content received — cancel the no-response timeout.
+              clearTimeout(firstContentTimer)
+              firstContentTimer = null
+              dbg(`[streamFromFile] got assistant content (${msg.content.length} chars), stopReason=${msg.stopReason}`)
               lastAssistantMsg = msg
               onUpdate({ lastAssistantMsg: msg, processEntries, done: false })
             }
-            // stopReason:"stop" = LLM finished naturally with no further tool calls.
-            // stopReason:"toolUse"/"tool_calls" = mid-task, more turns coming.
-            if (msg.stopReason === 'stop') {
+            // Finish when LLM signals natural end (covers OpenAI, Anthropic, Azure, Gemini).
+            // stopReason:"toolUse"/"tool_calls" = mid-task, more turns coming — skip.
+            if (msg.stopReason && FINAL_STOP_REASONS.has(msg.stopReason.toLowerCase())) {
               scheduleFinish(300)
             }
           } else if (msg.isProcess) {
+            dbg(`[streamFromFile] process entry: role=${msg.role} name=${msg.name} contentLen=${msg.content?.length ?? 0}`)
             processEntries = [...processEntries, msg]
             onUpdate({ lastAssistantMsg, processEntries, done: false })
           }
@@ -709,30 +735,43 @@ export async function sendAndStream(client, sessionKey, userMessage, onUpdate) {
   const sessionsDir = getSessionsDir(client.userId)
   const prevMessages = await getHistory(client, sessionKey).catch(() => [])
   const prevIdSet = new Set(prevMessages.map(m => m.id))
+  dbg(`[sendAndStream] user=${client.userId} session=${sessionKey} prevMsgs=${prevMessages.length}`)
 
   // Snapshot file offset before sending so we only read NEW content
   let watchFile = findSessionJsonlFile(sessionsDir, sessionKey)
   let fileBaseline = 0
   if (watchFile && fs.existsSync(watchFile)) {
     fileBaseline = fs.statSync(watchFile).size
+    dbg(`[sendAndStream] watchFile=${watchFile} baseline=${fileBaseline}`)
+  } else {
+    dbg(`[sendAndStream] no existing JSONL yet, sessionsDir=${sessionsDir}`)
   }
 
-  await client.call('chat.send', {
-    sessionKey,
-    message: userMessage,
-    idempotencyKey: randomUUID(),
-  }, POLL_TIMEOUT_MS)
+  dbg(`[sendAndStream] calling chat.send ...`)
+  try {
+    await client.call('chat.send', {
+      sessionKey,
+      message: userMessage,
+      idempotencyKey: randomUUID(),
+    }, POLL_TIMEOUT_MS)
+    dbg(`[sendAndStream] chat.send returned OK`)
+  } catch (err) {
+    dbgErr(`[sendAndStream] chat.send FAILED: ${err.message}`)
+    throw err
+  }
 
   // For new sessions the file didn't exist yet — try to resolve it now
   if (!watchFile) {
     watchFile = await resolveSessionJsonlFile(sessionsDir, sessionKey)
+    dbg(`[sendAndStream] resolved watchFile=${watchFile}`)
   }
 
   if (watchFile) {
+    dbg(`[sendAndStream] streaming from file: ${watchFile}`)
     return _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
   }
 
-  console.warn(`[chat] JSONL file not found for session ${sessionKey}, falling back to polling`)
+  dbgWarn(`[sendAndStream] JSONL file not found for session ${sessionKey}, falling back to polling`)
   return _streamFromPolling({ client, sessionKey, prevMessages, prevIdSet, onUpdate })
 }
 
@@ -799,7 +838,7 @@ export function startPassiveSessionWatcher(userId, sessionKey, onUpdate) {
             lastAssistantMsg = msg
             onUpdate({ lastAssistantMsg: msg, processEntries, done: false })
           }
-          if (msg.stopReason === 'stop') {
+          if (msg.stopReason && FINAL_STOP_REASONS.has(msg.stopReason.toLowerCase())) {
             setTimeout(() => {
               if (!stopped) {
                 onUpdate({ lastAssistantMsg, processEntries, done: true })

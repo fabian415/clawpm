@@ -68,24 +68,142 @@
     <section class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
       <div class="p-6 border-b border-slate-100 dark:border-slate-800">
         <div class="flex items-center justify-between gap-4">
-          <h3 class="font-bold flex items-center gap-2"><KeyRound class="w-5 h-5 text-blue-500" /> AI 服務金鑰</h3>
+          <h3 class="font-bold flex items-center gap-2"><KeyRound class="w-5 h-5 text-blue-500" /> AI 服務設定</h3>
           <span v-if="providerLabel" class="text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-300">
-            {{ providerLabel }}
+            目前：{{ providerLabel }}
           </span>
         </div>
       </div>
-      <div class="p-8 space-y-5">
+      <div class="p-8 space-y-6">
         <div v-if="isLoadingUserSettings" class="text-sm text-slate-400 italic">正在讀取 AI 服務設定...</div>
         <div v-else-if="settingsError" class="text-sm text-red-500">{{ settingsError }}</div>
-        <div v-else-if="!llmProvider" class="text-sm text-slate-400 italic">尚未選擇 LLM Provider。</div>
+        <template v-else>
+          <!-- Current config (read-only) -->
+          <div v-if="llmProvider" class="space-y-3">
+            <template v-if="llmProvider === 'gemini'">
+              <ReadOnlyField label="模型名稱" :value="llmConfig.model" mono />
+            </template>
+            <template v-else-if="llmProvider === 'custom' || llmProvider === 'azure'">
+              <ReadOnlyField label="Endpoint" :value="llmConfig.baseUrl" />
+              <ReadOnlyField label="模型名稱" :value="llmConfig.model" mono />
+            </template>
+          </div>
+          <div v-else class="text-sm text-slate-400 italic">尚未選擇 LLM Provider。</div>
 
-        <template v-else-if="llmProvider === 'gemini'">
-          <ReadOnlyField label="模型名稱" :value="llmConfig.model" mono />
-        </template>
+          <!-- Change LLM (admin only) -->
+          <template v-if="isAdmin && containerConfig">
+            <div class="border-t border-slate-100 dark:border-slate-800 pt-5">
+              <button @click="showLlmForm = !showLlmForm"
+                class="flex items-center gap-2 text-sm font-semibold text-blue-600 dark:text-blue-400 hover:underline">
+                <RefreshCw class="w-4 h-4" />
+                {{ showLlmForm ? '收起' : '更換 LLM Provider' }}
+              </button>
+            </div>
 
-        <template v-else-if="llmProvider === 'custom'">
-          <ReadOnlyField label="Endpoint" :value="llmConfig.baseUrl" />
-          <ReadOnlyField label="模型名稱" :value="llmConfig.model" mono />
+            <div v-if="showLlmForm" class="space-y-5 pt-1">
+              <!-- Provider selector -->
+              <div class="grid grid-cols-3 gap-3">
+                <button @click="newProvider = 'gemini'"
+                  class="p-3 rounded-xl border-2 text-left transition-all"
+                  :class="newProvider === 'gemini' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300'">
+                  <div class="flex items-center gap-2 mb-1">
+                    <Sparkles class="w-4 h-4 text-purple-500" />
+                    <span class="font-bold text-xs">Gemini</span>
+                  </div>
+                  <p class="text-[10px] text-slate-400">Google Gemini API</p>
+                </button>
+                <button @click="newProvider = 'azure'"
+                  class="p-3 rounded-xl border-2 text-left transition-all"
+                  :class="newProvider === 'azure' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300'">
+                  <div class="flex items-center gap-2 mb-1">
+                    <Cloud class="w-4 h-4 text-sky-500" />
+                    <span class="font-bold text-xs">Azure</span>
+                  </div>
+                  <p class="text-[10px] text-slate-400">Azure OpenAI GPT</p>
+                </button>
+                <button @click="newProvider = 'custom'"
+                  class="p-3 rounded-xl border-2 text-left transition-all"
+                  :class="newProvider === 'custom' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300'">
+                  <div class="flex items-center gap-2 mb-1">
+                    <Server class="w-4 h-4 text-slate-500" />
+                    <span class="font-bold text-xs">Custom</span>
+                  </div>
+                  <p class="text-[10px] text-slate-400">OpenAI 相容端點</p>
+                </button>
+              </div>
+
+              <!-- Gemini fields -->
+              <div v-if="newProvider === 'gemini'" class="space-y-3">
+                <div>
+                  <label class="block text-sm font-medium mb-1">Gemini API Key <span class="text-red-500">*</span></label>
+                  <input v-model="newGeminiKey" :type="showNewKey ? 'text' : 'password'" placeholder="AIzaSy..."
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+
+              <!-- Azure fields -->
+              <div v-else-if="newProvider === 'azure'" class="space-y-3">
+                <div>
+                  <label class="block text-sm font-medium mb-1">Azure Endpoint <span class="text-red-500">*</span></label>
+                  <input v-model="newAzureEndpoint" type="url" placeholder="https://your-resource.cognitiveservices.azure.com"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium mb-1">API Key <span class="text-slate-400 text-xs">(選填)</span></label>
+                  <input v-model="newAzureApiKey" :type="showNewKey ? 'text' : 'password'" placeholder="Azure API Key"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium mb-1">Deployment Name <span class="text-red-500">*</span></label>
+                  <input v-model="newAzureDeployment" type="text" placeholder="gpt-5.3-codex"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium mb-1">Reasoning Effort</label>
+                  <div class="grid grid-cols-3 gap-2">
+                    <button v-for="opt in reasoningEffortOptions" :key="opt.value"
+                      type="button"
+                      @click="newAzureReasoningEffort = opt.value"
+                      class="py-2 rounded-xl border-2 text-sm font-medium transition-all duration-150"
+                      :class="newAzureReasoningEffort === opt.value
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-blue-300'">
+                      {{ opt.label }}
+                    </button>
+                  </div>
+                  <p class="text-xs text-slate-400 mt-1">控制推理模型的思考深度，影響回應品質與速度</p>
+                </div>
+              </div>
+
+              <!-- Custom fields -->
+              <div v-else-if="newProvider === 'custom'" class="space-y-3">
+                <div>
+                  <label class="block text-sm font-medium mb-1">Base URL <span class="text-red-500">*</span></label>
+                  <input v-model="newBaseUrl" type="url" placeholder="https://api.example.com"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium mb-1">API Key <span class="text-slate-400 text-xs">(選填)</span></label>
+                  <input v-model="newApiKey" :type="showNewKey ? 'text' : 'password'" placeholder="sk-..."
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+                <div>
+                  <label class="block text-sm font-medium mb-1">Model ID <span class="text-red-500">*</span></label>
+                  <input v-model="newModelId" type="text" placeholder="gpt-4o"
+                    class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                </div>
+              </div>
+
+              <p v-if="llmUpdateError" class="text-sm text-red-500">{{ llmUpdateError }}</p>
+              <p v-if="llmUpdateSuccess" class="text-sm text-green-600 dark:text-green-400">{{ llmUpdateSuccess }}</p>
+
+              <button @click="applyLlmUpdate" :disabled="isUpdatingLlm || !newProvider"
+                class="flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-500/20">
+                <RefreshCw class="w-4 h-4" :class="isUpdatingLlm ? 'animate-spin' : ''" />
+                {{ isUpdatingLlm ? '套用中，容器重啟...' : '套用並重啟容器' }}
+              </button>
+            </div>
+          </template>
         </template>
       </div>
     </section>
@@ -167,7 +285,7 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, ref } from 'vue'
-import { KeyRound, Eye, EyeOff, AudioWaveform, Mail, Server, FolderOpen, TriangleAlert } from 'lucide-vue-next'
+import { KeyRound, Eye, EyeOff, AudioWaveform, Mail, Server, FolderOpen, TriangleAlert, RefreshCw, Sparkles, Cloud } from 'lucide-vue-next'
 import DeleteTeamModal from '../components/DeleteTeamModal.vue'
 
 const props = defineProps({
@@ -198,9 +316,79 @@ const llmConfig = computed(() => userSettings.value?.team?.setup_config ?? userS
 const llmProvider = computed(() => llmConfig.value.provider ?? '')
 const providerLabel = computed(() => {
   if (llmProvider.value === 'gemini') return 'Google Gemini'
+  if (llmProvider.value === 'azure') return 'Azure OpenAI'
   if (llmProvider.value === 'custom') return 'Custom Provider'
   return ''
 })
+
+// LLM update form state
+const showLlmForm = ref(false)
+const newProvider = ref('')
+const newGeminiKey = ref('')
+const newAzureEndpoint = ref('')
+const newAzureApiKey = ref('')
+const newAzureDeployment = ref('')
+const newAzureReasoningEffort = ref('high')
+const newBaseUrl = ref('')
+
+const reasoningEffortOptions = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+]
+const newApiKey = ref('')
+const newModelId = ref('')
+const showNewKey = ref(false)
+const isUpdatingLlm = ref(false)
+const llmUpdateError = ref('')
+const llmUpdateSuccess = ref('')
+
+async function applyLlmUpdate() {
+  llmUpdateError.value = ''
+  llmUpdateSuccess.value = ''
+  const token = localStorage.getItem('clawpm_token')
+
+  const body = { provider: newProvider.value }
+  if (newProvider.value === 'gemini') {
+    if (!newGeminiKey.value.trim()) { llmUpdateError.value = '請填寫 Gemini API Key'; return }
+    body.geminiApiKey = newGeminiKey.value.trim()
+  } else if (newProvider.value === 'azure') {
+    if (!newAzureEndpoint.value.trim() || !newAzureDeployment.value.trim()) {
+      llmUpdateError.value = '請填寫 Azure Endpoint 與 Deployment Name'; return
+    }
+    body.azureEndpoint = newAzureEndpoint.value.trim()
+    body.azureApiKey = newAzureApiKey.value.trim()
+    body.azureDeploymentName = newAzureDeployment.value.trim()
+    body.azureReasoningEffort = newAzureReasoningEffort.value
+  } else if (newProvider.value === 'custom') {
+    if (!newBaseUrl.value.trim() || !newModelId.value.trim()) {
+      llmUpdateError.value = '請填寫 Base URL 與 Model ID'; return
+    }
+    body.baseUrl = newBaseUrl.value.trim()
+    body.apiKey = newApiKey.value.trim()
+    body.modelId = newModelId.value.trim()
+  } else {
+    llmUpdateError.value = '請選擇 Provider'; return
+  }
+
+  isUpdatingLlm.value = true
+  try {
+    const res = await fetch('/api/container/update-llm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || '更新失敗')
+    llmUpdateSuccess.value = '設定已套用，容器已重啟。請稍候片刻後重新嘗試對話。'
+    showLlmForm.value = false
+    await fetchUserSettings()
+  } catch (err) {
+    llmUpdateError.value = err.message
+  } finally {
+    isUpdatingLlm.value = false
+  }
+}
 
 const fieldBaseClass = 'w-full bg-slate-50 dark:bg-slate-800 px-4 py-2.5 rounded-xl outline-none ring-1 ring-slate-200 dark:ring-slate-700 text-sm break-all'
 

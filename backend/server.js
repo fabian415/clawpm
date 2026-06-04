@@ -45,6 +45,9 @@ import { getUserPaths } from './src/containers/WorkspaceManager.js'
 
 dotenv.config()
 
+const dbg = (...a) => { if (process.env.DEBUG_LOGS) console.log(...a) }
+const dbgErr = (...a) => { if (process.env.DEBUG_LOGS) console.error(...a) }
+
 const app = express()
 const DEFAULT_PORT = 3000
 const INITIAL_PORT = Number.parseInt(process.env.API_PORT || `${DEFAULT_PORT}`, 10)
@@ -53,6 +56,14 @@ const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:
 const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
 const WHISPERX_BASE = `http://${process.env.LOCAL_SERVER_IP || '172.22.12.162'}:${process.env.LOCAL_SERVER_PORT || '8787'}`
 const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
+
+// Azure proxy — host reachable from inside the Docker container.
+// host.docker.internal is the Docker Desktop magic hostname (always resolves to the Windows/Mac host).
+// Override with CLAWPM_PROXY_HOST if your Docker setup uses a different bridge IP.
+const CLAWPM_PROXY_HOST = process.env.CLAWPM_PROXY_HOST || 'host.docker.internal'
+const AZURE_API_VERSION = process.env.AZURE_API_VERSION || '2025-04-01-preview'
+const AZURE_CONFIGS_DIR = path.resolve('./data/azure_configs')
+let RUNNING_PORT = INITIAL_PORT  // updated once the server binds
 
 // In-memory store for active transcription jobs
 // jobId → { status, content, error }
@@ -163,7 +174,7 @@ app.use(cors({
   origin: [...defaultCorsOrigins, ...extraCorsOrigins],
   credentials: true
 }))
-app.use(express.json())
+app.use(express.json({ limit: '50mb' }))
 app.use(express.static(FRONTEND_DIST))
 
 // ── Auth routes ───────────────────────────────────────────────────────────────
@@ -1422,7 +1433,7 @@ app.get('/api/chat/sessions/:sessionId/history', requireAuth, async (req, res) =
         messages.push({
           id: obj.id ?? msgObj.id ?? `${sessionId}-${messages.length}`,
           role: rawRole,
-          content: textContent,
+          content: rawRole === 'user' ? stripSenderMetadata(textContent) : textContent,
           events: [],
           timestamp: obj.timestamp ?? msgObj.timestamp ?? null,
           isStreaming: false,
@@ -1680,12 +1691,12 @@ app.get('/api/provision/check-userid/:userId', requireAuth, requireAdmin, async 
 })
 
 app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
-  const { userId, provider, geminiApiKey, baseUrl, apiKey, modelId } = req.body ?? {}
+  const { userId, provider, geminiApiKey, baseUrl, apiKey, modelId, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = req.body ?? {}
 
   if (!userId || !/^[\w-]+$/.test(userId)) {
     return res.status(400).json({ error: '無效的 userId' })
   }
-  if (!provider || !['gemini', 'custom'].includes(provider)) {
+  if (!provider || !['gemini', 'custom', 'azure'].includes(provider)) {
     return res.status(400).json({ error: '無效的 provider' })
   }
   if (provider === 'gemini' && !geminiApiKey) {
@@ -1693,6 +1704,9 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
   }
   if (provider === 'custom' && (!baseUrl || !modelId)) {
     return res.status(400).json({ error: '缺少 Custom provider 設定' })
+  }
+  if (provider === 'azure' && (!azureEndpoint || !azureDeploymentName)) {
+    return res.status(400).json({ error: '缺少 Azure OpenAI 設定' })
   }
   const [existingCfg, existingPorts] = await Promise.all([getContainerConfig(userId), getPortsForUser(userId)])
   if (existingCfg || existingPorts) {
@@ -1707,9 +1721,26 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
 
   const send = (type, text) => res.write(`data: ${JSON.stringify({ type, text })}\n\n`)
 
+  // For azure, save credentials for the local proxy; OpenClaw points to proxy URL.
+  if (provider === 'azure') {
+    saveAzureProxyConfig(userId, {
+      endpoint: azureEndpoint,
+      apiKey: azureApiKey,
+      deploymentName: azureDeploymentName,
+      reasoningEffort: ['low', 'medium', 'high'].includes(azureReasoningEffort) ? azureReasoningEffort : 'high',
+    })
+  }
+
   const llmConfig = provider === 'gemini'
     ? { provider: 'gemini', geminiApiKey }
-    : { provider: 'custom', baseUrl, apiKey, modelId }
+    : provider === 'azure'
+      ? {
+          provider: 'custom',
+          baseUrl: `http://${CLAWPM_PROXY_HOST}:${RUNNING_PORT}/api/azure-proxy/${userId}/v1`,
+          apiKey: 'dummy-key',
+          modelId: azureDeploymentName,
+        }
+      : { provider: 'custom', baseUrl, apiKey, modelId }
 
   try {
     // 1. Allocate ports
@@ -1733,6 +1764,8 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
       send('success', 'LLM provider: Gemini (google/gemini-2.5-flash)')
       applyEnvKey(path.join(paths.config, '.env'), 'GEMINI_API_KEY', geminiApiKey)
       send('success', 'GEMINI_API_KEY written to config/.env')
+    } else if (provider === 'azure') {
+      send('success', `LLM provider: Azure OpenAI (${llmConfig.modelId}) → ${llmConfig.baseUrl}`)
     } else {
       send('success', `LLM provider: Custom (custom/${modelId}) → ${baseUrl}`)
     }
@@ -1764,23 +1797,41 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
 
       // 6. Create and start container
       send('info', 'Creating and starting container...')
-      const containerId = await createAndStartContainer(userId, {
-        gatewayPort: ports.gatewayPort,
-        bridgePort: ports.bridgePort,
-        workspaceDir: paths.workspace,
-        configDir: paths.config,
-        gatewayToken,
-      })
-      send('success', `Container started: ${containerId.slice(0, 12)}`)
+      {
+        let waitSec = 0
+        const heartbeat = setInterval(() => {
+          waitSec += 15
+          send('normal', `  ...建立中 (${waitSec}s)，請稍候`)
+        }, 15_000)
+        let containerId
+        try {
+          containerId = await Promise.race([
+            createAndStartContainer(userId, {
+              gatewayPort: ports.gatewayPort,
+              bridgePort: ports.bridgePort,
+              workspaceDir: paths.workspace,
+              configDir: paths.config,
+              gatewayToken,
+            }),
+            new Promise((_, reject) => setTimeout(
+              () => reject(new Error('Container 建立逾時（3 分鐘），請確認 Docker Desktop 正常運作後再試')),
+              180_000
+            )),
+          ])
+        } finally {
+          clearInterval(heartbeat)
+        }
+        send('success', `Container started: ${containerId.slice(0, 12)}`)
 
-      await saveContainerConfig(userId, {
-        containerId,
-        gatewayPort: ports.gatewayPort,
-        bridgePort: ports.bridgePort,
-        gatewayToken,
-        workspacePath: paths.workspace,
-        provisionedAt: new Date().toISOString(),
-      })
+        await saveContainerConfig(userId, {
+          containerId,
+          gatewayPort: ports.gatewayPort,
+          bridgePort: ports.bridgePort,
+          gatewayToken,
+          workspacePath: paths.workspace,
+          provisionedAt: new Date().toISOString(),
+        })
+      }
     }
 
     // 7. Device pairing
@@ -1798,9 +1849,9 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
     try {
       await completeTeamSetup(req.user.teamId, {
         provider,
-        apiKey: provider === 'gemini' ? geminiApiKey : (apiKey ?? ''),
-        baseUrl: baseUrl ?? null,
-        model: provider === 'gemini' ? 'google/gemini-2.5-flash' : (modelId ?? ''),
+        apiKey: provider === 'gemini' ? geminiApiKey : (llmConfig.apiKey ?? ''),
+        baseUrl: provider === 'gemini' ? null : (llmConfig.baseUrl ?? null),
+        model: provider === 'gemini' ? 'google/gemini-2.5-flash' : (llmConfig.modelId ?? ''),
         workspaceFolder: userId,
       })
     } catch (e) {
@@ -1866,6 +1917,87 @@ app.get('/api/container/config', requireAuth, async (req, res) => {
     containerHealth: status.health,
     provisionedAt: config?.provisionedAt,
   })
+})
+
+// Update LLM config in openclaw.json and restart the container to apply it.
+app.post('/api/container/update-llm', requireAuth, requireAdmin, async (req, res) => {
+  const userId = await getProvisionUserId(req.user.userId)
+  const { provider, geminiApiKey, baseUrl, apiKey, modelId, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = req.body ?? {}
+
+  if (!provider || !['gemini', 'custom', 'azure'].includes(provider)) {
+    return res.status(400).json({ error: '無效的 provider' })
+  }
+  if (provider === 'gemini' && !geminiApiKey) {
+    return res.status(400).json({ error: '缺少 Gemini API Key' })
+  }
+  if (provider === 'custom' && (!baseUrl || !modelId)) {
+    return res.status(400).json({ error: '缺少 Custom provider 設定' })
+  }
+  if (provider === 'azure' && (!azureEndpoint || !azureDeploymentName)) {
+    return res.status(400).json({ error: '缺少 Azure OpenAI 設定' })
+  }
+
+  const paths = getUserPaths(userId)
+  const gatewayToken = readGatewayToken(paths)
+  if (!gatewayToken) {
+    return res.status(400).json({ error: '找不到 gateway token，請確認容器已完成初始化' })
+  }
+
+  const savedConfig = await getContainerConfig(userId).catch(() => null)
+  const hostPort = savedConfig?.gatewayPort
+
+  if (provider === 'azure') {
+    saveAzureProxyConfig(userId, {
+      endpoint: azureEndpoint,
+      apiKey: azureApiKey,
+      deploymentName: azureDeploymentName,
+      reasoningEffort: ['low', 'medium', 'high'].includes(azureReasoningEffort) ? azureReasoningEffort : 'high',
+    })
+  }
+
+  const llmConfig = provider === 'gemini'
+    ? { provider: 'gemini', geminiApiKey }
+    : provider === 'azure'
+      ? {
+          provider: 'custom',
+          baseUrl: `http://${CLAWPM_PROXY_HOST}:${RUNNING_PORT}/api/azure-proxy/${userId}/v1`,
+          apiKey: 'dummy-key',
+          modelId: azureDeploymentName,
+        }
+      : { provider: 'custom', baseUrl, apiKey, modelId }
+
+  try {
+    const cfg = buildOpenClawConfig(gatewayToken, llmConfig, { hostPort })
+    fs.writeFileSync(paths.openclawJson, JSON.stringify(cfg, null, 2), 'utf8')
+    fs.chmodSync(paths.openclawJson, 0o666)
+
+    if (provider === 'gemini') {
+      applyEnvKey(path.join(paths.config, '.env'), 'GEMINI_API_KEY', geminiApiKey)
+    }
+
+    // Restart container to pick up the new config
+    const status = await getContainerStatus(userId)
+    if (status.exists) {
+      if (status.running) await stopContainer(userId)
+      await startContainer(userId)
+    }
+
+    // Sync team setup
+    await completeTeamSetup(req.user.teamId, {
+      provider,
+      apiKey: provider === 'gemini' ? geminiApiKey : (llmConfig.apiKey ?? ''),
+      baseUrl: provider === 'gemini' ? null : (llmConfig.baseUrl ?? null),
+      model: provider === 'gemini' ? 'google/gemini-2.5-flash' : (llmConfig.modelId ?? ''),
+      workspaceFolder: userId,
+    }).catch(() => {})
+
+    // Drop cached gateway client so next chat picks up fresh credentials
+    disconnectClientForUser(userId)
+
+    res.json({ success: true, provider, modelId: llmConfig.modelId ?? null })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
 })
 
 app.post('/api/container/restart', requireAuth, requireAdmin, async (req, res) => {
@@ -2063,6 +2195,307 @@ app.delete('/api/speakers/:team/:name', requireAuth, async (req, res) => {
   }
 })
 
+// ── Azure OpenAI proxy ────────────────────────────────────────────────────────
+// Handles two Azure models families:
+//   mode "responses" : Codex models (gpt-5.3-codex) that only support Responses API.
+//                      Translates chat/completions ↔ Responses API format.
+//   mode "chat"      : Standard models (gpt-4o, gpt-4o-mini) that use chat/completions
+//                      but require the Azure api-version query parameter.
+//
+// Set azureConfig.mode = 'chat' for standard models; 'responses' for Codex/reasoning.
+
+function saveAzureProxyConfig(userId, config) {
+  fs.mkdirSync(AZURE_CONFIGS_DIR, { recursive: true })
+  // mode: 'responses' = Codex/reasoning models (Responses API)
+  //       'chat'      = Standard models like gpt-4o (Chat Completions API)
+  if (!config.mode) config.mode = 'responses'
+  fs.writeFileSync(
+    path.join(AZURE_CONFIGS_DIR, `${userId}.json`),
+    JSON.stringify(config, null, 2),
+    'utf8'
+  )
+}
+
+function loadAzureProxyConfig(userId) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(AZURE_CONFIGS_DIR, `${userId}.json`), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+async function handleAzureProxy(req, res) {
+  const { userId } = req.params
+  dbg(`[azure-proxy] ▶ userId=${userId} path=${req.path} stream=${!!req.body?.stream}`)
+  if (!/^[\w-]+$/.test(userId)) {
+    return res.status(400).json({ error: { message: 'Invalid userId' } })
+  }
+
+  const azureConfig = loadAzureProxyConfig(userId)
+  if (!azureConfig?.endpoint || !azureConfig?.deploymentName) {
+    dbgErr(`[azure-proxy] ✗ no config found for userId=${userId}`)
+    return res.status(500).json({ error: { message: 'Azure config not found for this user' } })
+  }
+
+  const { endpoint, apiKey, deploymentName, mode = 'responses', reasoningEffort = 'medium' } = azureConfig
+  const { messages, max_tokens, max_completion_tokens, stream, tools, tool_choice, ...restBody } = req.body
+  dbg(`[azure-proxy] mode=${mode} deployment=${deploymentName} msgs=${messages?.length} tools=${tools?.length ?? 0} → ${endpoint}`)
+
+  // ── Mode: chat — standard Azure OpenAI (gpt-4o, gpt-4o-mini, etc.) ──────────
+  // Just add api-version and proxy the request through as-is.
+  if (mode === 'chat') {
+    const chatUrl = `${endpoint.replace(/\/+$/, '')}/openai/deployments/${deploymentName}/chat/completions?api-version=${AZURE_API_VERSION}`
+    const chatBody = { messages, ...restBody }
+    if (max_tokens || max_completion_tokens) chatBody.max_tokens = max_tokens || max_completion_tokens
+    if (tools?.length) { chatBody.tools = tools; chatBody.tool_choice = tool_choice ?? 'auto' }
+
+    if (stream) {
+      chatBody.stream = true
+      const azureRes = await fetch(chatUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'api-key': apiKey } : {}) },
+        body: JSON.stringify(chatBody),
+      }).catch(err => { throw new Error(`Azure fetch error: ${err.message}`) })
+
+      if (!azureRes.ok) {
+        const errText = await azureRes.text().catch(() => '')
+        dbgErr(`[azure-proxy] ✗ chat ${azureRes.status}: ${errText.slice(0, 200)}`)
+        return res.status(azureRes.status).json({ error: { message: `Azure API ${azureRes.status}: ${errText}` } })
+      }
+      dbg(`[azure-proxy] ✓ chat streaming response started`)
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      azureRes.body.pipe(res)
+      return
+    }
+
+    const azureRes = await fetch(chatUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(apiKey ? { 'api-key': apiKey } : {}) },
+      body: JSON.stringify(chatBody),
+    }).catch(err => { throw new Error(`Azure fetch error: ${err.message}`) })
+    const data = await azureRes.json()
+    dbg(`[azure-proxy] ✓ chat responded choices=${data.choices?.length}`)
+    return res.status(azureRes.status).json(data)
+  }
+
+  // ── Mode: responses — Codex/reasoning models (gpt-5.3-codex, etc.) ──────────
+  // Full bidirectional translation between Chat Completions and Responses API formats,
+  // including tool definitions, tool call requests, and tool call results.
+
+  // 1. Tool definitions: Chat Completions → Responses API
+  //    CC:  { type:"function", function:{ name, description, parameters } }
+  //    RA:  { type:"function", name, description, parameters }
+  function ccToolsToRA(ts) {
+    if (!Array.isArray(ts) || !ts.length) return undefined
+    return ts.map(t => t.type === 'function'
+      ? { type: 'function', name: t.function.name, description: t.function.description, parameters: t.function.parameters }
+      : t
+    )
+  }
+
+  // 2. Conversation history: Chat Completions messages → Responses API input items
+  //    Handles: system→instructions, role:tool→function_call_output,
+  //             assistant+tool_calls→function_call items, regular messages→content-type fix
+  function ccMessagesToRA(msgs) {
+    const items = []
+    let instructions = ''
+
+    for (const msg of (msgs ?? [])) {
+      const { role, content, tool_calls, tool_call_id } = msg
+
+      // System messages → instructions field
+      if (role === 'system') {
+        const text = typeof content === 'string' ? content
+          : Array.isArray(content) ? content.map(b => b.text ?? '').join('') : ''
+        if (text) instructions += (instructions ? '\n\n' : '') + text
+        continue
+      }
+
+      // Tool result messages → function_call_output items
+      if (role === 'tool') {
+        const output = typeof content === 'string' ? content
+          : Array.isArray(content) ? content.map(b => b.text ?? b.content ?? '').join('') : String(content ?? '')
+        items.push({ type: 'function_call_output', call_id: tool_call_id, output })
+        continue
+      }
+
+      // Assistant messages that contain tool calls → function_call items
+      if (role === 'assistant' && Array.isArray(tool_calls) && tool_calls.length) {
+        for (const tc of tool_calls) {
+          items.push({ type: 'function_call', call_id: tc.id, name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '{}' })
+        }
+        // Also emit any accompanying text (rare but valid)
+        const txt = typeof content === 'string' ? content.trim()
+          : Array.isArray(content) ? content.filter(b => b.type === 'text').map(b => b.text).join('').trim() : ''
+        if (txt) items.push({ role: 'assistant', content: [{ type: 'output_text', text: txt }] })
+        continue
+      }
+
+      // Regular user / assistant messages — normalize to block format.
+      // Responses API requires assistant messages to use output_text blocks.
+      // User messages accept plain strings or input_text blocks.
+      if (role === 'assistant') {
+        let blocks
+        if (typeof content === 'string' && content) {
+          blocks = [{ type: 'output_text', text: content }]
+        } else if (Array.isArray(content)) {
+          blocks = content.map(b => b.type === 'text' || b.type === 'output_text'
+            ? { type: 'output_text', text: b.text ?? '' }
+            : b
+          ).filter(b => b.text !== '' || b.type !== 'output_text')
+        }
+        if (blocks?.length) items.push({ role: 'assistant', content: blocks })
+      } else {
+        // role === 'user'
+        let c
+        if (typeof content === 'string') {
+          c = content
+        } else if (Array.isArray(content)) {
+          c = content.map(b => b.type === 'text'
+            ? { ...b, type: 'input_text' }
+            : b
+          )
+        } else {
+          c = ''
+        }
+        if (c !== '' || c?.length > 0) items.push({ role: 'user', content: c })
+      }
+    }
+
+    return { items, instructions: instructions || undefined }
+  }
+
+  // 3. Response: Azure Responses API output → Chat Completions format
+  //    Handles both text responses and tool call responses (function_call output items)
+  function raToCC(azureData) {
+    const id = azureData.id || `chatcmpl-${Date.now()}`
+    const created = azureData.created_at || Math.floor(Date.now() / 1000)
+    const model = azureData.model || deploymentName
+    const output = azureData.output ?? []
+
+    // Tool calls returned by the model
+    const fnCalls = output.filter(o => o.type === 'function_call')
+
+    // Text content from the model
+    const textParts = output
+      .filter(o => o.type === 'message' && o.role === 'assistant')
+      .flatMap(m => m.content ?? [])
+      .filter(c => c.type === 'output_text')
+      .map(c => c.text)
+
+    let message, finishReason
+    if (fnCalls.length > 0) {
+      message = {
+        role: 'assistant',
+        content: textParts.join('') || null,
+        tool_calls: fnCalls.map(fc => ({
+          id: fc.call_id,
+          type: 'function',
+          function: { name: fc.name, arguments: fc.arguments },
+        })),
+      }
+      finishReason = 'tool_calls'
+    } else {
+      message = { role: 'assistant', content: textParts.join('') }
+      finishReason = azureData.status === 'completed' ? 'stop' : 'length'
+    }
+
+    return {
+      id, object: 'chat.completion', created, model,
+      choices: [{ index: 0, message, finish_reason: finishReason }],
+      usage: {
+        prompt_tokens: azureData.usage?.input_tokens ?? 0,
+        completion_tokens: azureData.usage?.output_tokens ?? 0,
+        total_tokens: azureData.usage?.total_tokens ?? 0,
+      },
+    }
+  }
+
+  // 4. SSE: serialize a complete chat.completion as SSE stream chunks
+  //    Correctly formats tool_call chunks so OpenClaw can reconstruct them
+  function toSSE(completion) {
+    const msg = completion.choices[0].message
+    const fin = completion.choices[0].finish_reason
+    const base = { id: completion.id, object: 'chat.completion.chunk', created: completion.created, model: completion.model }
+
+    const parts = []
+    parts.push({ ...base, choices: [{ index: 0, delta: { role: 'assistant', content: msg.tool_calls ? null : '' }, finish_reason: null }] })
+
+    if (msg.tool_calls?.length) {
+      msg.tool_calls.forEach((tc, i) => {
+        parts.push({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: 'function', function: { name: tc.function.name, arguments: '' } }] }, finish_reason: null }] })
+        if (tc.function.arguments) {
+          parts.push({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, function: { arguments: tc.function.arguments } }] }, finish_reason: null }] })
+        }
+      })
+    } else if (msg.content) {
+      parts.push({ ...base, choices: [{ index: 0, delta: { content: msg.content }, finish_reason: null }] })
+    }
+
+    parts.push({ ...base, choices: [{ index: 0, delta: {}, finish_reason: fin }] })
+    return parts.map(c => `data: ${JSON.stringify(c)}\n\n`).join('') + 'data: [DONE]\n\n'
+  }
+
+  // Build the Responses API request
+  const { items: raInput, instructions } = ccMessagesToRA(messages)
+  const raTools = ccToolsToRA(tools)
+
+  const responsesBody = {
+    input: raInput,
+    max_output_tokens: max_tokens || max_completion_tokens || 16384,
+    model: deploymentName,
+    reasoning: { effort: reasoningEffort },
+  }
+  if (instructions) responsesBody.instructions = instructions
+  if (raTools?.length) { responsesBody.tools = raTools; responsesBody.tool_choice = 'auto' }
+
+  dbg(`[azure-proxy] → Responses API: items=${raInput.length} tools=${raTools?.length ?? 0} instructions=${!!instructions}`)
+  // Debug: show the role sequence of what we're sending so we can verify history is included
+  const roleSeq = raInput.map(it => it.role ?? it.type).join(' → ')
+  dbg(`[azure-proxy]   role seq: ${roleSeq}`)
+
+  const azureUrl = `${endpoint.replace(/\/+$/, '')}/openai/responses?api-version=${AZURE_API_VERSION}`
+
+  let azureData
+  try {
+    const azureRes = await fetch(azureUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify(responsesBody),
+    })
+    if (!azureRes.ok) {
+      const errText = await azureRes.text().catch(() => '')
+      dbgErr(`[azure-proxy] ✗ responses ${azureRes.status}: ${errText.slice(0, 300)}`)
+      return res.status(azureRes.status).json({ error: { message: `Azure API ${azureRes.status}: ${errText}` } })
+    }
+    azureData = await azureRes.json()
+    const fnCount = (azureData.output ?? []).filter(o => o.type === 'function_call').length
+    dbg(`[azure-proxy] ✓ responses status=${azureData.status} fnCalls=${fnCount} outputItems=${azureData.output?.length}`)
+  } catch (err) {
+    dbgErr(`[azure-proxy] ✗ fetch error: ${err.message}`)
+    return res.status(502).json({ error: { message: `Azure proxy error: ${err.message}` } })
+  }
+
+  const completion = raToCC(azureData)
+
+  if (stream) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.write(toSSE(completion))
+    return res.end()
+  }
+
+  res.json(completion)
+}
+
+// Accept both /v1/chat/completions and /chat/completions since OpenClaw may try either
+app.post('/api/azure-proxy/:userId/v1/chat/completions', handleAzureProxy)
+app.post('/api/azure-proxy/:userId/chat/completions', handleAzureProxy)
+
 // ── WebSocket chat ────────────────────────────────────────────────────────────
 
 /**
@@ -2072,13 +2505,16 @@ app.delete('/api/speakers/:team/:name', requireAuth, async (req, res) => {
  */
 async function handleChatMessage(ws, authUserId, sessionKey, content) {
   const provisionUserId = await getProvisionUserId(authUserId)
+  dbg(`[chat] ▶ user=${authUserId} prov=${provisionUserId} session=${sessionKey} msg="${content.slice(0, 40)}"`)
 
   const send = (obj) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj)) }
   let client
   try {
     client = getClientForUser(provisionUserId)
     await client.ensureConnected()
+    dbg(`[chat] ✓ gateway connected, scopes: ${client.grantedScopes?.join(', ') || 'none'}`)
   } catch (err) {
+    dbgErr(`[chat] ✗ gateway connect failed: ${err.message}`)
     send({ type: 'error', message: `無法連線至 OpenClaw Gateway：${err.message}` })
     return
   }
@@ -2125,10 +2561,12 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
       }
 
       if (processEntries.length > 0) {
+        dbg(`[chat] process_entries: ${processEntries.length} events`)
         send({ type: 'process_entries', entries: processEntries })
       }
 
       if (done) {
+        dbg(`[chat] done: lastSentText=${lastSentText.length}chars events=${processEntries.length}`)
         if (lastSentText) {
           const assistantMsg = {
             id: frontendMsgId,
@@ -2139,14 +2577,15 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
           }
           send({ type: 'message_complete', messageId: frontendMsgId, message: assistantMsg })
         } else {
-          // Gateway returned nothing — cancel the placeholder bubble.
+          // Gateway returned nothing — cancel the placeholder bubble and surface an error.
           send({ type: 'message_complete', messageId: frontendMsgId, message: null })
+          send({ type: 'error', message: '未收到任何回應，請確認 LLM API 金鑰與模型設定是否正確' })
         }
       }
     })
 
   } catch (err) {
-    console.error('[chat] OpenClaw error:', err.message)
+    dbgErr('[chat] OpenClaw error:', err.message)
     send({ type: 'message_complete', messageId: frontendMsgId, message: null })
     send({ type: 'error', message: err.message })
   }
@@ -2194,12 +2633,22 @@ function listenOnAvailablePort(port, remainingRetries = getPortRetryLimit()) {
     server.off('error', onError)
     const address = server.address()
     const actualPort = typeof address === 'object' && address ? address.port : port
+    RUNNING_PORT = actualPort
     console.log(`ClawPM API server running on http://localhost:${actualPort}`)
   }
 
   server.once('error', onError)
   server.once('listening', onListening)
   server.listen(port)
+}
+
+// OpenClaw gateway prefixes user messages with sender metadata in JSONL storage.
+// Strip it so only the actual user text is displayed.
+// Format: "Sender (untrusted metadata): ```json {...} ``` [timestamp] actual_message"
+function stripSenderMetadata(content) {
+  if (typeof content !== 'string') return content
+  const stripped = content.replace(/^Sender\s*\([^)]*\)\s*:?\s*```[a-z]*\s*\{[^`]*?\}\s*```\s*(?:\[[^\]]*\]\s*)?/i, '').trim()
+  return stripped || content.trim()
 }
 
 async function loadLatestSessionHistory(provisionUserId) {
@@ -2244,7 +2693,7 @@ async function loadLatestSessionHistory(provisionUserId) {
         messages.push({
           id: obj.id ?? msgObj.id ?? `${sessionId}-${messages.length}`,
           role: rawRole,
-          content: textContent,
+          content: rawRole === 'user' ? stripSenderMetadata(textContent) : textContent,
           events: [],
           timestamp: obj.timestamp ?? msgObj.timestamp ?? null,
           isStreaming: false,

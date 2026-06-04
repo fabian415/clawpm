@@ -44,36 +44,53 @@
             <h2 class="text-lg font-bold mb-1">選擇 LLM Provider</h2>
             <p class="text-slate-500 text-sm mb-6">請選擇您的語言模型服務提供商</p>
 
-            <div class="grid grid-cols-2 gap-4 mb-6">
+            <div class="grid grid-cols-3 gap-3 mb-6">
               <button @click="provider = 'gemini'"
-                class="p-4 rounded-xl border-2 text-left transition-all duration-200"
+                class="p-3.5 rounded-xl border-2 text-left transition-all duration-200"
                 :class="provider === 'gemini' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300'">
                 <div class="flex items-center justify-between mb-2">
                   <div class="flex items-center gap-2">
-                    <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center shadow-sm">
-                      <Sparkles class="w-5 h-5 text-white" />
+                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center shadow-sm">
+                      <Sparkles class="w-4 h-4 text-white" />
                     </div>
                     <span class="font-bold text-sm">Gemini</span>
                   </div>
-                  <div v-if="provider === 'gemini'" class="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center">
-                    <Check class="w-3 h-3 text-white" />
+                  <div v-if="provider === 'gemini'" class="w-4 h-4 rounded-full bg-blue-600 flex items-center justify-center shrink-0">
+                    <Check class="w-2.5 h-2.5 text-white" />
                   </div>
                 </div>
                 <p class="text-xs text-slate-500">Google Gemini API</p>
               </button>
 
+              <button @click="provider = 'azure'"
+                class="p-3.5 rounded-xl border-2 text-left transition-all duration-200"
+                :class="provider === 'azure' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300'">
+                <div class="flex items-center justify-between mb-2">
+                  <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center shadow-sm">
+                      <Cloud class="w-4 h-4 text-white" />
+                    </div>
+                    <span class="font-bold text-sm">Azure</span>
+                  </div>
+                  <div v-if="provider === 'azure'" class="w-4 h-4 rounded-full bg-blue-600 flex items-center justify-center shrink-0">
+                    <Check class="w-2.5 h-2.5 text-white" />
+                  </div>
+                </div>
+                <p class="text-xs text-slate-500">Azure OpenAI GPT</p>
+              </button>
+
               <button @click="provider = 'custom'"
-                class="p-4 rounded-xl border-2 text-left transition-all duration-200"
+                class="p-3.5 rounded-xl border-2 text-left transition-all duration-200"
                 :class="provider === 'custom' ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300'">
                 <div class="flex items-center justify-between mb-2">
                   <div class="flex items-center gap-2">
-                    <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-slate-500 to-slate-700 flex items-center justify-center shadow-sm">
-                      <Server class="w-5 h-5 text-white" />
+                    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-slate-500 to-slate-700 flex items-center justify-center shadow-sm">
+                      <Server class="w-4 h-4 text-white" />
                     </div>
                     <span class="font-bold text-sm">Custom</span>
                   </div>
-                  <div v-if="provider === 'custom'" class="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center">
-                    <Check class="w-3 h-3 text-white" />
+                  <div v-if="provider === 'custom'" class="w-4 h-4 rounded-full bg-blue-600 flex items-center justify-center shrink-0">
+                    <Check class="w-2.5 h-2.5 text-white" />
                   </div>
                 </div>
                 <p class="text-xs text-slate-500">OpenAI 相容端點</p>
@@ -93,6 +110,58 @@
                 <button @click="showKey = !showKey" type="button" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
                   <Eye v-if="!showKey" class="w-4 h-4" /><EyeOff v-else class="w-4 h-4" />
                 </button>
+              </div>
+            </div>
+
+            <!-- Azure OpenAI fields -->
+            <div v-if="provider === 'azure'" class="space-y-4">
+              <div>
+                <label class="block text-sm font-medium mb-1.5">Azure Endpoint <span class="text-red-500">*</span></label>
+                <div class="relative">
+                  <Globe class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input v-model="azureEndpoint" type="url" placeholder="https://your-resource.cognitiveservices.azure.com"
+                    class="w-full pl-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  />
+                </div>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1.5">API Key <span class="text-slate-400 text-xs font-normal">(選填)</span></label>
+                <div class="relative">
+                  <Key class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input v-model="azureApiKey"
+                    :type="showKey ? 'text' : 'password'"
+                    placeholder="Azure API Key"
+                    class="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  />
+                  <button @click="showKey = !showKey" type="button" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors">
+                    <Eye v-if="!showKey" class="w-4 h-4" /><EyeOff v-else class="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1.5">Deployment Name <span class="text-red-500">*</span></label>
+                <div class="relative">
+                  <Cpu class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input v-model="azureDeploymentName" type="text" placeholder="gpt-5.3-codex"
+                    class="w-full pl-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  />
+                </div>
+                <p class="text-xs text-slate-400 mt-1.5">Azure 中建立的部署名稱，將作為模型 ID 使用</p>
+              </div>
+              <div>
+                <label class="block text-sm font-medium mb-1.5">Reasoning Effort</label>
+                <div class="grid grid-cols-3 gap-2">
+                  <button v-for="opt in reasoningEffortOptions" :key="opt.value"
+                    type="button"
+                    @click="azureReasoningEffort = opt.value"
+                    class="py-2 rounded-xl border-2 text-sm font-medium transition-all duration-150"
+                    :class="azureReasoningEffort === opt.value
+                      ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                      : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-blue-300'">
+                    {{ opt.label }}
+                  </button>
+                </div>
+                <p class="text-xs text-slate-400 mt-1.5">控制推理模型的思考深度，影響回應品質與速度</p>
               </div>
             </div>
 
@@ -129,6 +198,7 @@
             <h2 class="text-lg font-bold mb-1">選擇語言模型</h2>
             <p class="text-slate-500 text-sm mb-6">
               <span v-if="isFetchingModels">正在從 {{ providerLabel }} 取得模型列表...</span>
+              <span v-else-if="provider === 'azure'">Azure 部署名稱已自動填入，請確認後繼續</span>
               <span v-else-if="fetchFailed">無法取得模型列表，請手動輸入模型名稱</span>
               <span v-else>從 {{ providerLabel }} 取得到 {{ models.length }} 個可用模型</span>
             </p>
@@ -190,13 +260,14 @@
                 <div class="relative">
                   <Cpu class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <input v-model="manualModel" type="text"
-                    :placeholder="provider === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o'"
+                    :placeholder="provider === 'gemini' ? 'gemini-1.5-flash' : provider === 'azure' ? 'gpt-5.3-codex' : 'gpt-4o'"
                     class="w-full pl-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                   />
                 </div>
                 <p class="text-xs text-slate-400 mt-1.5">
                   <span v-if="selectedModel && !manualModel.trim()">已選取清單模型；也可以在這裡改填其他模型 ID。</span>
                   <span v-else-if="provider === 'gemini'">例如：gemini-1.5-pro、gemini-1.5-flash、gemini-2.0-flash-exp</span>
+                  <span v-else-if="provider === 'azure'">使用您在 Azure 中設定的部署名稱，例如：gpt-5.3-codex</span>
                   <span v-else>若清單中沒有適用模型，請在這裡輸入模型 ID。</span>
                 </p>
               </div>
@@ -425,7 +496,7 @@ import { ref, computed, nextTick } from 'vue'
 import {
   BrainCircuit, Check, Sparkles, Server, Key, Globe, Eye, EyeOff,
   Cpu, AlertTriangle, AlertCircle, User, Search, ChevronLeft, ChevronRight,
-  Rocket, Terminal as TerminalIcon, CheckCircle, XCircle, ArrowRight, Copy, X
+  Rocket, Terminal as TerminalIcon, CheckCircle, XCircle, ArrowRight, Copy, X, Cloud
 } from 'lucide-vue-next'
 
 defineProps({ isDark: Boolean })
@@ -434,8 +505,12 @@ const emit = defineEmits(['complete'])
 function handleComplete() {
   emit('complete', {
     provider: provider.value,
-    apiKey: provider.value === 'gemini' ? geminiApiKey.value : customApiKey.value,
-    baseUrl: provider.value === 'custom' ? customBaseUrl.value : null,
+    apiKey: provider.value === 'gemini' ? geminiApiKey.value
+      : provider.value === 'azure' ? azureApiKey.value
+      : customApiKey.value,
+    baseUrl: provider.value === 'custom' ? customBaseUrl.value
+      : provider.value === 'azure' ? azureEndpoint.value
+      : null,
     model: effectiveModel.value,
     workspaceFolder: userId.value,
   })
@@ -449,7 +524,17 @@ const provider = ref(null)
 const geminiApiKey = ref('')
 const customBaseUrl = ref('')
 const customApiKey = ref('')
+const azureEndpoint = ref('')
+const azureApiKey = ref('')
+const azureDeploymentName = ref('')
+const azureReasoningEffort = ref('high')
 const showKey = ref(false)
+
+const reasoningEffortOptions = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+]
 
 const isFetchingModels = ref(false)
 const fetchFailed = ref(false)
@@ -489,7 +574,7 @@ function copyToken() {
 const currentTime = ref(new Date().toTimeString().slice(0, 8))
 
 const providerLabel = computed(() =>
-  ({ gemini: 'Google Gemini', custom: 'Custom Provider' })[provider.value] ?? '—'
+  ({ gemini: 'Google Gemini', custom: 'Custom Provider', azure: 'Azure OpenAI' })[provider.value] ?? '—'
 )
 
 const effectiveModel = computed(() =>
@@ -512,6 +597,7 @@ const isNextDisabled = computed(() => {
   if (step.value === 1) {
     if (!provider.value) return true
     if (provider.value === 'gemini') return !geminiApiKey.value.trim()
+    if (provider.value === 'azure') return !azureEndpoint.value.trim() || !azureDeploymentName.value.trim()
     return !customBaseUrl.value.trim()
   }
   if (step.value === 2) {
@@ -567,6 +653,14 @@ async function fetchModels() {
   models.value = []
   selectedModel.value = ''
   modelSearch.value = ''
+
+  if (provider.value === 'azure') {
+    isFetchingModels.value = false
+    fetchFailed.value = true
+    fetchErrorMsg.value = '已將 Azure 部署名稱自動填入，您可以直接確認或修改。'
+    manualModel.value = azureDeploymentName.value
+    return
+  }
 
   try {
     if (provider.value === 'gemini') {
@@ -644,6 +738,11 @@ async function startContainerSetup() {
 
   if (provider.value === 'gemini') {
     body.geminiApiKey = geminiApiKey.value
+  } else if (provider.value === 'azure') {
+    body.azureEndpoint = azureEndpoint.value
+    body.azureApiKey = azureApiKey.value
+    body.azureDeploymentName = effectiveModel.value
+    body.azureReasoningEffort = azureReasoningEffort.value
   } else {
     body.baseUrl = customBaseUrl.value
     body.apiKey = customApiKey.value
