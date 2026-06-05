@@ -480,6 +480,40 @@ app.delete('/api/workflow/delete-doc', requireAuth, async (req, res) => {
   }
 })
 
+app.get('/api/workflow/download-doc', requireAuth, async (req, res) => {
+  const { remotePath } = req.query
+  if (!remotePath || typeof remotePath !== 'string') {
+    return res.status(400).json({ error: '缺少 remotePath' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const allowedPrefix = `/${provisionUserId}/workspace/ftp_data/doc/`
+  if (!remotePath.startsWith(allowedPrefix)) {
+    return res.status(403).json({ error: '無權限存取此檔案' })
+  }
+
+  const filename = path.basename(remotePath)
+  const ftpUser = process.env.FTP_USER || 'advantech'
+  const ftpPass = process.env.FTP_PASS || 'changeme'
+  const client = new FtpClient()
+  try {
+    const ftpHost = process.env.FTP_HOST || '127.0.0.1'
+    const ftpPort = parseInt(process.env.FTP_PORT || '21')
+    await client.access({ host: ftpHost, port: ftpPort, user: ftpUser, password: ftpPass, secure: false })
+    client.ftp.pasvIpReplace = ftpHost
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+    res.setHeader('Content-Type', 'application/octet-stream')
+    await client.downloadTo(res, remotePath)
+  } catch (err) {
+    console.error('[download-doc] FTP error:', err.message)
+    if (!res.headersSent) {
+      res.status(500).json({ error: `FTP 下載失敗：${err.message}` })
+    }
+  } finally {
+    client.close()
+  }
+})
+
 // ── Extraction preparation ────────────────────────────────────────────────────
 
 const CONTAINER_WORKSPACE = '/home/node/.openclaw/workspace'
@@ -697,7 +731,7 @@ app.delete('/api/workflow/transcription/:jobId', requireAuth, async (req, res) =
 // ── Meeting notes (Step 4) ────────────────────────────────────────────────────
 
 app.post('/api/workflow/prepare-meeting-notes', requireAuth, async (req, res) => {
-  const { transcriptContainerPath, meetingDate } = req.body ?? {}
+  const { transcriptContainerPath, meetingDate, docFtpPaths } = req.body ?? {}
   const provisionUserId = await getProvisionUserId(req.user.userId)
 
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
@@ -715,20 +749,38 @@ app.post('/api/workflow/prepare-meeting-notes', requireAuth, async (req, res) =>
     ? meetingDate
     : new Date().toISOString().slice(0, 10)
 
-  const prompt = [
+  const promptParts = [
     '請執行 meeting-transcription skill 的步驟 2：讀取逐字稿並生成會議記錄。',
     '',
     `本次會議日期：${resolvedDate}`,
     `逐字稿路徑：${transcriptContainerPath}`,
+  ]
+
+  // Convert FTP doc paths to container paths and include in prompt
+  if (Array.isArray(docFtpPaths) && docFtpPaths.length > 0) {
+    const provisionPrefix = `/${provisionUserId}/workspace`
+    const validDocPaths = docFtpPaths.filter(p =>
+      typeof p === 'string' && p.startsWith(`${provisionPrefix}/ftp_data/doc/`)
+    )
+    if (validDocPaths.length > 0) {
+      const containerDocPaths = validDocPaths.map(p => `${CONTAINER_WORKSPACE}${p.slice(provisionPrefix.length)}`)
+      promptParts.push(`本次會議補充文件（請一併參考這些文件內容，以豐富會議記錄的背景與專有名詞）：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}，`)
+    }
+  }
+
+  promptParts.push(
     '',
     '請依序完成：',
     '1. 讀取逐字稿全文',
-    '2. 判斷錄音類型（商務會議 / 訪談與使用者研究 / 知識學習與演講 / 其他）',
-    '3. 依對應格式生成完整會議記錄',
-    `4. 將完整結果**寫入以下固定路徑**（無論類型皆統一輸出此路徑）：\n   ${notesOutputContainerPath}`,
+    '2. 若有補充文件，讀取其內容以輔助理解背景',
+    '3. 判斷錄音類型（商務會議 / 訪談與使用者研究 / 知識學習與演講 / 其他）',
+    '4. 依對應格式生成完整會議記錄',
+    `5. 將完整結果**寫入以下固定路徑**（無論類型皆統一輸出此路徑）：\n   ${notesOutputContainerPath}`,
     '',
     '請直接執行，無需確認。',
-  ].join('\n')
+  )
+
+  const prompt = promptParts.join('\n')
 
   res.json({ success: true, sessionKey, prompt, notesOutputContainerPath })
 })
@@ -837,7 +889,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 
 app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
-  const { transcriptContainerPath, notesContainerPath, meetingDate, taskId } = req.body ?? {}
+  const { transcriptContainerPath, notesContainerPath, meetingDate, taskId, docFtpPaths } = req.body ?? {}
   const containerPrefix = `${CONTAINER_WORKSPACE}/`
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -873,8 +925,21 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
     `本次會議日期：${today}`,
   ]
   // if (transcriptContainerPath) parts.push(`本次會議逐字稿路徑：${transcriptContainerPath}`)
-  if (notesContainerPath) parts.push(`本次會議記錄路徑：${notesContainerPath}`)
-  parts.push('', `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`, '')
+  if (notesContainerPath) parts.push(`本次會議記錄路徑：${notesContainerPath}，`)
+
+  // Convert FTP doc paths to container-visible paths and include in prompt
+  if (Array.isArray(docFtpPaths) && docFtpPaths.length > 0) {
+    const provisionPrefix = `/${provisionUserId}/workspace`
+    const validDocPaths = docFtpPaths.filter(p =>
+      typeof p === 'string' && p.startsWith(`${provisionPrefix}/ftp_data/doc/`)
+    )
+    if (validDocPaths.length > 0) {
+      const containerDocPaths = validDocPaths.map(p => `${CONTAINER_WORKSPACE}${p.slice(provisionPrefix.length)}`)
+      parts.push(`本次會議補充文件（請一併參考這些文件內容進行洞見整合）：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}，`)
+    }
+  }
+
+  parts.push('', `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`, '，')
 
   if (knownProjects.length > 0) {
     parts.push(

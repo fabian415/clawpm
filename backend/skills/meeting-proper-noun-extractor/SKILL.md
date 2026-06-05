@@ -1,15 +1,15 @@
 ---
 name: meeting-proper-noun-extractor
-description: Automatically extract English proper nouns from meeting summary files (.xlsx/.pdf/.docx/.txt/.csv) and save them as a CSV so Whisper corrections and follow-up reviewers can focus on the same vocabulary; trigger this skill whenever you receive a report that lists per-person updates and you need a consolidated list of product/project/brand names (e.g., GenAI Studio, WEDA, Thor, Jetson Thor, OpenClaw, LLMs) without manually curating a dictionary.
+description: Automatically extract English proper nouns from meeting summary files (.xlsx/.pdf/.docx/.pptx/.txt/.csv) and save them as a CSV so Whisper corrections and follow-up reviewers can focus on the same vocabulary; trigger this skill whenever you receive a report that lists per-person updates and you need a consolidated list of product/project/brand names (e.g., GenAI Studio, WEDA, Thor, Jetson Thor, OpenClaw, LLMs) without manually curating a dictionary.
 ---
 
 # Meeting Proper Noun Extractor
 
 ## Overview
-This skill reads structured meeting summaries, action logs, or status reports and automatically pulls out the English proper nouns that appear. Instead of relying on a closed list of terms, the extractor scans for TitleCase spans and acronyms, filters out templated column headings via a stop list, enforces ASCII-only terms, and writes every detected proper noun (with counts and context windows) to a CSV file for easy Whisper correction.
+This skill reads structured meeting summaries, action logs, or status reports and automatically pulls out the English proper nouns that appear. Instead of relying on a closed list of terms, the extractor scans for TitleCase spans and acronyms, filters out templated column headings via a stop list, enforces ASCII-only terms, and writes every detected proper noun (with counts and context windows) to a CSV file for easy Whisper correction. Supported formats: plain text, PDF, Word, Excel, CSV, and PowerPoint (PPTX).
 
 ## Quick Start
-1. Drop the report you want to process into the workspace (or reference its absolute path). Supported formats: plain text, PDF, Word, Excel, CSV. When you load a spreadsheet, the script skips structural columns such as `Status`, `Task Type`, `Progress`, or `Comment` so only the descriptive text is scanned.
+1. Drop the report you want to process into the workspace (or reference its absolute path). Supported formats: plain text, PDF, Word, Excel, CSV, and PowerPoint (PPTX). When you load a spreadsheet, the script skips structural columns such as `Status`, `Task Type`, `Progress`, or `Comment` so only the descriptive text is scanned. Legacy `.ppt` files must first be saved as `.pptx` in PowerPoint.
 2. Optional: edit `references/stop-terms.txt` to add any capitalized words that you already know are just labels (e.g., ``Status``, ``Task``, ``New``, ``Feature``). The extractor ignores everything in this file automatically.
 3. Run the extractor:
    ```bash
@@ -27,7 +27,7 @@ Confirm that the report contains the per-person summaries or action-item descrip
 The extractor loads `references/stop-terms.txt` to drop false-positive headings and status words. Keep one term per line (comments start with `#`) and update it whenever a new column label shows up in your reports. This keeps the CSV focused on actual proper nouns instead of generic words like `Support` or `Project`.
 
 ### Step 3: Run the extractor
-Execute `python scripts/extract_meeting_nouns.py <report-path>` (add `--terms-file extra-terms.txt` if you have special phrases). The script handles PDF (`pdfplumber`), Word (`python-docx`), and spreadsheets (`pandas` plus `openpyxl`/`xlrd`). It captures up to three context snippets per term by default; change the `--contexts` flag to adjust.
+Execute `python scripts/extract_meeting_nouns.py <report-path>` (add `--terms-file extra-terms.txt` if you have special phrases). The script handles PDF (`pdfplumber`), Word (`python-docx`), PowerPoint (`python-pptx`, `.pptx` only — convert legacy `.ppt` to `.pptx` first), and spreadsheets (`pandas` plus `openpyxl`/`xlrd`). It captures up to three context snippets per term by default; change the `--contexts` flag to adjust.
 
 ### Step 4: Share the CSV
 Deliver the generated CSV so reviewers can compare the listed terms with Whisper transcripts. If a new proper noun emerges later, add it to the stop list only if you want it ignored in future runs; otherwise the heuristics will keep catching it automatically.
@@ -36,7 +36,7 @@ Deliver the generated CSV so reviewers can compare the listed terms with Whisper
 
 ### scripts/extract_meeting_nouns.py
 - **Purpose:** Automatically detect English proper nouns (TitleCase spans, acronyms) from documents and export them with counts + context so Whisper reviewers can spot the hard-to-hear vocabulary.
-- **Dependencies:** `python3 -m pip install pdfplumber python-docx pandas openpyxl xlrd`
+- **Dependencies:** `python3 -m pip install pdfplumber python-docx python-pptx pandas openpyxl xlrd`
 - **Arguments:**
   - `<input>` – required path to the report file
   - `--terms-file` – optional newline-delimited list of extra phrases to capture when the heuristic misses them

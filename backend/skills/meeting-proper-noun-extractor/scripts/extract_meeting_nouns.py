@@ -18,7 +18,7 @@ STOP_TERMS_FILE = Path(__file__).resolve().parents[1] / "references" / "stop-ter
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Scan a report (XLSX/PDF/DOCX/TXT/CSV) and export the English proper nouns it mentions."
+        description="Scan a report (XLSX/PDF/DOCX/PPTX/TXT/CSV) and export the English proper nouns it mentions."
     )
     parser.add_argument("input", type=Path, help="Meeting report file path")
     parser.add_argument(
@@ -69,6 +69,13 @@ def load_text(path: Path) -> str:
         return read_pdf(path)
     if suffix == ".docx":
         return read_docx(path)
+    if suffix == ".pptx":
+        return read_pptx(path)
+    if suffix == ".ppt":
+        raise RuntimeError(
+            "Legacy .ppt format is not supported; please open the file in PowerPoint, "
+            "save as .pptx, then rerun the extractor."
+        )
     if suffix in {".xls", ".xlsx", ".csv"}:
         return read_spreadsheet(path)
     return read_plain_text(path)
@@ -84,6 +91,21 @@ def read_pdf(path: Path) -> str:
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             text_parts.append(page.extract_text() or "")
+    return "\n".join(text_parts)
+
+
+def read_pptx(path: Path) -> str:
+    try:
+        from pptx import Presentation
+    except ImportError as exc:
+        raise RuntimeError("python-pptx is required to read PPTX files (pip install python-pptx)") from exc
+
+    prs = Presentation(path)
+    text_parts = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                text_parts.append(shape.text)
     return "\n".join(text_parts)
 
 

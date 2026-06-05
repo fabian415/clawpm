@@ -119,6 +119,9 @@
               <button @click="copyContent" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : ''" class="bg-slate-200 dark:bg-slate-800 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5">
                 <Copy class="w-3.5 h-3.5" /> 複製
               </button>
+              <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
+                <Trash2 class="w-3.5 h-3.5" /> 刪除
+              </button>
             </div>
           </template>
           <!-- Overview toolbar: just a refresh button -->
@@ -234,7 +237,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
-  PanelLeft, RefreshCw, Check, LayoutDashboard
+  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -361,6 +364,29 @@ function exportFile() {
 async function copyContent() {
   if (!currentSlug.value) return
   try { await navigator.clipboard.writeText(fileContent.value) } catch {}
+}
+
+async function deleteFile() {
+  if (!currentSlug.value) return
+  if (!confirm(`確定要刪除「${currentTitle.value || currentSlug.value}」嗎？此動作無法復原。`)) return
+  try {
+    const res = await fetch(`/api/project-insights/delete?slug=${encodeURIComponent(currentSlug.value)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      throw new Error(d.error || '刪除失敗')
+    }
+    currentSlug.value = '__overview__'
+    currentTitle.value = ''
+    fileContent.value = ''
+    originalContent.value = ''
+    await fetchProjectList()
+  } catch (err) {
+    console.error('[reviewer] delete error:', err.message)
+    alert(`刪除失敗：${err.message}`)
+  }
 }
 
 // ── Keyboard shortcut: Ctrl+S / Cmd+S ────────────────────────────────────────

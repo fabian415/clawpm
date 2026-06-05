@@ -1,5 +1,85 @@
 <template>
-  <div class="max-w-4xl mx-auto">
+  <!-- Preview Modal -->
+  <div v-if="previewModal.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="previewModal.show = false">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+        <h3 class="font-bold text-base">{{ previewModal.title }}</h3>
+        <div class="flex items-center gap-2">
+          <button @click="downloadText(previewModal.content, previewModal.filename)" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
+            <Download class="w-3.5 h-3.5" /> 下載
+          </button>
+          <button @click="previewModal.show = false" class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500">
+            <X class="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      <div class="flex-1 overflow-y-auto px-6 py-5">
+        <div class="md-preview text-sm text-slate-700 dark:text-slate-300 leading-relaxed" v-html="renderMarkdown(previewModal.content)"></div>
+      </div>
+    </div>
+  </div>
+
+  <div :class="hasAnyFiles ? 'flex gap-5 items-start' : ''">
+    <!-- Left Files Panel -->
+    <div v-if="hasAnyFiles" class="w-64 shrink-0">
+      <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+          <FolderOpen class="w-4 h-4 text-slate-400 shrink-0" />
+          <span class="text-sm font-bold">會議文件</span>
+        </div>
+
+        <div class="divide-y divide-slate-100 dark:divide-slate-800">
+          <!-- Supplementary Docs -->
+          <div v-if="successDocs.length > 0" class="px-4 py-3">
+            <p class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider mb-2">補充文件</p>
+            <div v-for="doc in successDocs" :key="doc.remotePath" class="flex items-center gap-2 py-1.5 group">
+              <File class="w-3.5 h-3.5 text-blue-400 shrink-0" />
+              <span class="text-xs text-slate-600 dark:text-slate-400 truncate flex-1 min-w-0" :title="doc.name">{{ doc.name }}</span>
+              <button @click="downloadDoc(doc.remotePath, doc.name)" class="shrink-0 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-blue-500 transition-all" title="下載">
+                <Download class="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Transcript -->
+          <div v-if="transcriptRawContent" class="px-4 py-3">
+            <p class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider mb-2">逐字稿</p>
+            <div class="flex items-center gap-2 py-1.5 group">
+              <FileText class="w-3.5 h-3.5 text-green-400 shrink-0" />
+              <span class="text-xs text-slate-600 dark:text-slate-400 truncate flex-1 min-w-0">逐字稿.md</span>
+              <div class="shrink-0 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button @click="openPreview('逐字稿', transcriptRawContent, 'transcript.md')" class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-blue-500" title="預覽">
+                  <Eye class="w-3 h-3" />
+                </button>
+                <button @click="downloadText(transcriptRawContent, 'transcript.md')" class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-blue-500" title="下載">
+                  <Download class="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Meeting Notes -->
+          <div v-if="meetingNotesContent" class="px-4 py-3">
+            <p class="text-[10px] uppercase font-semibold text-slate-400 tracking-wider mb-2">會議記錄</p>
+            <div class="flex items-center gap-2 py-1.5 group">
+              <FileText class="w-3.5 h-3.5 text-purple-400 shrink-0" />
+              <span class="text-xs text-slate-600 dark:text-slate-400 truncate flex-1 min-w-0">會議記錄.md</span>
+              <div class="shrink-0 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button @click="openPreview('會議記錄', meetingNotesContent, 'meeting-notes.md')" class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-purple-500" title="預覽">
+                  <Eye class="w-3 h-3" />
+                </button>
+                <button @click="downloadText(meetingNotesContent, 'meeting-notes.md')" class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-purple-500" title="下載">
+                  <Download class="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Workflow Content -->
+    <div :class="hasAnyFiles ? 'flex-1 min-w-0 max-w-3xl' : 'max-w-4xl mx-auto w-full'">
     <!-- Stepper -->
     <div class="mb-12 relative flex justify-between">
       <div class="absolute top-5 left-0 w-full h-1 bg-slate-200 dark:bg-slate-800 -z-10"></div>
@@ -418,19 +498,73 @@
         繼續下一步 <ArrowRight class="w-4 h-4" />
       </button>
     </div>
-  </div>
+    </div><!-- end main workflow content -->
+  </div><!-- end flex container -->
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
 import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
-  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar
+  ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar,
+  Download, Eye, FolderOpen
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, initialTask: Object, team: String })
 const emit = defineEmits(['navigate', 'extraction-ready'])
+
+// ── Files Panel ───────────────────────────────────────────────────────────────
+const previewModal = reactive({ show: false, title: '', content: '', filename: '' })
+
+function renderMarkdown(content) {
+  return marked.parse(content || '')
+}
+
+function openPreview(title, content, filename) {
+  previewModal.title = title
+  previewModal.content = content
+  previewModal.filename = filename
+  previewModal.show = true
+}
+
+function downloadText(content, filename) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function downloadDoc(remotePath, filename) {
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/workflow/download-doc?remotePath=${encodeURIComponent(remotePath)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      alert(`下載失敗：${err.error || res.status}`)
+      return
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    alert(`下載失敗：${err.message}`)
+  }
+}
+
+const successDocs = computed(() => uploadedDocs.value.filter(d => !d.uploading && !d.error && d.remotePath))
+const hasAnyFiles = computed(() => successDocs.value.length > 0 || !!transcriptRawContent.value || !!meetingNotesContent.value)
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const step = ref(1)
 const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '會議記錄', '洞見生成']
@@ -756,7 +890,11 @@ async function startMeetingNotes() {
     const res = await fetch('/api/workflow/prepare-meeting-notes', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcriptContainerPath: transcriptContainerPath.value, meetingDate: meetingDate.value }),
+      body: JSON.stringify({
+        transcriptContainerPath: transcriptContainerPath.value,
+        meetingDate: meetingDate.value,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
+      }),
     })
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || '準備會議記錄失敗')
@@ -947,6 +1085,7 @@ async function startInsights() {
         notesContainerPath: meetingNotesOutputPath.value || undefined,
         meetingDate: meetingDate.value,
         taskId: taskId.value || undefined,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
       }),
     })
     const data = await res.json()
@@ -1104,3 +1243,52 @@ async function removeDoc(idx) {
   } catch {}
 }
 </script>
+
+<style scoped>
+.md-preview :deep(h1),
+.md-preview :deep(h2),
+.md-preview :deep(h3),
+.md-preview :deep(h4) {
+  font-weight: 700;
+  margin-top: 1.25em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+.md-preview :deep(h1) { font-size: 1.25rem; }
+.md-preview :deep(h2) { font-size: 1.1rem; }
+.md-preview :deep(h3) { font-size: 1rem; }
+.md-preview :deep(p) { margin-bottom: 0.75em; }
+.md-preview :deep(ul),
+.md-preview :deep(ol) { padding-left: 1.5em; margin-bottom: 0.75em; }
+.md-preview :deep(li) { margin-bottom: 0.25em; }
+.md-preview :deep(ul) { list-style-type: disc; }
+.md-preview :deep(ol) { list-style-type: decimal; }
+.md-preview :deep(strong) { font-weight: 700; }
+.md-preview :deep(em) { font-style: italic; }
+.md-preview :deep(code) {
+  background: rgba(100,116,139,0.15);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+}
+.md-preview :deep(pre) {
+  background: rgba(100,116,139,0.1);
+  padding: 0.75em 1em;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin-bottom: 0.75em;
+}
+.md-preview :deep(pre code) { background: none; padding: 0; }
+.md-preview :deep(blockquote) {
+  border-left: 3px solid #94a3b8;
+  padding-left: 1em;
+  color: #64748b;
+  margin-bottom: 0.75em;
+}
+.md-preview :deep(hr) { border-color: #e2e8f0; margin: 1em 0; }
+.md-preview :deep(table) { width: 100%; border-collapse: collapse; margin-bottom: 0.75em; font-size: 0.875em; }
+.md-preview :deep(th) { background: #1e40af; color: #fff; padding: 6px 10px; text-align: left; }
+.md-preview :deep(td) { padding: 6px 10px; border: 1px solid #cbd5e1; }
+.md-preview :deep(tr:nth-child(even) td) { background: #f8fafc; }
+</style>

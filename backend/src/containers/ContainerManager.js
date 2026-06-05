@@ -42,6 +42,7 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
   const container = await docker.createContainer({
     name: containerName,
     Image: getImage(),
+    User: 'root',
     Env: env,
     ExposedPorts: {
       '18789/tcp': {},
