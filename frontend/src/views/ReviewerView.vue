@@ -119,6 +119,15 @@
               <button @click="copyContent" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : ''" class="bg-slate-200 dark:bg-slate-800 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5">
                 <Copy class="w-3.5 h-3.5" /> 複製
               </button>
+              <button
+                @click="emit('swot-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-emerald-700'"
+                class="bg-emerald-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="針對此專案執行 SWOT 分析"
+              >
+                <BarChart2 class="w-3.5 h-3.5" /> SWOT
+              </button>
               <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
                 <Trash2 class="w-3.5 h-3.5" /> 刪除
               </button>
@@ -237,12 +246,14 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
-  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2
+  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
+
+const emit = defineEmits(['swot-project'])
 
 const mode = ref('split')
 const sidebarOpen = ref(true)

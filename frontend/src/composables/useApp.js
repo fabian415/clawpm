@@ -116,6 +116,7 @@ export function useApp() {
       projectDetail: selectedProject.value?.name ?? '',
       workflow: '會議處理流程',
       reviewer: '專案列表',
+      swotReport: 'SWOT 分析',
       settings: '系統設定'
     }
     return map[currentPage.value] ?? ''

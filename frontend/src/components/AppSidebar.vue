@@ -26,7 +26,7 @@
       </div>
       <div
         @click="$emit('navigate', 'reviewer')"
-        :class="{ 'bg-blue-600 text-white': currentPage === 'reviewer' }"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'reviewer' || currentPage === 'swotReport' }"
         class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
       >
         <FileSearch class="w-5 h-5 shrink-0" />

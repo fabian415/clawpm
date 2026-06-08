@@ -1247,6 +1247,186 @@ app.delete('/api/project-insights/delete', requireAuth, async (req, res) => {
   res.json({ success: true, slug })
 })
 
+// ── SWOT Reports ──────────────────────────────────────────────────────────────
+
+// SWOT files live in project-insights/swot-{slug}/{YYYYMMDD}-{HHmmss}.md
+
+function swotDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `swot-${slug}`)
+}
+
+function swotFilePath(hostInsightsDir, slug, name) {
+  const dir = swotDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  // must stay within the swot subfolder
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+function validSlug(s) {
+  return typeof s === 'string' && s.length > 0 && !s.includes('..') && !s.includes('/') && !s.includes('\\')
+}
+
+function validTimestamp(s) {
+  return typeof s === 'string' && /^\d{8}-\d{6}$/.test(s)
+}
+
+app.post('/api/swot/analyze', requireAuth, async (req, res) => {
+  const { projectSlug, projectName } = req.body ?? {}
+
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+
+  const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const swotFolderContainer = `${CONTAINER_INSIGHTS_DIR}/swot-${projectSlug}`
+  const containerOutputPath = `${swotFolderContainer}/${timestamp}.md`
+  const today = now.toISOString().slice(0, 10)
+  const sessionKey = makeScopedSessionKey('swot')
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+
+  const parts = [
+    `請使用 swot-analyzer skill，針對「${displayName}」專案執行完整 SWOT 分析。`,
+    '',
+    `專案名稱：${displayName}`,
+    `分析日期：${today}`,
+    `專案洞察來源檔案：${projectContainerPath}`,
+    '',
+    '分析範疇：完整 SWOT（含初步競品掃描與產業趨勢）',
+    '輸出目標：standalone',
+    `輸出檔案路徑：${containerOutputPath}`,
+    `（請先建立資料夾 ${swotFolderContainer}/ 若尚未存在）`,
+    '',
+    '請依照 skill 工作流程完整執行：',
+    `1. 讀取 ${projectContainerPath}，從中提取已知事實作為內部事實基礎（標記來源日期）`,
+    '2. 執行外部研究（搜尋相關市場資料、競品資訊、產業趨勢）',
+    '3. 合成 SWOT 矩陣（嚴格區分會議事實層與外部 insights 層）',
+    '4. 整理競品分析（每個競品描述附官方來源 URL）',
+    '5. 整理產業趨勢（每項數字或判斷附來源日期與 URL）',
+    `6. 輸出完整報告至：${containerOutputPath}`,
+    '',
+    '所有外部資料必須附來源 URL。',
+    '最後檢查所有的 Markdown 檔案寫入時，\\n 要取代成斷行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: timestamp, timestamp: today })
+})
+
+app.get('/api/swot/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = swotDir(hostInsightsDir, slug)
+
+  if (!fs.existsSync(dir)) return res.json({ reports: [] })
+
+  try {
+    const reports = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.md$/.test(f))
+      .map(f => {
+        const name = f.replace(/\.md$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, displayDate, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ reports })
+  } catch {
+    res.status(500).json({ error: '讀取 SWOT 報告清單失敗' })
+  }
+})
+
+app.get('/api/swot/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = swotFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/swot/file', requireAuth, async (req, res) => {
+  const { slug, name, content } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const hostPath = swotFilePath(hostInsightsDir, slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/swot/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = swotFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
+  }
+})
+
+app.get('/api/swot/result', requireAuth, async (req, res) => {
+  const { slug, filename } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = swotFilePath(path.join(paths.workspace, 'project-insights'), slug, filename)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  res.json({ ready: fs.existsSync(hostPath) })
+})
+
 // ── Project Insights HTML Viewer (iframe) ─────────────────────────────────────
 // Serves reviewer/index.html with projects.json inlined via a fetch-intercept
 // script, so the iframe needs zero further authenticated sub-requests.

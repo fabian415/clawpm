@@ -8,3 +8,4 @@ backend/data
 frontend/vite-dev*.log
 reference
 .claude
+.vscode

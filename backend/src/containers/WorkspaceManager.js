@@ -19,6 +19,7 @@ const SKILL_NAMES = [
   'meeting-transcription',
   'meeting-proper-noun-extractor',
   'project-insight-synthesizer',
+  'swot-analyzer', 
 ]
 
 // Always overwrite on init to keep assistant character and workspace instructions current.
