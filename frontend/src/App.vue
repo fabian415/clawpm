@@ -76,6 +76,7 @@
           :team="currentUser?.teamName"
           @navigate="page => { currentPage = page; selectedTask = null }"
           @extraction-ready="handleExtractionReady"
+          @toast="(msg, type) => showToast(msg, type)"
         />
 
         <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" />
@@ -130,6 +131,8 @@
         />
 
         <ReleaseNoteView v-else-if="currentPage === 'releaseNote'" />
+
+        <TerminologyView v-else-if="currentPage === 'terminology'" @toast="(msg, type) => showToast(msg, type)" />
       </div>
     </main>
   </div>
@@ -207,6 +210,7 @@ import ContainerView from './views/ContainerView.vue'
 import SpeakerManagementView from './views/SpeakerManagementView.vue'
 import TasksView from './views/TasksView.vue'
 import ReleaseNoteView from './views/ReleaseNoteView.vue'
+import TerminologyView from './views/TerminologyView.vue'
 
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,

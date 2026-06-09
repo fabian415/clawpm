@@ -40,7 +40,7 @@ export function useApp() {
   const isDestroying = ref(false)
   const containerConfig = ref(null)
   const showNewProjectModal = ref(false)
-  const toast = ref({ show: false, message: '', icon: 'CheckCircle' })
+  const toast = ref({ show: false, message: '', type: '' })
   const containerStatus = ref('Running')
   const containerStats = ref(null)
   const editingProjectInfo = ref(false)
@@ -143,8 +143,8 @@ export function useApp() {
     return 'bg-green-500'
   })
 
-  function showToast(msg, icon = 'CheckCircle') {
-    toast.value = { show: true, message: msg, icon }
+  function showToast(msg, type = '') {
+    toast.value = { show: true, message: msg, type }
     setTimeout(() => { toast.value.show = false }, 3000)
   }
 

@@ -12,6 +12,7 @@ import multer from 'multer'
 import { Client as FtpClient } from 'basic-ftp'
 import nodemailer from 'nodemailer'
 import { runMigrations } from './src/migrate.js'
+import { query } from './src/db.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers, deleteAllTeamMembers } from './src/managers/UserManager.js'
 import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder, deleteTeam } from './src/managers/TeamManager.js'
 import {
@@ -526,6 +527,87 @@ function sanitizeBaseName(value) {
     .replace(/^_+|_+$/g, '')
 }
 
+// ── Terminology library ───────────────────────────────────────────────────────
+
+app.get('/api/terminology', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await query(
+      'SELECT id, term, created_at FROM terminology WHERE team_id = $1 ORDER BY term ASC',
+      [req.user.teamId]
+    )
+    res.json(rows)
+  } catch (err) {
+    console.error('[terminology] list error:', err.message)
+    res.status(500).json({ error: '讀取辭庫失敗' })
+  }
+})
+
+app.post('/api/terminology', requireAuth, async (req, res) => {
+  const { term } = req.body ?? {}
+  if (!term?.trim()) return res.status(400).json({ error: '術語不可為空' })
+  try {
+    const { rows } = await query(
+      'INSERT INTO terminology (team_id, term) VALUES ($1, $2) ON CONFLICT (team_id, term) DO NOTHING RETURNING id, term, created_at',
+      [req.user.teamId, term.trim()]
+    )
+    if (rows.length === 0) return res.status(409).json({ error: '術語已存在' })
+    res.json(rows[0])
+  } catch (err) {
+    console.error('[terminology] add error:', err.message)
+    res.status(500).json({ error: '新增術語失敗' })
+  }
+})
+
+app.put('/api/terminology/:id', requireAuth, async (req, res) => {
+  const { term } = req.body ?? {}
+  if (!term?.trim()) return res.status(400).json({ error: '術語不可為空' })
+  try {
+    const { rows } = await query(
+      'UPDATE terminology SET term = $1 WHERE id = $2 AND team_id = $3 RETURNING id, term, created_at',
+      [term.trim(), req.params.id, req.user.teamId]
+    )
+    if (rows.length === 0) return res.status(404).json({ error: '術語不存在' })
+    res.json(rows[0])
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: '術語已存在' })
+    res.status(500).json({ error: '更新術語失敗' })
+  }
+})
+
+app.delete('/api/terminology/:id', requireAuth, async (req, res) => {
+  try {
+    const { rowCount } = await query(
+      'DELETE FROM terminology WHERE id = $1 AND team_id = $2',
+      [req.params.id, req.user.teamId]
+    )
+    if (rowCount === 0) return res.status(404).json({ error: '術語不存在' })
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[terminology] delete error:', err.message)
+    res.status(500).json({ error: '刪除術語失敗' })
+  }
+})
+
+app.post('/api/terminology/bulk-add', requireAuth, async (req, res) => {
+  const { terms } = req.body ?? {}
+  if (!Array.isArray(terms) || terms.length === 0) return res.status(400).json({ error: '術語列表不可為空' })
+  const cleanTerms = [...new Set(terms.map(t => String(t).trim()).filter(Boolean))]
+  try {
+    let added = 0
+    for (const term of cleanTerms) {
+      const { rowCount } = await query(
+        'INSERT INTO terminology (team_id, term) VALUES ($1, $2) ON CONFLICT (team_id, term) DO NOTHING',
+        [req.user.teamId, term]
+      )
+      added += rowCount
+    }
+    res.json({ added })
+  } catch (err) {
+    console.error('[terminology] bulk-add error:', err.message)
+    res.status(500).json({ error: '批量新增失敗' })
+  }
+})
+
 app.post('/api/workflow/prepare-extraction', requireAuth, async (req, res) => {
   const { sourcePath, originalName } = req.body ?? {}
   const provisionUserId = await getProvisionUserId(req.user.userId)
@@ -725,6 +807,103 @@ app.delete('/api/workflow/transcription/:jobId', requireAuth, async (req, res) =
   } catch (err) {
     console.error('[cancel-transcription] error:', err.message)
     res.status(502).json({ error: `無法連接轉錄伺服器：${err.message}` })
+  }
+})
+
+// ── Transcript save & AI repair (Step 3) ─────────────────────────────────────
+
+app.post('/api/workflow/save-transcript', requireAuth, async (req, res) => {
+  const { transcriptContainerPath, content } = req.body ?? {}
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!transcriptContainerPath || !transcriptContainerPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的逐字稿路徑' })
+  }
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: '無效的內容' })
+  }
+
+  const relPath = transcriptContainerPath.slice(CONTAINER_WORKSPACE.length)
+  const hostPath = path.join(paths.workspace, relPath)
+  if (!hostPath.startsWith(paths.workspace)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true })
+  } catch (err) {
+    res.status(500).json({ error: `儲存失敗：${err.message}` })
+  }
+})
+
+app.post('/api/workflow/prepare-transcript-repair', requireAuth, async (req, res) => {
+  const { transcriptContainerPath } = req.body ?? {}
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!transcriptContainerPath || !transcriptContainerPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的逐字稿路徑' })
+  }
+
+  const transcriptDir = path.dirname(transcriptContainerPath)
+  const transcriptBase = path.basename(transcriptContainerPath, '_逐字稿.md')
+  const repairedOutputContainerPath = `${transcriptDir}/${transcriptBase}_逐字稿_修復.md`
+
+  const sessionKey = makeScopedSessionKey('transcript-repair')
+
+  const prompt = [
+    '請執行以下逐字稿雜訊修復任務：',
+    '',
+    `逐字稿檔案路徑：${transcriptContainerPath}`,
+    `修復結果輸出路徑：${repairedOutputContainerPath}`,
+    '',
+    '修復規則（請嚴格遵守）：',
+    '1. **完全保持原意** — 只修復雜訊，不改變說話者所表達的意思',
+    '2. 移除語音辨識產生的填充詞（例如重複的「嗯」「啊」「那個」「就是說」等無意義詞）',
+    '3. 修正明顯的語音辨識錯誤（同音字錯誤、句子中斷後重複的片段等）',
+    '4. 若某段內容不確定如何修復，**保留原文，絕對不要猜測或改寫**',
+    '5. 保持 Markdown 格式完全不變（時間戳 `**[HH:MM:SS → HH:MM:SS] Speaker:**`、段落分隔等）',
+    '6. 不添加任何原文沒有的內容，不刪除有意義的對話',
+    '',
+    '請依序完成：',
+    '1. 讀取逐字稿全文',
+    '2. 對每個段落進行雜訊修復',
+    `3. 將完整修復後的逐字稿寫入：${repairedOutputContainerPath}`,
+    '',
+    '請直接執行，無需確認。',
+  ].join('\n')
+
+  res.json({ success: true, sessionKey, prompt, repairedOutputContainerPath })
+})
+
+app.get('/api/workflow/transcript-repair-result', requireAuth, async (req, res) => {
+  const { outputPath } = req.query
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!outputPath || !outputPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的路徑' })
+  }
+
+  const relPath = outputPath.slice(CONTAINER_WORKSPACE.length)
+  const hostPath = path.join(paths.workspace, relPath)
+  if (!hostPath.startsWith(paths.workspace)) {
+    return res.status(403).json({ error: '無權限' })
+  }
+
+  if (!fs.existsSync(hostPath)) {
+    return res.json({ ready: false, content: null })
+  }
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ ready: true, content })
+  } catch {
+    res.json({ ready: false, content: null })
   }
 })
 
