@@ -216,8 +216,9 @@
     </div>
 
     <!-- Step 2: Extraction -->
-    <div v-if="step === 2" class="space-y-6 text-center py-10">
-      <div v-if="isProcessing">
+    <div v-if="step === 2" class="space-y-5">
+      <!-- Processing spinner -->
+      <div v-if="isProcessing" class="text-center py-10">
         <div class="relative w-32 h-32 mx-auto mb-8">
           <div class="absolute inset-0 rounded-full border-4 border-blue-100 dark:border-slate-800"></div>
           <div class="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
@@ -226,10 +227,12 @@
           </div>
         </div>
         <h3 class="text-2xl font-bold mb-2">正在辨識關鍵字...</h3>
-        <p class="text-slate-500">AI 正在分析音訊內容並提取專有名詞與核心概念</p>
+        <p class="text-slate-500">AI 正在分析文件並提取專有名詞與核心概念</p>
       </div>
-      <div v-else class="space-y-6 text-left">
-        <!-- Extraction error -->
+
+      <!-- Ready state -->
+      <div v-else class="space-y-4 text-left">
+        <!-- Error -->
         <div v-if="extractionError" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
           <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
           <div>
@@ -238,25 +241,105 @@
           </div>
         </div>
 
-        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8">
-          <div class="flex justify-between items-center mb-6">
-            <h3 class="text-xl font-bold">專有名詞標籤雲</h3>
-            <div class="flex gap-2">
-              <input v-model="newTag" @keyup.enter="addTag" placeholder="新增標籤..." class="px-3 py-1 text-sm border rounded-lg dark:bg-slate-800 border-slate-200 dark:border-slate-700 focus:ring-1 focus:ring-blue-500 outline-none" />
-              <button @click="addTag" class="p-1 bg-blue-600 text-white rounded-lg"><Plus class="w-5 h-5" /></button>
+        <!-- Library Terms -->
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-base flex items-center gap-2">
+              <BookMarked class="w-4 h-4 text-blue-500 shrink-0" />
+              辭庫術語
+              <span class="text-xs font-normal text-slate-400">{{ checkedLibraryCount }}/{{ libraryTerms.length }}</span>
+            </h3>
+            <div class="flex gap-3 text-xs">
+              <button @click="libraryTerms.forEach(t => t.checked = true)" class="text-blue-500 hover:underline">全選</button>
+              <button @click="libraryTerms.forEach(t => t.checked = false)" class="text-slate-400 hover:underline">取消全選</button>
             </div>
           </div>
-          <!-- Tags -->
-          <div v-if="tags.length > 0" class="flex flex-wrap gap-3">
-            <div v-for="(tag, idx) in tags" :key="idx" class="flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 rounded-full text-sm font-medium border border-blue-100 dark:border-blue-900/50 group">
+          <div v-if="libraryTerms.length > 0" class="flex flex-wrap gap-2">
+            <label
+              v-for="t in libraryTerms" :key="t.id"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium cursor-pointer select-none border transition-colors"
+              :class="t.checked
+                ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 border-blue-100 dark:border-blue-900/50'
+                : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-700'"
+            >
+              <input type="checkbox" v-model="t.checked" class="sr-only" />
+              <Check v-if="t.checked" class="w-3 h-3 shrink-0" />
+              {{ t.term }}
+            </label>
+          </div>
+          <div v-else class="py-4 text-center text-xs text-slate-400">
+            辭庫目前為空。
+            <button @click="$emit('navigate', 'terminology')" class="text-blue-500 hover:underline">前往辭庫管理</button>
+            新增術語。
+          </div>
+        </div>
+
+        <!-- Extracted Terms -->
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-base flex items-center gap-2">
+              <Sparkles class="w-4 h-4 text-amber-500 shrink-0" />
+              本次萃取
+              <span class="text-xs font-normal text-slate-400">{{ checkedExtractedCount }}/{{ extractedTerms.length }}</span>
+            </h3>
+            <div class="flex items-center gap-3">
+              <div class="flex gap-3 text-xs">
+                <button @click="extractedTerms.forEach(t => t.checked = true)" class="text-blue-500 hover:underline">全選</button>
+                <button @click="extractedTerms.forEach(t => t.checked = false)" class="text-slate-400 hover:underline">取消全選</button>
+              </div>
+              <button
+                @click="addCheckedToLibrary"
+                :disabled="isBulkAdding || newExtractedCheckedCount === 0"
+                class="flex items-center gap-1.5 px-3 py-1 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <BookMarked class="w-3 h-3" />
+                {{ isBulkAdding ? '新增中...' : `加入辭庫 (${newExtractedCheckedCount})` }}
+              </button>
+            </div>
+          </div>
+          <div v-if="extractedTerms.length > 0" class="flex flex-wrap gap-2">
+            <label
+              v-for="(t, idx) in extractedTerms" :key="idx"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium cursor-pointer select-none border transition-colors"
+              :class="t.checked
+                ? 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border-amber-100 dark:border-amber-800/40'
+                : 'bg-white dark:bg-slate-900 text-slate-400 border-slate-200 dark:border-slate-700'"
+            >
+              <input type="checkbox" v-model="t.checked" class="sr-only" />
+              <Check v-if="t.checked" class="w-3 h-3 shrink-0" />
+              {{ t.term }}
+              <span v-if="t.inLibrary" class="ml-0.5 text-[10px] text-blue-400 font-normal">辭庫</span>
+            </label>
+          </div>
+          <div v-else class="py-4 text-center text-xs text-slate-400">
+            <span v-if="!extractionOutputPath">未上傳補充文件，無法自動萃取</span>
+            <span v-else>未萃取到任何術語</span>
+            <span class="block mt-1 text-slate-300">您仍可手動新增術語以提升辨識準確率</span>
+          </div>
+        </div>
+
+        <!-- Manual add -->
+        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5">
+          <p class="text-xs font-medium text-slate-500 mb-3">手動新增術語（僅用於本次轉錄）</p>
+          <div class="flex gap-2">
+            <input
+              v-model="newTag"
+              @keyup.enter="addTag"
+              placeholder="輸入術語後按 Enter 或點新增..."
+              class="flex-1 px-3 py-2 text-sm border rounded-xl dark:bg-slate-800 border-slate-200 dark:border-slate-700 focus:ring-1 focus:ring-blue-500 outline-none"
+            />
+            <button @click="addTag" class="px-4 py-2 bg-blue-600 text-white rounded-xl text-sm font-medium hover:bg-blue-700 transition-colors">新增</button>
+          </div>
+          <div v-if="manualTags.length > 0" class="flex flex-wrap gap-2 mt-3">
+            <div
+              v-for="(tag, idx) in manualTags" :key="idx"
+              class="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-full text-sm group"
+            >
               {{ tag }}
-              <button @click="tags.splice(idx, 1)" class="hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><X class="w-3 h-3" /></button>
+              <button @click="manualTags.splice(idx, 1)" class="hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">
+                <X class="w-3 h-3" />
+              </button>
             </div>
-          </div>
-          <!-- Empty state -->
-          <div v-else class="py-6 text-center text-slate-400 text-sm">
-            <p>未上傳補充文件，無法自動萃取專有名詞</p>
-            <p class="text-xs mt-1 text-slate-300">您仍可手動輸入標籤，以提升步驟 3 的語音辨識準確率</p>
           </div>
         </div>
       </div>
@@ -317,22 +400,129 @@
           </div>
         </div>
 
-        <div class="flex justify-between items-end">
-          <h3 class="text-xl font-bold">逐字稿預覽</h3>
-          <span class="text-xs text-slate-500">共 {{ transcriptWordCount.toLocaleString() }} 字</span>
-        </div>
-        <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 h-96 overflow-y-auto leading-relaxed">
-          <div v-if="transcriptLines.length > 0">
-            <div v-for="line in transcriptLines" :key="line.id" class="mb-6">
-              <div class="flex items-center gap-3 mb-1">
-                <span class="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">{{ line.time }}</span>
-                <span class="font-bold text-sm">{{ line.speaker }}</span>
+        <!-- ── Comparison view ── -->
+        <div v-if="showComparison" class="space-y-4">
+          <div class="flex items-center justify-between">
+            <h3 class="text-xl font-bold">逐字稿比較</h3>
+            <button @click="dismissRepair" class="flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">
+              <X class="w-4 h-4" /> 關閉比較
+            </button>
+          </div>
+
+          <div class="grid grid-cols-2 gap-4">
+            <!-- Original -->
+            <div class="space-y-2">
+              <div class="flex items-center gap-2">
+                <h4 class="font-bold text-sm">原始版本</h4>
+                <span class="text-xs text-slate-400">{{ transcriptWordCount.toLocaleString() }} 字</span>
               </div>
-              <p class="text-slate-600 dark:text-slate-400 pl-4 border-l-2 border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-colors">{{ line.text }}</p>
+              <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 h-80 overflow-y-auto">
+                <div v-for="line in transcriptLines" :key="line.id" class="mb-4">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span class="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">{{ line.time }}</span>
+                    <span class="font-bold text-xs">{{ line.speaker }}</span>
+                  </div>
+                  <p class="text-slate-600 dark:text-slate-400 pl-3 border-l-2 border-slate-100 dark:border-slate-800 text-sm">{{ line.text }}</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Repaired -->
+            <div class="space-y-2">
+              <div class="flex items-center gap-2">
+                <h4 class="font-bold text-sm text-emerald-600 dark:text-emerald-400">AI 修復版本</h4>
+                <span class="text-xs text-slate-400">{{ repairedWordCount.toLocaleString() }} 字</span>
+                <span class="text-[10px] px-2 py-0.5 bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 rounded-full font-medium">已修復</span>
+              </div>
+              <div class="bg-emerald-50/40 dark:bg-emerald-900/10 border border-emerald-200 dark:border-emerald-900/40 rounded-2xl p-4 h-80 overflow-y-auto">
+                <div v-for="line in repairedLines" :key="line.id" class="mb-4">
+                  <div class="flex items-center gap-2 mb-1">
+                    <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 rounded">{{ line.time }}</span>
+                    <span class="font-bold text-xs">{{ line.speaker }}</span>
+                  </div>
+                  <p class="text-slate-600 dark:text-slate-400 pl-3 border-l-2 border-emerald-300 dark:border-emerald-700 text-sm">{{ line.text }}</p>
+                </div>
+              </div>
             </div>
           </div>
-          <div v-else-if="!transcriptError" class="flex items-center justify-center h-full text-slate-400 text-sm">
-            尚無逐字稿內容
+
+          <div class="flex justify-end gap-3">
+            <button @click="dismissRepair" class="px-5 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+              忽略修復
+            </button>
+            <button @click="applyRepair" class="flex items-center gap-2 px-5 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-medium transition-colors shadow-lg shadow-emerald-500/20">
+              <Check class="w-4 h-4" /> 採用修復版本
+            </button>
+          </div>
+        </div>
+
+        <!-- ── Normal view (header + edit/view) ── -->
+        <div v-else class="space-y-4">
+          <div class="flex justify-between items-center">
+            <h3 class="text-xl font-bold">逐字稿預覽</h3>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-500">共 {{ transcriptWordCount.toLocaleString() }} 字</span>
+              <button
+                v-if="!transcriptEditMode && transcriptLines.length > 0"
+                @click="enterEditMode"
+                class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+              >
+                <Pencil class="w-3 h-3" /> 編輯
+              </button>
+              <template v-if="transcriptLines.length > 0">
+                <button
+                  v-if="!isRepairing"
+                  @click="startRepair"
+                  class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                >
+                  <Sparkles class="w-3 h-3" /> AI 自動修復
+                </button>
+                <span v-else class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-blue-600 dark:text-blue-400 font-medium">
+                  <Loader2 class="w-3 h-3 animate-spin" /> AI 修復中...
+                </span>
+              </template>
+            </div>
+          </div>
+
+          <!-- Edit mode: textarea -->
+          <div v-if="transcriptEditMode">
+            <div class="relative">
+              <textarea
+                v-model="transcriptEditContent"
+                class="w-full h-96 font-mono text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 resize-none outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed"
+                placeholder="逐字稿內容（Markdown 格式）..."
+              ></textarea>
+              <span class="absolute bottom-3 right-4 text-[10px] text-slate-400">可直接編輯</span>
+            </div>
+            <div class="flex justify-end gap-2 mt-2">
+              <button @click="cancelEdit" class="px-4 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                取消
+              </button>
+              <button
+                @click="saveTranscript"
+                :disabled="isSavingTranscript"
+                class="flex items-center gap-1.5 px-5 py-2 text-sm bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl font-medium transition-colors shadow-lg shadow-blue-500/20"
+              >
+                <Loader2 v-if="isSavingTranscript" class="w-3.5 h-3.5 animate-spin" />
+                {{ isSavingTranscript ? '儲存中...' : '存檔' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- View mode: formatted lines -->
+          <div v-else class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 h-96 overflow-y-auto leading-relaxed">
+            <div v-if="transcriptLines.length > 0">
+              <div v-for="line in transcriptLines" :key="line.id" class="mb-6">
+                <div class="flex items-center gap-3 mb-1">
+                  <span class="text-[10px] font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded">{{ line.time }}</span>
+                  <span class="font-bold text-sm">{{ line.speaker }}</span>
+                </div>
+                <p class="text-slate-600 dark:text-slate-400 pl-4 border-l-2 border-slate-100 dark:border-slate-800 hover:border-blue-500 transition-colors">{{ line.text }}</p>
+              </div>
+            </div>
+            <div v-else-if="!transcriptError" class="flex items-center justify-center h-full text-slate-400 text-sm">
+              尚無逐字稿內容
+            </div>
           </div>
         </div>
       </div>
@@ -508,11 +698,11 @@ import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar,
-  Download, Eye, FolderOpen
+  Download, Eye, FolderOpen, BookMarked, Pencil
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, initialTask: Object, team: String })
-const emit = defineEmits(['navigate', 'extraction-ready'])
+const emit = defineEmits(['navigate', 'extraction-ready', 'toast'])
 
 // ── Files Panel ───────────────────────────────────────────────────────────────
 const previewModal = reactive({ show: false, title: '', content: '', filename: '' })
@@ -575,6 +765,13 @@ const isDragOver = ref(false)
 const tags = ref([])
 const newTag = ref('')
 const extractionError = ref('')
+const libraryTerms = ref([])
+const extractedTerms = ref([])
+const manualTags = ref([])
+const isBulkAdding = ref(false)
+const checkedLibraryCount = computed(() => libraryTerms.value.filter(t => t.checked).length)
+const checkedExtractedCount = computed(() => extractedTerms.value.filter(t => t.checked).length)
+const newExtractedCheckedCount = computed(() => extractedTerms.value.filter(t => t.checked && !t.inLibrary).length)
 const transcriptError = ref('')
 
 const fileInputRef = ref(null)
@@ -595,6 +792,133 @@ const transcriptWordCount = ref(0)
 let transcriptionPollTimer = null
 const showCancelConfirm = ref(false)
 const isCancelling = ref(false)
+
+// ── Transcript edit / AI repair ───────────────────────────────────────────────
+const transcriptEditMode = ref(false)
+const transcriptEditContent = ref('')
+const isSavingTranscript = ref(false)
+const isRepairing = ref(false)
+const repairedContent = ref('')
+const repairedLines = ref([])
+const showComparison = ref(false)
+const repairOutputPath = ref(null)
+let repairPollTimer = null
+const repairedWordCount = computed(() => countWords(repairedContent.value))
+
+function enterEditMode() {
+  transcriptEditContent.value = transcriptRawContent.value
+  transcriptEditMode.value = true
+}
+
+function cancelEdit() {
+  transcriptEditMode.value = false
+  transcriptEditContent.value = ''
+}
+
+async function saveTranscript() {
+  if (!transcriptContainerPath.value) {
+    transcriptRawContent.value = transcriptEditContent.value
+    transcriptLines.value = parseTranscript(transcriptEditContent.value)
+    transcriptWordCount.value = countWords(transcriptEditContent.value)
+    transcriptEditMode.value = false
+    return
+  }
+  isSavingTranscript.value = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/save-transcript', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcriptContainerPath: transcriptContainerPath.value, content: transcriptEditContent.value }),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || '儲存失敗')
+    transcriptRawContent.value = transcriptEditContent.value
+    transcriptLines.value = parseTranscript(transcriptEditContent.value)
+    transcriptWordCount.value = countWords(transcriptEditContent.value)
+    transcriptEditMode.value = false
+    emit('toast', '逐字稿已儲存')
+  } catch (err) {
+    emit('toast', err.message || '儲存失敗', 'error')
+  } finally {
+    isSavingTranscript.value = false
+  }
+}
+
+async function startRepair() {
+  if (!transcriptContainerPath.value) {
+    emit('toast', '無法取得逐字稿路徑', 'error')
+    return
+  }
+  if (transcriptEditMode.value) await saveTranscript()
+  isRepairing.value = true
+  repairedContent.value = ''
+  repairedLines.value = []
+  showComparison.value = false
+  repairOutputPath.value = null
+  clearTimeout(repairPollTimer)
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/prepare-transcript-repair', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcriptContainerPath: transcriptContainerPath.value }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '修復準備失敗')
+    repairOutputPath.value = data.repairedOutputContainerPath
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt, newSession: true })
+    startRepairPolling()
+  } catch (err) {
+    emit('toast', err.message || 'AI 修復失敗', 'error')
+    isRepairing.value = false
+  }
+}
+
+function startRepairPolling() {
+  clearTimeout(repairPollTimer)
+  const poll = async () => {
+    if (!repairOutputPath.value) return
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch(
+        `/api/workflow/transcript-repair-result?outputPath=${encodeURIComponent(repairOutputPath.value)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      const data = await res.json()
+      if (data.ready && data.content) {
+        repairedContent.value = data.content
+        repairedLines.value = parseTranscript(data.content)
+        isRepairing.value = false
+        showComparison.value = true
+        return
+      }
+    } catch {}
+    repairPollTimer = setTimeout(poll, 5000)
+  }
+  repairPollTimer = setTimeout(poll, 5000)
+}
+
+function applyRepair() {
+  transcriptRawContent.value = repairedContent.value
+  transcriptLines.value = repairedLines.value
+  transcriptWordCount.value = countWords(repairedContent.value)
+  if (transcriptEditMode.value) transcriptEditContent.value = repairedContent.value
+  showComparison.value = false
+  repairedContent.value = ''
+  repairedLines.value = []
+  repairOutputPath.value = null
+  emit('toast', '已採用 AI 修復版本')
+}
+
+function dismissRepair() {
+  showComparison.value = false
+  repairedContent.value = ''
+  repairedLines.value = []
+  repairOutputPath.value = null
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 const meetingDate = ref(new Date().toISOString().slice(0, 10))
 
@@ -754,13 +1078,15 @@ async function cancelTranscription() {
 async function nextStep() {
   if (step.value === 1) {
     step.value++
+    loadLibraryTerms()
     syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'pending', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { uploadedDocPaths: uploadedDocs.value.filter(d => d.remotePath).map(d => ({ name: d.name, remotePath: d.remotePath })) } })
     startExtraction()
     return
   }
   if (step.value === 2) {
+    tags.value = buildFinalTags()
     step.value++
-    syncTask({ currentStep: 3, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: tags.value, extractionOutputPath: extractionOutputPath.value } })
+    syncTask({ currentStep: 3, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: tags.value, extractionOutputPath: extractionOutputPath.value, extractedTerms: extractedTerms.value.map(({ term, checked, inLibrary }) => ({ term, checked, inLibrary })), manualTags: manualTags.value } })
     startTranscription()
     return
   }
@@ -782,7 +1108,7 @@ async function startExtraction() {
   extractionError.value = ''
   const sourceDoc = uploadedDocs.value.find(d => !d.uploading && !d.error && d.remotePath)
   if (!sourceDoc) {
-    tags.value = []  // Clear any stale tags; user can add manually
+    extractedTerms.value = []
     isProcessing.value = false
     return
   }
@@ -1014,9 +1340,11 @@ function startExtractionPolling() {
       )
       const data = await res.json()
       if (data.ready) {
+        const libTermSet = new Set(libraryTerms.value.map(t => t.term))
+        extractedTerms.value = (data.tags || []).map(term => ({ term, checked: true, inLibrary: libTermSet.has(term) }))
         tags.value = data.tags || []
         isProcessing.value = false
-        syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: data.tags || [], extractionOutputPath: extractionOutputPath.value } })
+        syncTask({ currentStep: 2, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'pending', 4: 'pending', 5: 'pending' }, data: { tags: data.tags || [], extractedTerms: extractedTerms.value.map(({ term, checked, inLibrary }) => ({ term, checked, inLibrary })), extractionOutputPath: extractionOutputPath.value } })
         return
       }
     } catch {}
@@ -1026,9 +1354,55 @@ function startExtractionPolling() {
 }
 
 function addTag() {
-  if (newTag.value.trim()) {
-    tags.value.push(newTag.value.trim())
-    newTag.value = ''
+  const term = newTag.value.trim()
+  if (!term) return
+  const exists = libraryTerms.value.some(t => t.term === term) ||
+                 extractedTerms.value.some(t => t.term === term) ||
+                 manualTags.value.includes(term)
+  if (!exists) manualTags.value.push(term)
+  newTag.value = ''
+}
+
+async function loadLibraryTerms() {
+  try {
+    const res = await fetch('/api/terminology', {
+      headers: { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}` }
+    })
+    if (!res.ok) return
+    const data = await res.json()
+    const termSet = new Set(data.map(t => t.term))
+    libraryTerms.value = data.map(t => ({ ...t, checked: true }))
+    extractedTerms.value = extractedTerms.value.map(t => ({ ...t, inLibrary: termSet.has(t.term) }))
+  } catch {}
+}
+
+function buildFinalTags() {
+  const lib = libraryTerms.value.filter(t => t.checked).map(t => t.term)
+  const ext = extractedTerms.value.filter(t => t.checked).map(t => t.term)
+  return [...new Set([...lib, ...ext, ...manualTags.value])]
+}
+
+async function addCheckedToLibrary() {
+  const toAdd = extractedTerms.value.filter(t => t.checked && !t.inLibrary).map(t => t.term)
+  if (toAdd.length === 0) return
+  isBulkAdding.value = true
+  try {
+    const res = await fetch('/api/terminology/bulk-add', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ terms: toAdd })
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      emit('toast', data.error || '加入辭庫失敗，請稍後再試', 'error')
+      return
+    }
+    await loadLibraryTerms()
+    emit('toast', `已成功加入 ${data.added ?? toAdd.length} 個術語至辭庫`)
+  } catch (err) {
+    emit('toast', '加入辭庫失敗，請確認伺服器狀態', 'error')
+  } finally {
+    isBulkAdding.value = false
   }
 }
 
@@ -1160,6 +1534,9 @@ function restoreFromTask(task) {
   // Step 2 state
   tags.value = task.data.tags || []
   extractionOutputPath.value = task.data.extractionOutputPath || null
+  extractedTerms.value = (task.data.extractedTerms || [])
+  manualTags.value = task.data.manualTags || []
+  loadLibraryTerms()
 
   // Step 3 state
   transcriptJobId.value = task.data.transcriptJobId || null
@@ -1225,6 +1602,7 @@ onUnmounted(() => {
   clearTimeout(transcriptionPollTimer)
   clearTimeout(meetingNotesPollTimer)
   clearTimeout(insightsPollTimer)
+  clearTimeout(repairPollTimer)
 })
 
 async function removeDoc(idx) {

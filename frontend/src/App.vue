@@ -59,6 +59,7 @@
           v-else-if="currentPage === 'projects'"
           @select-project="selectProject"
           @new-project="showNewProjectModal = true"
+          @swot-project="openSwotProject"
         />
 
         <ProjectDetailView
@@ -75,9 +76,17 @@
           :team="currentUser?.teamName"
           @navigate="page => { currentPage = page; selectedTask = null }"
           @extraction-ready="handleExtractionReady"
+          @toast="(msg, type) => showToast(msg, type)"
         />
 
-        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" />
+        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" />
+
+        <SwotReportView
+          v-else-if="currentPage === 'swotReport' && swotProject"
+          :project-slug="swotProject.slug || swotProject.id"
+          :project-name="swotProject.name || swotProject.title"
+          @swot-analysis-ready="handleSwotAnalysisReady"
+        />
 
         <SpeakerManagementView v-else-if="currentPage === 'speakers'" :team="currentUser?.teamName" />
 
@@ -122,6 +131,8 @@
         />
 
         <ReleaseNoteView v-else-if="currentPage === 'releaseNote'" />
+
+        <TerminologyView v-else-if="currentPage === 'terminology'" @toast="(msg, type) => showToast(msg, type)" />
       </div>
     </main>
   </div>
@@ -186,6 +197,7 @@ import SetupWizard from './components/SetupWizard.vue'
 import ChatButton from './components/ChatButton.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import SessionsView from './views/SessionsView.vue'
+import SwotReportView from './views/SwotReportView.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import ProjectListView from './views/ProjectListView.vue'
@@ -198,6 +210,7 @@ import ContainerView from './views/ContainerView.vue'
 import SpeakerManagementView from './views/SpeakerManagementView.vue'
 import TasksView from './views/TasksView.vue'
 import ReleaseNoteView from './views/ReleaseNoteView.vue'
+import TerminologyView from './views/TerminologyView.vue'
 
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
@@ -212,6 +225,7 @@ const {
 
 const reviewerInitialSlug = ref(null)
 const selectedTask = ref(null)
+const swotProject = ref(null)
 
 async function openTaskDetail(taskId) {
   try {
@@ -226,6 +240,21 @@ async function openTaskDetail(taskId) {
 function openReviewerProject(slug) {
   reviewerInitialSlug.value = slug
   currentPage.value = 'reviewer'
+}
+
+function openSwotProject(project) {
+  swotProject.value = project
+  currentPage.value = 'swotReport'
+}
+
+function handleSwotAnalysisReady({ sessionKey, prompt, newSession }) {
+  if (newSession) {
+    chat.newSession()
+  } else {
+    chat.setSession(sessionKey)
+  }
+  chat.sendMessage(prompt)
+  chat.openPanel()
 }
 
 function handleNavigate(page) {

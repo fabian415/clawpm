@@ -48,14 +48,23 @@
                   class="text-xs px-2 py-1 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 rounded-md transition-colors"
                 >取消</button>
               </div>
-              <button
-                v-else
-                @click.stop="confirmDeleteSlug = p.slug"
-                class="p-2 hover:bg-red-100 dark:hover:bg-red-950/50 hover:text-red-600 text-slate-400 rounded-md transition-colors"
-                title="刪除專案"
-              >
-                <Trash2 class="w-4 h-4" />
-              </button>
+              <div v-else class="flex items-center justify-end gap-1">
+                <button
+                  @click.stop="$emit('swot-project', p)"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-md transition-colors"
+                  title="SWOT 分析"
+                >
+                  <BarChart2 class="w-3.5 h-3.5" />
+                  SWOT
+                </button>
+                <button
+                  @click.stop="confirmDeleteSlug = p.slug"
+                  class="p-2 hover:bg-red-100 dark:hover:bg-red-950/50 hover:text-red-600 text-slate-400 rounded-md transition-colors"
+                  title="刪除專案"
+                >
+                  <Trash2 class="w-4 h-4" />
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -68,9 +77,9 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Plus, Trash2, Loader2 } from 'lucide-vue-next'
+import { Plus, Trash2, Loader2, BarChart2 } from 'lucide-vue-next'
 
-const emit = defineEmits(['select-project', 'new-project'])
+const emit = defineEmits(['select-project', 'new-project', 'swot-project'])
 
 const isLoading = ref(false)
 const isDeleting = ref(false)

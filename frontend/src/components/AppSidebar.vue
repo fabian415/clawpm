@@ -26,7 +26,7 @@
       </div>
       <div
         @click="$emit('navigate', 'reviewer')"
-        :class="{ 'bg-blue-600 text-white': currentPage === 'reviewer' }"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'reviewer' || currentPage === 'swotReport' }"
         class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
       >
         <FileSearch class="w-5 h-5 shrink-0" />
@@ -39,6 +39,14 @@
       >
         <Mic class="w-5 h-5 shrink-0" />
         <span v-if="!collapsed">聲紋管理</span>
+      </div>
+      <div
+        @click="$emit('navigate', 'terminology')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'terminology' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <BookMarked class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">專有名詞</span>
       </div>
       <div
         @click="$emit('navigate', 'tasks')"
@@ -140,7 +148,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container, History, ScrollText
+  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container, History, ScrollText, BookMarked
 } from 'lucide-vue-next'
 
 defineProps({
