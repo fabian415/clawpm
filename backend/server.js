@@ -2346,11 +2346,31 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
       },
       gateway,
       session: { dmScope: 'per-channel-peer' },
-      tools: { profile: 'coding' },
+      tools: { 
+        profile: 'coding', 
+        web: {
+          "search": {
+            "provider": "searxng",
+            "enabled": true,
+            "openaiCodex": {}
+          },
+          "fetch": {
+            "enabled": true
+          }
+        }   
+      },
       plugins: {
         entries: {
           google: { enabled: true },
           tokenjuice: { enabled: true },
+          searxng: {
+            "enabled": true,
+            "config": {
+              "webSearch": {
+                "baseUrl": process.env.SEARXNG_BASE_URL
+              }
+            }
+          }
         },
       },
       meta: {
@@ -2395,10 +2415,30 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     },
     gateway,
     session: { dmScope: 'per-channel-peer' },
-    tools: { profile: 'coding' },
+    tools: { 
+      profile: 'coding', 
+      web: {
+        "search": {
+          "provider": "searxng",
+          "enabled": true,
+          "openaiCodex": {}
+        },
+        "fetch": {
+          "enabled": true
+        }
+      }  
+    },
     plugins: {
       entries: {
         tokenjuice: { enabled: true },
+        searxng: {
+          "enabled": true,
+          "config": {
+            "webSearch": {
+              "baseUrl": process.env.SEARXNG_BASE_URL
+            }
+          }
+        }
       },
     },
     meta: {

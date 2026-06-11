@@ -45,6 +45,8 @@ services:
       FTP_HOST: openclaw-ftp-server
       FTP_USER: ${FTP_USER}
       FTP_PASS: ${FTP_PASS}
+      # SearXNG 暫時走 host machine（host 上需有 SearXNG 跑在 SEARXNG_PORT）
+      SEARXNG_BASE_URL: http://host.docker.internal:${SEARXNG_PORT:-8080}
       DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -84,6 +86,39 @@ services:
       LOCAL_UMASK: "000"
       FILE_OPEN_MODE: "0666"
       REVERSE_LOOKUP_ENABLE: "NO"
+
+  # ── SearXNG Search Engine ──────────────────────────────────────────────────
+  searxng-core:
+    container_name: searxng-core
+    image: docker.io/searxng/searxng:${SEARXNG_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      - searxng-valkey
+    ports:
+      - "${SEARXNG_HOST:+${SEARXNG_HOST}:}${SEARXNG_PORT:-8080}:${SEARXNG_PORT:-8080}"
+    env_file:
+      - ./searxng/.env
+    volumes:
+      - ./searxng/core-config/:/etc/searxng/:Z
+      - searxng-core-data:/var/cache/searxng/
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  searxng-valkey:
+    container_name: searxng-valkey
+    image: docker.io/valkey/valkey:9-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: unless-stopped
+    volumes:
+      - searxng-valkey-data:/data/
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # # ── WhisperX Transcribe API ────────────────────────────────────────────────
   # # 需要 NVIDIA GPU，僅在 GPU 伺服器上啟動：docker compose --profile gpu up -d
@@ -126,6 +161,8 @@ services:
 
 volumes:
   clawpm_pgdata:
+  searxng-core-data:
+  searxng-valkey-data:
   transcribe_uploads:
   transcribe_outputs:
   speaker_profiles:
