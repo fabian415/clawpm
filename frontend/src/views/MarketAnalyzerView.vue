@@ -12,11 +12,11 @@
           <button
             @click="startAnalysis"
             :disabled="isAnalyzing"
-            :class="isAnalyzing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-700'"
-            class="bg-emerald-600 text-white px-2 py-1 rounded text-xs font-bold flex items-center gap-1 transition-colors"
-            title="執行新一輪 SWOT 分析"
+            :class="isAnalyzing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-violet-700'"
+            class="bg-violet-600 text-white px-2 py-1 rounded text-xs font-bold flex items-center gap-1 transition-colors"
+            title="執行新一輪市場行銷分析"
           >
-            <BarChart2 v-if="!isAnalyzing" class="w-3 h-3" />
+            <TrendingUp v-if="!isAnalyzing" class="w-3 h-3" />
             <Loader2 v-else class="w-3 h-3 animate-spin" />
             新分析
           </button>
@@ -31,19 +31,19 @@
           <Loader2 class="w-5 h-5 animate-spin" />
         </div>
         <div v-else-if="reports.length === 0" class="px-4 py-6 text-center text-xs text-slate-400">
-          尚無 SWOT 報告<br>
-          <span class="text-slate-300">點擊「新 SWOT 分析」開始</span>
+          尚無行銷分析報告<br>
+          <span class="text-slate-300">點擊「新分析」開始</span>
         </div>
         <button
           v-for="r in reports"
           :key="r.name"
           @click="loadReport(r.name)"
           :class="currentName === r.name
-            ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border-l-2 border-blue-500'
+            ? 'bg-violet-50 dark:bg-violet-900/20 text-violet-700 dark:text-violet-300 border-l-2 border-violet-500'
             : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 border-l-2 border-transparent'"
           class="w-full text-left px-4 py-2.5 transition-colors"
         >
-          <div class="text-sm font-medium">SWOT 分析</div>
+          <div class="text-sm font-medium">市場行銷分析</div>
           <div class="text-[10px] text-slate-400 mt-0.5 font-mono">{{ r.displayDate }}</div>
         </button>
       </div>
@@ -121,12 +121,12 @@
         <!-- Analyzing progress -->
         <div v-if="isAnalyzing && !currentName" class="flex-1 flex flex-col items-center justify-center gap-5">
           <div class="flex flex-col items-center gap-3">
-            <div class="w-16 h-16 rounded-full bg-emerald-50 dark:bg-emerald-900/20 flex items-center justify-center">
-              <BarChart2 class="w-8 h-8 text-emerald-500 animate-pulse" />
+            <div class="w-16 h-16 rounded-full bg-violet-50 dark:bg-violet-900/20 flex items-center justify-center">
+              <TrendingUp class="w-8 h-8 text-violet-500 animate-pulse" />
             </div>
-            <p class="text-base font-semibold text-slate-700 dark:text-slate-300">正在進行 SWOT 分析</p>
+            <p class="text-base font-semibold text-slate-700 dark:text-slate-300">正在進行市場行銷分析</p>
             <p class="text-sm text-slate-400 max-w-xs text-center">
-              AI 正透過網路蒐集外部資料，執行完整 SWOT、競品與產業趨勢分析，通常需要 1–3 分鐘
+              AI 正透過網路蒐集市場資料、競品資訊與產業趨勢，產出可直接用於推廣的行銷文件，通常需要 1–3 分鐘
             </p>
           </div>
           <div class="flex items-center gap-2 text-xs text-slate-400">
@@ -137,8 +137,8 @@
 
         <!-- Empty state -->
         <div v-else-if="!currentName" class="flex-1 flex flex-col items-center justify-center text-slate-400 gap-3">
-          <BarChart2 class="w-12 h-12 opacity-20" />
-          <p class="text-sm">從左側選擇一份 SWOT 報告，或點擊「新 SWOT 分析」</p>
+          <TrendingUp class="w-12 h-12 opacity-20" />
+          <p class="text-sm">從左側選擇一份行銷報告，或點擊「新分析」</p>
         </div>
 
         <!-- Loading file -->
@@ -153,7 +153,7 @@
               v-model="fileContent"
               spellcheck="false"
               class="flex-1 w-full bg-[#1e1e1e] text-slate-200 p-6 font-mono text-sm resize-none outline-none leading-relaxed overflow-y-auto"
-              placeholder="SWOT 分析報告..."
+              placeholder="市場行銷分析報告..."
             ></textarea>
           </div>
           <div v-if="mode !== 'edit'" class="flex-1 overflow-y-auto bg-white dark:bg-slate-950">
@@ -174,7 +174,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Trash2, Loader2,
-  PanelLeft, RefreshCw, Check, BarChart2
+  PanelLeft, RefreshCw, Check, TrendingUp
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -182,7 +182,7 @@ const props = defineProps({
   projectName: { type: String, default: '' },
 })
 
-const emit = defineEmits(['swot-analysis-ready'])
+const emit = defineEmits(['market-analysis-ready'])
 
 const mode = ref('preview')
 const sidebarOpen = ref(true)
@@ -204,8 +204,6 @@ let pendingFilename = ref('')
 
 const isDirty = computed(() => fileContent.value !== originalContent.value)
 
-// ── API helpers ────────────────────────────────────────────────────────────────
-
 function authHeaders() {
   return { Authorization: `Bearer ${localStorage.getItem('clawpm_token')}` }
 }
@@ -213,12 +211,12 @@ function authHeaders() {
 async function fetchReports() {
   isLoadingList.value = true
   try {
-    const res = await fetch(`/api/swot/list?slug=${encodeURIComponent(props.projectSlug)}`, { headers: authHeaders() })
+    const res = await fetch(`/api/market/list?slug=${encodeURIComponent(props.projectSlug)}`, { headers: authHeaders() })
     if (!res.ok) return
     const data = await res.json()
     reports.value = data.reports || []
   } catch (err) {
-    console.error('[swot] list error:', err.message)
+    console.error('[market] list error:', err.message)
   } finally {
     isLoadingList.value = false
   }
@@ -234,7 +232,7 @@ async function loadReport(name) {
   originalContent.value = ''
   try {
     const res = await fetch(
-      `/api/swot/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(name)}`,
+      `/api/market/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(name)}`,
       { headers: authHeaders() }
     )
     if (!res.ok) throw new Error('載入失敗')
@@ -242,8 +240,8 @@ async function loadReport(name) {
     fileContent.value = data.content || ''
     originalContent.value = data.content || ''
   } catch (err) {
-    console.error('[swot] load error:', err.message)
-    fileContent.value = `# SWOT 報告\n\n載入失敗：${err.message}`
+    console.error('[market] load error:', err.message)
+    fileContent.value = `# 行銷分析報告\n\n載入失敗：${err.message}`
     originalContent.value = fileContent.value
   } finally {
     isLoadingFile.value = false
@@ -256,7 +254,7 @@ async function saveFile() {
   clearTimeout(saveSuccessTimer)
   saveSuccess.value = false
   try {
-    const res = await fetch('/api/swot/file', {
+    const res = await fetch('/api/market/file', {
       method: 'PATCH',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug: props.projectSlug, name: currentName.value, content: fileContent.value }),
@@ -269,7 +267,7 @@ async function saveFile() {
     saveSuccess.value = true
     saveSuccessTimer = setTimeout(() => { saveSuccess.value = false }, 3000)
   } catch (err) {
-    console.error('[swot] save error:', err.message)
+    console.error('[market] save error:', err.message)
     alert(`儲存失敗：${err.message}`)
   } finally {
     isSaving.value = false
@@ -282,17 +280,17 @@ function exportFile() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `swot-${props.projectSlug}-${currentName.value}.md`
+  a.download = `market-${props.projectSlug}-${currentName.value}.md`
   a.click()
   URL.revokeObjectURL(url)
 }
 
 async function confirmDelete() {
   if (!currentName.value) return
-  if (!confirm(`確定要刪除此 SWOT 報告嗎？此動作無法復原。`)) return
+  if (!confirm('確定要刪除此行銷分析報告嗎？此動作無法復原。')) return
   try {
     const res = await fetch(
-      `/api/swot/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(currentName.value)}`,
+      `/api/market/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(currentName.value)}`,
       { method: 'DELETE', headers: authHeaders() }
     )
     if (!res.ok) {
@@ -304,12 +302,10 @@ async function confirmDelete() {
     originalContent.value = ''
     await fetchReports()
   } catch (err) {
-    console.error('[swot] delete error:', err.message)
+    console.error('[market] delete error:', err.message)
     alert(`刪除失敗：${err.message}`)
   }
 }
-
-// ── SWOT Analysis trigger ──────────────────────────────────────────────────────
 
 async function startAnalysis() {
   if (isAnalyzing.value) return
@@ -320,7 +316,7 @@ async function startAnalysis() {
   originalContent.value = ''
 
   try {
-    const res = await fetch('/api/swot/analyze', {
+    const res = await fetch('/api/market/analyze', {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectSlug: props.projectSlug, projectName: props.projectName }),
@@ -332,7 +328,7 @@ async function startAnalysis() {
     const data = await res.json()
     pendingFilename.value = data.filename
 
-    emit('swot-analysis-ready', {
+    emit('market-analysis-ready', {
       sessionKey: data.sessionKey,
       prompt: data.prompt,
       newSession: true,
@@ -340,8 +336,8 @@ async function startAnalysis() {
 
     startPolling(data.filename)
   } catch (err) {
-    console.error('[swot] analyze error:', err.message)
-    alert(`啟動 SWOT 分析失敗：${err.message}`)
+    console.error('[market] analyze error:', err.message)
+    alert(`啟動市場行銷分析失敗：${err.message}`)
     isAnalyzing.value = false
   }
 }
@@ -351,7 +347,7 @@ function startPolling(filename) {
   pollTimer = setInterval(async () => {
     try {
       const res = await fetch(
-        `/api/swot/result?slug=${encodeURIComponent(props.projectSlug)}&filename=${encodeURIComponent(filename)}`,
+        `/api/market/result?slug=${encodeURIComponent(props.projectSlug)}&filename=${encodeURIComponent(filename)}`,
         { headers: authHeaders() }
       )
       if (!res.ok) return
@@ -366,16 +362,12 @@ function startPolling(filename) {
   }, 3000)
 }
 
-// ── Keyboard shortcut: Ctrl+S / Cmd+S ────────────────────────────────────────
-
 function handleKeydown(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
     e.preventDefault()
     if (isDirty.value) saveFile()
   }
 }
-
-// ── Markdown renderer (reused from ReviewerView) ──────────────────────────────
 
 function escapeHtml(t) {
   return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -431,7 +423,6 @@ const renderedMarkdown = computed(() => {
     listType = ''
   }
 
-  // Table rendering
   const isTableRow = line => /^\s*\|/.test(line)
   let inTable = false
   let tableRows = []
@@ -498,8 +489,6 @@ const renderedMarkdown = computed(() => {
   flushTable()
   return out.join('\n')
 })
-
-// ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 watch(() => props.projectSlug, async (slug) => {
   if (!slug) return

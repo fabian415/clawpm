@@ -1443,6 +1443,30 @@ function swotFilePath(hostInsightsDir, slug, name) {
   return full
 }
 
+function marketDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `market-${slug}`)
+}
+
+function marketFilePath(hostInsightsDir, slug, name) {
+  const dir = marketDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+function techDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `tech-${slug}`)
+}
+
+function techFilePath(hostInsightsDir, slug, name) {
+  const dir = techDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
 function validSlug(s) {
   return typeof s === 'string' && s.length > 0 && !s.includes('..') && !s.includes('/') && !s.includes('\\')
 }
@@ -1600,6 +1624,315 @@ app.get('/api/swot/result', requireAuth, async (req, res) => {
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostPath = swotFilePath(path.join(paths.workspace, 'project-insights'), slug, filename)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Market Analyzer ───────────────────────────────────────────────────────────
+
+app.post('/api/market/analyze', requireAuth, async (req, res) => {
+  const { projectSlug, projectName } = req.body ?? {}
+
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const marketFolderContainer = `${CONTAINER_INSIGHTS_DIR}/market-${projectSlug}`
+  const containerOutputPath = `${marketFolderContainer}/${timestamp}.md`
+  const today = now.toISOString().slice(0, 10)
+  const sessionKey = makeScopedSessionKey('market')
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+
+  const parts = [
+    `請使用 market-analyzer skill，針對「${displayName}」專案產出一份可直接用於行銷推廣的 Markdown 文件。`,
+    '',
+    `專案名稱：${displayName}`,
+    `分析日期：${today}`,
+    `專案洞察來源檔案：${projectContainerPath}`,
+    '',
+    '行銷重點：痛點解決、ROI 佐證、競品比較、產業趨勢',
+    '目標讀者：非技術決策者（IT 採購主管、中小企業主、部門主管）',
+    '輸出目標：standalone',
+    `輸出檔案路徑：${containerOutputPath}`,
+    `（請先建立資料夾 ${marketFolderContainer}/ 若尚未存在）`,
+    '',
+    '請依照 skill 工作流程完整執行：',
+    `1. 讀取 ${projectContainerPath}，提取產品功能、客戶案例、效益數字作為事實基礎（標記來源日期）`,
+    '2. 執行外部市場研究（搜尋市場規模、客戶痛點現況、競品行銷說法、產業趨勢）',
+    '3. 選定痛點導向敘事框架，以平易近人語言撰寫（把技術詞彙翻成業務語言）',
+    '4. 整理市場佐證數字（每項附來源 URL 與日期）',
+    `5. 輸出完整行銷文件至：${containerOutputPath}`,
+    '',
+    '所有外部市場資料必須附來源 URL。語言要親切易懂，初學者也能理解。',
+    '最後檢查所有的 Markdown 檔案寫入時，\\n 要取代成斷行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: timestamp, timestamp: today })
+})
+
+app.get('/api/market/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = marketDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ reports: [] })
+
+  try {
+    const reports = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.md$/.test(f))
+      .map(f => {
+        const name = f.replace(/\.md$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, displayDate, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ reports })
+  } catch {
+    res.status(500).json({ error: '讀取行銷分析報告清單失敗' })
+  }
+})
+
+app.get('/api/market/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = marketFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/market/file', requireAuth, async (req, res) => {
+  const { slug, name, content } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = marketFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/market/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = marketFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
+  }
+})
+
+app.get('/api/market/result', requireAuth, async (req, res) => {
+  const { slug, filename } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = marketFilePath(path.join(paths.workspace, 'project-insights'), slug, filename)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Tech Analyzer ─────────────────────────────────────────────────────────────
+
+app.post('/api/tech/analyze', requireAuth, async (req, res) => {
+  const { projectSlug, projectName } = req.body ?? {}
+
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+
+  const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const techFolderContainer = `${CONTAINER_INSIGHTS_DIR}/tech-${projectSlug}`
+  const containerOutputPath = `${techFolderContainer}/${timestamp}.md`
+  const today = now.toISOString().slice(0, 10)
+  const sessionKey = makeScopedSessionKey('tech')
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+
+  const parts = [
+    `請使用 tech-analyzer skill，針對「${displayName}」專案，從 CTO 技術長角度產出一篇可對外發表的技術部落格文章。`,
+    '',
+    `專案名稱：${displayName}`,
+    `分析日期：${today}`,
+    `專案洞察來源檔案：${projectContainerPath}`,
+    '',
+    '文章深度：deep-dive',
+    '目標讀者：有技術背景的工程師與架構師',
+    '輸出目標：standalone',
+    `輸出檔案路徑：${containerOutputPath}`,
+    `（請先建立資料夾 ${techFolderContainer}/ 若尚未存在）`,
+    '',
+    '請依照 skill 工作流程完整執行：',
+    `1. 讀取 ${projectContainerPath}，提取技術架構、設計決策、效能指標與技術突破點（標記來源日期）`,
+    '2. 識別 1-3 個最有看點的核心技術突破作為文章主軸',
+    '3. 執行外部技術研究（搜尋業界做法比較、相關技術規範、知名公司類似實踐）',
+    '4. 以「問題解決型」結構撰寫：背景 → 挑戰 → 解法 → 實作 → 結果 → 延伸',
+    '5. 每個技術主張附具體數字或外部參考來源',
+    `6. 輸出完整技術文章至：${containerOutputPath}`,
+    '',
+    '所有外部技術資料必須附來源 URL 與日期。技術術語第一次出現時附中文說明。',
+    '最後檢查所有的 Markdown 檔案寫入時，\\n 要取代成斷行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: timestamp, timestamp: today })
+})
+
+app.get('/api/tech/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = techDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ reports: [] })
+
+  try {
+    const reports = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.md$/.test(f))
+      .map(f => {
+        const name = f.replace(/\.md$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, displayDate, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ reports })
+  } catch {
+    res.status(500).json({ error: '讀取技術分享文章清單失敗' })
+  }
+})
+
+app.get('/api/tech/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = techFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/tech/file', requireAuth, async (req, res) => {
+  const { slug, name, content } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = techFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/tech/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = techFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
+  }
+})
+
+app.get('/api/tech/result', requireAuth, async (req, res) => {
+  const { slug, filename } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = techFilePath(path.join(paths.workspace, 'project-insights'), slug, filename)
 
   if (!hostPath) return res.status(403).json({ error: '無權限' })
 

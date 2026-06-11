@@ -128,6 +128,24 @@
               >
                 <BarChart2 class="w-3.5 h-3.5" /> SWOT
               </button>
+              <button
+                @click="emit('market-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-violet-700'"
+                class="bg-violet-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="針對此專案執行市場行銷分析"
+              >
+                <TrendingUp class="w-3.5 h-3.5" /> 市場行銷
+              </button>
+              <button
+                @click="emit('tech-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-700'"
+                class="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="針對此專案產出技術分享文章"
+              >
+                <Code2 class="w-3.5 h-3.5" /> 技術分享
+              </button>
               <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
                 <Trash2 class="w-3.5 h-3.5" /> 刪除
               </button>
@@ -246,16 +264,16 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
-  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2
+  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
 
-const emit = defineEmits(['swot-project'])
+const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'project-change'])
 
-const mode = ref('split')
+const mode = ref('preview')
 const sidebarOpen = ref(true)
 
 // Project list state
@@ -284,6 +302,7 @@ function selectOverview() {
   currentTitle.value = ''
   fileContent.value = ''
   originalContent.value = ''
+  emit('project-change', { slug: '__overview__', title: '' })
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -315,8 +334,10 @@ async function loadProject(slug) {
   isLoadingFile.value = true
   currentSlug.value = slug
   currentTitle.value = projectFiles.value.find(f => f.slug === slug)?.title || slug
+  mode.value = 'preview'
   fileContent.value = ''
   originalContent.value = ''
+  emit('project-change', { slug, title: currentTitle.value })
 
   try {
     const res = await fetch(`/api/project-insights/file?name=${encodeURIComponent(slug)}`, { headers: authHeaders() })
@@ -393,6 +414,7 @@ async function deleteFile() {
     currentTitle.value = ''
     fileContent.value = ''
     originalContent.value = ''
+    emit('project-change', { slug: '__overview__', title: '' })
     await fetchProjectList()
   } catch (err) {
     console.error('[reviewer] delete error:', err.message)
