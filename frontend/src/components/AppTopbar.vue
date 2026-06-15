@@ -1,7 +1,7 @@
 <template>
   <header class="h-16 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-8 bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm sticky top-0 z-10">
     <div class="flex items-center gap-1.5 text-sm text-slate-500">
-      <span class="hover:text-blue-600 cursor-pointer" @click="$emit('navigate', 'dashboard')">ClawPM</span>
+      <span class="hover:text-blue-600 cursor-pointer" @click="$emit('navigate', 'dashboard')">MemoSynth</span>
       <template v-for="(item, i) in breadcrumbs" :key="i">
         <ChevronRight class="w-4 h-4 shrink-0" />
         <span

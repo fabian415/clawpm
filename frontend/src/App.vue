@@ -26,7 +26,7 @@
     />
 
     <main class="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-950 transition-colors">
-      <AppTopbar :breadcrumbs="breadcrumbs" :current-user="currentUser" @navigate="currentPage = $event" @logout="logout" />
+      <AppTopbar :breadcrumbs="breadcrumbs" :current-user="currentUser" @navigate="handleTopbarNavigate" @logout="logout" />
 
       <div class="flex-1 overflow-y-auto p-8">
         <SetupWizard
@@ -62,6 +62,7 @@
           @swot-project="openSwotProject"
           @market-project="openMarketProject"
           @tech-project="openTechProject"
+          @record-project="openMeetingRecordProject"
         />
 
         <ProjectDetailView
@@ -76,12 +77,12 @@
           :projects="projects"
           :initial-task="selectedTask"
           :team="currentUser?.teamName"
-          @navigate="page => { currentPage = page; selectedTask = null }"
+          @navigate="page => { handleTopbarNavigate(page); selectedTask = null }"
           @extraction-ready="handleExtractionReady"
           @toast="(msg, type) => showToast(msg, type)"
         />
 
-        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @project-change="handleReviewerProjectChange" />
+        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @record-project="openMeetingRecordProject" @project-change="handleReviewerProjectChange" />
 
         <SwotReportView
           v-else-if="currentPage === 'swotReport' && swotProject"
@@ -102,6 +103,12 @@
           :project-slug="techProject.slug || techProject.id"
           :project-name="techProject.name || techProject.title"
           @tech-analysis-ready="handleTechAnalysisReady"
+        />
+
+        <MeetingRecordView
+          v-else-if="currentPage === 'meetingRecord' && meetingRecordProject"
+          :project-slug="meetingRecordProject.slug || meetingRecordProject.id"
+          :project-name="meetingRecordProject.name || meetingRecordProject.title"
         />
 
         <SpeakerManagementView v-else-if="currentPage === 'speakers'" :team="currentUser?.teamName" />
@@ -216,6 +223,7 @@ import SessionsView from './views/SessionsView.vue'
 import SwotReportView from './views/SwotReportView.vue'
 import MarketAnalyzerView from './views/MarketAnalyzerView.vue'
 import TechAnalyzerView from './views/TechAnalyzerView.vue'
+import MeetingRecordView from './views/MeetingRecordView.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
 import ProjectListView from './views/ProjectListView.vue'
@@ -247,6 +255,7 @@ const selectedTask = ref(null)
 const swotProject = ref(null)
 const marketProject = ref(null)
 const techProject = ref(null)
+const meetingRecordProject = ref(null)
 
 const breadcrumbs = computed(() => {
   const page = currentPage.value
@@ -258,7 +267,7 @@ const breadcrumbs = computed(() => {
   ]
   if (page === 'workflow') return [{ label: '會議處理流程' }]
   if (page === 'reviewer') {
-    const base = [{ label: '專案列表', page: 'projects' }]
+    const base = [{ label: '專案列表', page: 'reviewerOverview' }]
     const rp = reviewerCurrentProject.value
     if (rp?.slug && rp.slug !== '__overview__') {
       base.push({ label: rp.title || rp.slug, icon: 'project' })
@@ -266,19 +275,24 @@ const breadcrumbs = computed(() => {
     return base
   }
   if (page === 'swotReport' && swotProject.value) return [
-    { label: '專案列表', page: 'projects' },
+    { label: '專案列表', page: 'reviewerOverview' },
     { label: swotProject.value.name || swotProject.value.title, icon: 'project', page: 'reviewer' },
     { label: 'SWOT 分析' }
   ]
   if (page === 'marketReport' && marketProject.value) return [
-    { label: '專案列表', page: 'projects' },
+    { label: '專案列表', page: 'reviewerOverview' },
     { label: marketProject.value.name || marketProject.value.title, icon: 'project', page: 'reviewer' },
     { label: '市場行銷' }
   ]
   if (page === 'techReport' && techProject.value) return [
-    { label: '專案列表', page: 'projects' },
+    { label: '專案列表', page: 'reviewerOverview' },
     { label: techProject.value.name || techProject.value.title, icon: 'project', page: 'reviewer' },
     { label: '技術分享' }
+  ]
+  if (page === 'meetingRecord' && meetingRecordProject.value) return [
+    { label: '專案列表', page: 'reviewerOverview' },
+    { label: meetingRecordProject.value.name || meetingRecordProject.value.title, icon: 'project', page: 'reviewer' },
+    { label: '會議記錄' }
   ]
   if (page === 'speakers') return [{ label: '聲紋管理' }]
   if (page === 'tasks') return [{ label: '任務管理' }]
@@ -299,6 +313,15 @@ async function openTaskDetail(taskId) {
     if (res.ok) selectedTask.value = await res.json()
   } catch {}
   currentPage.value = 'workflow'
+}
+
+function handleTopbarNavigate(page) {
+  if (page === 'reviewerOverview') {
+    reviewerInitialSlug.value = '__overview__'
+    currentPage.value = 'reviewer'
+  } else {
+    currentPage.value = page
+  }
 }
 
 function openReviewerProject(slug) {
@@ -343,6 +366,11 @@ function handleMarketAnalysisReady({ sessionKey, prompt, newSession }) {
 function openTechProject(project) {
   techProject.value = project
   currentPage.value = 'techReport'
+}
+
+function openMeetingRecordProject(project) {
+  meetingRecordProject.value = project
+  currentPage.value = 'meetingRecord'
 }
 
 function handleTechAnalysisReady({ sessionKey, prompt, newSession }) {

@@ -1004,7 +1004,7 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
   const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10)
   const smtpUser = process.env.SMTP_USER
   const smtpPass = process.env.SMTP_PASS
-  const fromName = process.env.EMAIL_FROM_NAME || 'ClawPM 會議助理'
+  const fromName = process.env.EMAIL_FROM_NAME || 'MemoSynth 會議助理'
 
   if (!smtpHost || !smtpUser || !smtpPass) {
     return res.status(500).json({ error: 'SMTP 尚未設定，請聯絡管理員填寫 .env 的 SMTP_* 參數' })
@@ -1465,6 +1465,22 @@ function techFilePath(hostInsightsDir, slug, name) {
   const full = path.join(dir, safeFile)
   if (!full.startsWith(dir + path.sep)) return null
   return full
+}
+
+function recordDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `record-${slug}`)
+}
+
+function recordFilePath(hostInsightsDir, slug, name) {
+  const dir = recordDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+function validDateFilename(s) {
+  return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 }
 
 function validSlug(s) {
@@ -1937,6 +1953,210 @@ app.get('/api/tech/result', requireAuth, async (req, res) => {
   if (!hostPath) return res.status(403).json({ error: '無權限' })
 
   res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Meeting Record Distribution ───────────────────────────────────────────────
+
+app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, res) => {
+  const { meetingDate, notesContainerPath, projects } = req.body ?? {}
+
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的會議日期格式' })
+  if (!notesContainerPath || typeof notesContainerPath !== 'string') return res.status(400).json({ error: '缺少會議記錄路徑' })
+  if (!Array.isArray(projects) || projects.length === 0) return res.status(400).json({ error: '未指定專案' })
+
+  const validProjects = projects.filter(p => p && validSlug(p.slug))
+  if (validProjects.length === 0) return res.status(400).json({ error: '無有效的專案' })
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!notesContainerPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的會議記錄路徑' })
+  }
+
+  const sessionKey = makeScopedSessionKey('record-dist')
+
+  const outputEntries = validProjects.map(p => {
+    const folderPath = `${CONTAINER_INSIGHTS_DIR}/record-${p.slug}`
+    const filePath = `${folderPath}/${meetingDate}.md`
+    return { slug: p.slug, name: p.name || p.slug, folderPath, filePath }
+  })
+
+  const parts = [
+    `你的任務是：讀取指定的會議記錄檔案，將其中的內容依照專案歸屬，精確分割並分別寫入各專案的記錄檔案。`,
+    ``,
+    `## 分割原則（核心）`,
+    ``,
+    `**判斷一段內容屬於哪個專案，必須同時滿足以下條件之一：**`,
+    `1. 該段落的標題、開頭句、或主語直接提及專案名稱`,
+    `2. 整個段落的討論脈絡是針對該專案的功能、進度、問題或決議`,
+    `3. 行動事項的執行對象或影響範圍明確屬於該專案`,
+    ``,
+    `**嚴格禁止的行為：**`,
+    `- 不得將「通用討論」或「與多專案相關的背景說明」寫入某一個專案的記錄，除非該專案被明確點名`,
+    `- 不得因為上下文是某個專案，就把後續的泛用性內容也歸入該專案`,
+    `- 不得在某專案記錄中寫入屬於其他專案的決議或行動事項`,
+    `- 不得補充、推測、改寫或摘要原始內容，必須原文照錄`,
+    ``,
+    `## 模糊內容的處理方式`,
+    ``,
+    `若某段內容無法明確判斷專案歸屬（例如：泛談組織流程、技術架構而未點名特定專案），則：`,
+    `- **不要**將該段寫入任何專案`,
+    `- 若確實同時涉及多個已命名專案，才可重複寫入各自的檔案，並且必須完整保留原文`,
+    ``,
+    `## 操作資訊`,
+    ``,
+    `會議記錄來源檔案：${notesContainerPath}`,
+    `會議日期：${meetingDate}`,
+    ``,
+    `請針對以下 ${outputEntries.length} 個專案，各自建立會議記錄（若某專案在本次會議中完全未被提及，請略過，不建立空檔案）：`,
+    ...outputEntries.map(e => `- 專案「${e.name}」→ 輸出至 ${e.filePath}（先建立資料夾 ${e.folderPath}/ 若尚未存在）`),
+    ``,
+    `## 每個輸出檔案的格式`,
+    ``,
+    `- 第一行標題：# 會議記錄 — ${meetingDate}`,
+    `- 第二行：> 專案：{專案名稱}`,
+    `- 其後為從原始會議記錄中提取的相關內容，保持原始段落結構與 Markdown 格式，僅更換頂層標題`,
+    ``,
+    `## 執行步驟`,
+    ``,
+    `1. 先完整讀取會議記錄來源檔案`,
+    `2. 逐段分析每個段落屬於哪個（些）專案，嚴格依照上述分割原則判斷`,
+    `3. 依序為各有相關內容的專案建立並寫入記錄檔案`,
+    `4. 寫入 Markdown 檔案時，\\n 必須取代成實際斷行字元`,
+    `5. 完成後確認各檔案均已成功寫入`,
+  ]
+
+  res.json({
+    success: true,
+    sessionKey,
+    prompt: parts.join('\n'),
+    expectedPaths: outputEntries.map(e => ({ slug: e.slug, containerPath: e.filePath })),
+    meetingDate,
+  })
+})
+
+app.get('/api/meeting-record/distribution-result', requireAuth, async (req, res) => {
+  const { meetingDate, slugs } = req.query
+
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+  if (!slugs || typeof slugs !== 'string') return res.status(400).json({ error: '缺少 slugs 參數' })
+
+  const slugList = slugs.split(',').map(s => s.trim()).filter(s => validSlug(s))
+  if (slugList.length === 0) return res.status(400).json({ error: '無有效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+
+  const completed = []
+  const pending = []
+
+  for (const slug of slugList) {
+    const hostPath = recordFilePath(hostInsightsDir, slug, meetingDate)
+    if (hostPath && fs.existsSync(hostPath)) {
+      try {
+        const raw = fs.readFileSync(hostPath, 'utf8')
+        const lines = raw.split('\n')
+        if (lines[0] !== undefined && /^#\s*會議記錄/.test(lines[0]) && lines[0] !== `# 會議記錄 — ${meetingDate}`) {
+          lines[0] = `# 會議記錄 — ${meetingDate}`
+          fs.writeFileSync(hostPath, lines.join('\n'), 'utf8')
+        }
+      } catch {}
+      completed.push(slug)
+    } else {
+      pending.push(slug)
+    }
+  }
+
+  res.json({ ready: pending.length === 0, completed, pending, total: slugList.length })
+})
+
+app.get('/api/meeting-record/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = recordDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ records: [] })
+
+  try {
+    const records = fs.readdirSync(dir)
+      .filter(f => /^\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .map(f => {
+        const name = f.replace(/\.md$/, '')
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, mtime }
+      })
+      .sort((a, b) => b.name.localeCompare(a.name))
+
+    res.json({ records })
+  } catch {
+    res.status(500).json({ error: '讀取會議記錄清單失敗' })
+  }
+})
+
+app.get('/api/meeting-record/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validDateFilename(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = recordFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/meeting-record/file', requireAuth, async (req, res) => {
+  const { slug, name, content } = req.body ?? {}
+
+  if (!validSlug(slug) || !validDateFilename(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = recordFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/meeting-record/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validDateFilename(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = recordFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
+  }
 })
 
 // ── Project Insights HTML Viewer (iframe) ─────────────────────────────────────
@@ -3436,7 +3656,7 @@ function listenOnAvailablePort(port, remainingRetries = getPortRetryLimit()) {
 
   server.once('error', onError)
   server.once('listening', onListening)
-  server.listen(port)
+  server.listen(port, '0.0.0.0')
 }
 
 // OpenClaw gateway prefixes user messages with sender metadata in JSONL storage.

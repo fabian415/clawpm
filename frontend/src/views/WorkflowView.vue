@@ -83,9 +83,9 @@
     <!-- Stepper -->
     <div class="mb-12 relative flex justify-between">
       <div class="absolute top-5 left-0 w-full h-1 bg-slate-200 dark:bg-slate-800 -z-10"></div>
-      <div class="absolute top-5 left-0 h-1 bg-blue-600 -z-10 transition-all duration-500" :style="{ width: ((step - 1) / 4 * 100) + '%' }"></div>
+      <div class="absolute top-5 left-0 h-1 bg-blue-600 -z-10 transition-all duration-500" :style="{ width: ((step - 1) / 5 * 100) + '%' }"></div>
 
-      <div v-for="s in 5" :key="s" class="flex flex-col items-center">
+      <div v-for="s in 6" :key="s" class="flex flex-col items-center">
         <div
           :class="[step >= s ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 text-slate-400']"
           class="w-10 h-10 rounded-full border-2 flex items-center justify-center font-bold mb-2 transition-all duration-300 shadow-sm"
@@ -664,8 +664,82 @@
           尚未偵測到更新的專案。若 OpenClaw 仍在處理，請稍候後重新整理。
         </div>
 
-        <!-- Open Reviewer button -->
-        <button @click="$emit('navigate', 'reviewer')" class="w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2">
+        <!-- Open Reviewer button (secondary) -->
+        <button @click="$emit('navigate', 'reviewerOverview')" class="w-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium py-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center justify-center gap-2">
+          開啟專案列表 <ExternalLink class="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 6: Record Distribution -->
+    <div v-if="step === 6" class="space-y-6">
+      <!-- Distributing -->
+      <div v-if="recordDistributing" class="flex flex-col items-center justify-center py-20 text-center">
+        <div class="relative w-32 h-32 mb-8">
+          <div class="absolute inset-0 rounded-full border-4 border-blue-100 dark:border-slate-800"></div>
+          <div class="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
+          <div class="absolute inset-0 flex items-center justify-center">
+            <BookCopy class="w-14 h-14 text-blue-600 animate-pulse" />
+          </div>
+        </div>
+        <h3 class="text-2xl font-bold mb-2">AI 正在拆分會議記錄...</h3>
+        <p class="text-slate-500 mb-2">OpenClaw 正在依專案主題分析並拆分內容</p>
+        <p class="text-xs text-slate-400">進度可在右下角聊天視窗查看</p>
+        <div v-if="distributedRecords.length > 0" class="mt-6 text-sm text-blue-600 dark:text-blue-400">
+          已完成 {{ distributedRecords.length }} / {{ recordExpectedSlugs.length }} 個專案
+        </div>
+      </div>
+
+      <!-- Done -->
+      <div v-else class="space-y-5">
+        <!-- Error -->
+        <div v-if="recordError" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-2xl flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div>
+            <p class="font-medium text-red-700 dark:text-red-400 text-sm">分發失敗</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ recordError }}</p>
+          </div>
+        </div>
+
+        <!-- Success banner -->
+        <div v-if="distributedRecords.length > 0" class="p-5 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-900/30 rounded-2xl flex items-start gap-4">
+          <div class="w-10 h-10 bg-blue-600 rounded-full flex items-center justify-center shrink-0">
+            <Check class="text-white w-5 h-5" />
+          </div>
+          <div>
+            <h4 class="font-bold text-blue-900 dark:text-blue-100">會議記錄分發完成！</h4>
+            <p class="text-sm text-blue-700 dark:text-blue-300 mt-1">
+              已將本次會議記錄寫入 {{ distributedRecords.length }} 個專案資料夾（record-專案名稱/{{ meetingDate }}.md）。
+            </p>
+          </div>
+        </div>
+
+        <!-- Distributed list -->
+        <div v-if="distributedRecords.length > 0" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+            <h4 class="font-bold flex items-center gap-2">
+              <BookCopy class="w-4 h-4 text-blue-500" />
+              已建立記錄 ({{ distributedRecords.length }})
+            </h4>
+          </div>
+          <div class="divide-y divide-slate-100 dark:divide-slate-800">
+            <div v-for="r in distributedRecords" :key="r.slug" class="px-6 py-3.5 flex items-center justify-between">
+              <span class="font-medium">{{ r.slug }}</span>
+              <span class="text-xs font-mono text-slate-400">record-{{ r.slug }}/{{ r.date }}.md</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- No projects warning (only show if insights step had no projects AND no pending expected slugs) -->
+        <div v-else-if="!recordError && insightsProjects.length === 0 && recordExpectedSlugs.length === 0" class="bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-900/30 rounded-2xl p-5 flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+          <p class="text-sm text-amber-700 dark:text-amber-300">
+            步驟五未偵測到任何專案，無法分發。請確認洞見生成已正確完成。
+          </p>
+        </div>
+
+        <!-- Open project list -->
+        <button @click="$emit('navigate', 'reviewerOverview')" class="w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2">
           開啟專案列表 <ExternalLink class="w-4 h-4" />
         </button>
       </div>
@@ -678,10 +752,10 @@
       </button>
       <div v-else></div>
       <button
-        v-if="step < 5"
+        v-if="step < 6"
         @click="nextStep"
-        :disabled="(step === 1 && !uploadDone) || (step === 3 && isProcessing) || (step === 4 && isProcessing)"
-        :class="(step === 1 && !uploadDone) || (step === 3 && isProcessing) || (step === 4 && isProcessing)
+        :disabled="(step === 1 && !uploadDone) || (step === 3 && isProcessing) || (step === 4 && isProcessing) || (step === 5 && isProcessing)"
+        :class="(step === 1 && !uploadDone) || (step === 3 && isProcessing) || (step === 4 && isProcessing) || (step === 5 && isProcessing)
           ? 'bg-blue-300 dark:bg-blue-900 cursor-not-allowed text-white px-8 py-2.5 rounded-xl font-bold flex items-center gap-2'
           : 'bg-blue-600 text-white px-8 py-2.5 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 flex items-center gap-2'"
       >
@@ -693,12 +767,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, reactive } from 'vue'
+import { ref, computed, onMounted, onUnmounted, reactive, watch } from 'vue'
 import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar,
-  Download, Eye, FolderOpen, BookMarked, Pencil
+  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, initialTask: Object, team: String })
@@ -757,7 +831,7 @@ const hasAnyFiles = computed(() => successDocs.value.length > 0 || !!transcriptR
 // ─────────────────────────────────────────────────────────────────────────────
 
 const step = ref(1)
-const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '會議記錄', '洞見生成']
+const stepLabels = ['檔案上傳', '標語萃取', '逐字轉錄', '會議記錄', '洞見生成', '記錄分發']
 const isProcessing = ref(false)
 const uploadedDocs = ref([])
 const docFileInputRef = ref(null)
@@ -924,6 +998,10 @@ const meetingDate = ref(new Date().toISOString().slice(0, 10))
 
 const taskId = ref(null)
 
+watch(meetingDate, (val) => {
+  if (taskId.value) syncTask({ meetingDate: val })
+})
+
 const meetingNotesOutputPath = ref(null)
 const meetingNotesContent = ref('')
 const meetingNotesType = ref('商務會議')
@@ -938,6 +1016,12 @@ const insightsProjects = ref([])
 const insightsBeforeMtime = ref(0)
 const existingProjectIds = ref([])
 let insightsPollTimer = null
+
+const recordDistributing = ref(false)
+const distributedRecords = ref([])
+const recordError = ref('')
+const recordExpectedSlugs = ref([])
+let recordDistPollTimer = null
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -1098,8 +1182,14 @@ async function nextStep() {
   }
   if (step.value === 4) {
     step.value++
-    syncTask({ currentStep: 5, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: meetingNotesContent.value } })
+    syncTask({ currentStep: 5, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'pending', 6: 'pending' }, data: { meetingNotesOutputPath: meetingNotesOutputPath.value, meetingNotesContent: meetingNotesContent.value } })
     startInsights()
+    return
+  }
+  if (step.value === 5) {
+    step.value++
+    syncTask({ currentStep: 6, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done', 6: 'pending' } })
+    startRecordDistribution()
     return
   }
 }
@@ -1490,13 +1580,133 @@ function startInsightsPolling() {
       if (data.ready) {
         insightsProjects.value = data.projects || []
         isProcessing.value = false
-        syncTask({ currentStep: 5, status: 'completed', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done' } })
+        syncTask({ currentStep: 5, status: 'running', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done', 6: 'pending' }, data: { insightsProjects: data.projects || [] } })
         return
       }
     } catch {}
     insightsPollTimer = setTimeout(poll, 10000)
   }
   insightsPollTimer = setTimeout(poll, 10000)
+}
+
+async function startRecordDistribution() {
+  recordDistributing.value = true
+  recordError.value = ''
+  distributedRecords.value = []
+  recordExpectedSlugs.value = []
+  clearTimeout(recordDistPollTimer)
+
+  let projects = insightsProjects.value
+    .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id }))
+    .filter(p => p.slug)
+
+  if (projects.length === 0) {
+    try {
+      const token = localStorage.getItem('clawpm_token')
+      const res = await fetch('/api/project-insights/list', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = await res.json()
+      if (res.ok && Array.isArray(data.projects) && data.projects.length > 0) {
+        insightsProjects.value = data.projects
+        projects = data.projects
+          .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id }))
+          .filter(p => p.slug)
+      }
+    } catch {}
+  }
+
+  if (projects.length === 0) {
+    recordDistributing.value = false
+    recordError.value = '步驟五未回傳任何專案，且無法從知識庫讀取現有專案，無法分發。'
+    return
+  }
+
+  if (!meetingNotesOutputPath.value) {
+    recordDistributing.value = false
+    recordError.value = '找不到會議記錄容器路徑，請確認步驟四已完成。'
+    return
+  }
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/meeting-record/prepare-distribution', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meetingDate: meetingDate.value,
+        notesContainerPath: meetingNotesOutputPath.value,
+        projects,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '準備分發失敗')
+
+    recordExpectedSlugs.value = (data.expectedPaths || []).map(e => e.slug)
+    syncTask({ data: { recordExpectedSlugs: recordExpectedSlugs.value } })
+    emit('extraction-ready', { sessionKey: data.sessionKey, prompt: data.prompt, newSession: true })
+    startRecordDistPoll()
+  } catch (err) {
+    recordError.value = err.message
+    recordDistributing.value = false
+  }
+}
+
+function startRecordDistPoll() {
+  clearTimeout(recordDistPollTimer)
+  const slugs = recordExpectedSlugs.value
+  if (slugs.length === 0) {
+    recordDistributing.value = false
+    return
+  }
+
+  let lastCompleted = -1
+  let staleCount = 0
+
+  const finish = (completed) => {
+    distributedRecords.value = (completed || []).map(s => ({ slug: s, date: meetingDate.value }))
+    recordDistributing.value = false
+    syncTask({ currentStep: 6, status: 'completed', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done', 6: 'done' }, data: { distributedRecords: distributedRecords.value } })
+  }
+
+  const poll = async () => {
+    const token = localStorage.getItem('clawpm_token')
+    try {
+      const res = await fetch(
+        `/api/meeting-record/distribution-result?meetingDate=${encodeURIComponent(meetingDate.value)}&slugs=${encodeURIComponent(slugs.join(','))}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      )
+      const data = await res.json()
+
+      // All expected files written — fully complete
+      if (data.ready) {
+        finish(data.completed)
+        return
+      }
+
+      const completedCount = data.completed?.length ?? 0
+
+      // Update live progress
+      if (completedCount > 0) {
+        distributedRecords.value = (data.completed || []).map(s => ({ slug: s, date: meetingDate.value }))
+      }
+
+      // Stale detection: if completed count hasn't changed for 2 consecutive polls,
+      // AI has finished (only wrote relevant projects, skipped others)
+      if (lastCompleted !== -1 && completedCount === lastCompleted) {
+        staleCount++
+        if (staleCount >= 2) {
+          finish(data.completed)
+          return
+        }
+      } else {
+        staleCount = 0
+        lastCompleted = completedCount
+      }
+    } catch {}
+    recordDistPollTimer = setTimeout(poll, 8000)
+  }
+  recordDistPollTimer = setTimeout(poll, 8000)
 }
 
 function isNewInsightProject(p) {
@@ -1556,6 +1766,11 @@ function restoreFromTask(task) {
   insightsOutputDir.value = task.data.insightsOutputDir || null
   insightsBeforeMtime.value = task.data.insightsBeforeMtime || 0
   existingProjectIds.value = task.data.existingProjectIds || []
+  insightsProjects.value = task.data.insightsProjects || []
+
+  // Step 6 state
+  distributedRecords.value = (task.data.distributedRecords || [])
+  recordExpectedSlugs.value = (task.data.recordExpectedSlugs || [])
 
   // Set current step
   step.value = task.currentStep || 1
@@ -1578,6 +1793,10 @@ function restoreFromTask(task) {
     } else if (task.currentStep === 5 && task.data.insightsOutputDir) {
       isProcessing.value = true
       startInsightsPolling()
+    } else if (task.currentStep === 6 && task.data.recordExpectedSlugs?.length > 0) {
+      // Resume distribution polling — AI may still be writing files
+      recordDistributing.value = true
+      startRecordDistPoll()
     }
     // else: insufficient data to resume — leave isProcessing false so UI isn't stuck
   }
@@ -1603,6 +1822,7 @@ onUnmounted(() => {
   clearTimeout(meetingNotesPollTimer)
   clearTimeout(insightsPollTimer)
   clearTimeout(repairPollTimer)
+  clearTimeout(recordDistPollTimer)
 })
 
 async function removeDoc(idx) {

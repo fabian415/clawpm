@@ -6,7 +6,7 @@
       <div class="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-500/30">
         <BrainCircuit class="w-8 h-8 text-white" />
       </div>
-      <h1 class="text-2xl font-bold">歡迎使用 ClawPM</h1>
+      <h1 class="text-2xl font-bold">歡迎使用 MemoSynth</h1>
       <p class="text-slate-500 text-sm mt-1">在開始前，請先完成容器初始化設定</p>
     </div>
 
@@ -418,7 +418,7 @@
         <div v-if="showSuccess && !successModalOpen" class="mt-4">
           <button @click="successModalOpen = true"
             class="w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all active:scale-95">
-            <Rocket class="w-4 h-4" /> 進入 ClawPM
+            <Rocket class="w-4 h-4" /> 進入 MemoSynth
           </button>
         </div>
       </Transition>
@@ -442,7 +442,7 @@
           <CheckCircle class="w-10 h-10 text-green-600" />
         </div>
         <h3 class="text-xl font-bold mb-2">容器啟動成功！</h3>
-        <p class="text-slate-500 text-sm mb-6">ClawPM 已完成初始化，您可以開始使用所有功能。</p>
+        <p class="text-slate-500 text-sm mb-6">MemoSynth 已完成初始化，您可以開始使用所有功能。</p>
 
         <div class="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl text-left space-y-2.5 mb-6">
           <div class="flex justify-between text-sm">
@@ -483,7 +483,7 @@
 
         <button @click="handleComplete"
           class="w-full bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 shadow-lg shadow-blue-500/20 transition-all active:scale-95 flex items-center justify-center gap-2">
-          進入 ClawPM <ArrowRight class="w-4 h-4" />
+          進入 MemoSynth <ArrowRight class="w-4 h-4" />
         </button>
       </div>
     </div>

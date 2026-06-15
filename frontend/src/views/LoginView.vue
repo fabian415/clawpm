@@ -2,8 +2,8 @@
   <div class="min-h-screen flex items-center justify-center p-4">
     <div class="w-full max-w-md bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 p-8">
       <div class="text-center mb-8">
-        <h1 class="text-3xl font-bold text-blue-600">ClawPM</h1>
-        <p class="text-slate-500 mt-2">AI 專案管理平台</p>
+        <h1 class="text-3xl font-bold text-blue-600">MemoSynth</h1>
+        <p class="text-slate-500 mt-2">智能會議洞察助理</p>
       </div>
 
       <!-- Error Message -->

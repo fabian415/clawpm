@@ -138,7 +138,7 @@ import {
 
 const emit = defineEmits(['navigate', 'select-task'])
 
-const stepLabels = ['上傳', '標語萃取', '語音轉錄', '會議記錄', '洞見生成']
+const stepLabels = ['上傳', '標語萃取', '語音轉錄', '會議記錄', '洞見生成', '記錄分發']
 
 const tasks = ref([])
 const isLoading = ref(true)

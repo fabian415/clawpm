@@ -6,7 +6,7 @@
       </div>
       <div>
         <h1 class="text-2xl font-bold text-slate-900 dark:text-white">更新紀錄</h1>
-        <p class="text-sm text-slate-500 dark:text-slate-400">ClawPM Release Notes</p>
+        <p class="text-sm text-slate-500 dark:text-slate-400">MemoSynth Release Notes</p>
       </div>
     </div>
 
@@ -91,7 +91,7 @@ function parseReleaseNotes(text) {
 
   const result = []
   for (const block of blocks) {
-    if (block.startsWith('ClawPM Release Notes') || block === '') continue
+    if (block.startsWith('MemoSynth Release Notes') || block === '') continue
 
     const lines = block.split('\n').map(l => l.trimEnd())
     const versionLine = lines.find(l => l.startsWith('VERSION:'))
