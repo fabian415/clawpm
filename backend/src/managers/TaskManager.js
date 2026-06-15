@@ -23,7 +23,7 @@ function rowToTask(row) {
     createdByUserId: row.created_by_user_id,
     provisionUserId: row.provision_user_id,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
-    meetingDate: row.meeting_date,
+    meetingDate: row.meeting_date instanceof Date ? row.meeting_date.toISOString().slice(0, 10) : row.meeting_date,
     audioFileName: row.audio_file_name,
     currentStep: row.current_step,
     status: row.status,

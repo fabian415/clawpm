@@ -184,7 +184,7 @@ const props = defineProps({
 
 const emit = defineEmits(['swot-analysis-ready'])
 
-const mode = ref('split')
+const mode = ref('preview')
 const sidebarOpen = ref(true)
 
 const reports = ref([])
@@ -509,10 +509,12 @@ watch(() => props.projectSlug, async (slug) => {
   isAnalyzing.value = false
   clearInterval(pollTimer)
   await fetchReports()
+  if (reports.value.length > 0) loadReport(reports.value[0].name)
 })
 
 onMounted(async () => {
   await fetchReports()
+  if (reports.value.length > 0) loadReport(reports.value[0].name)
   window.addEventListener('keydown', handleKeydown)
 })
 

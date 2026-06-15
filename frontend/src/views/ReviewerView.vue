@@ -128,6 +128,33 @@
               >
                 <BarChart2 class="w-3.5 h-3.5" /> SWOT
               </button>
+              <button
+                @click="emit('market-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-violet-700'"
+                class="bg-violet-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="針對此專案執行市場行銷分析"
+              >
+                <TrendingUp class="w-3.5 h-3.5" /> 市場行銷
+              </button>
+              <button
+                @click="emit('tech-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-700'"
+                class="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="針對此專案產出技術分享文章"
+              >
+                <Code2 class="w-3.5 h-3.5" /> 技術分享
+              </button>
+              <button
+                @click="emit('record-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-orange-700'"
+                class="bg-orange-500 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="查看此專案的會議記錄"
+              >
+                <BookOpen class="w-3.5 h-3.5" /> 會議記錄
+              </button>
               <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
                 <Trash2 class="w-3.5 h-3.5" /> 刪除
               </button>
@@ -165,7 +192,8 @@
                   <th class="text-left pb-3 pr-6 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">目前階段</th>
                   <th class="text-left pb-3 pr-6 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">成熟度</th>
                   <th class="text-left pb-3 pr-6 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">最後更新</th>
-                  <th class="text-left pb-3 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">來源檔案</th>
+                  <th class="text-left pb-3 pr-6 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide">來源檔案</th>
+                  <th class="text-left pb-3 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wide"></th>
                 </tr>
               </thead>
               <tbody>
@@ -182,24 +210,45 @@
                     <span class="text-slate-600 dark:text-slate-400">{{ p.stage || '—' }}</span>
                   </td>
                   <td class="py-4 pr-6">
-                    <span v-if="p.readiness" :class="maturityClass(p.readiness)" class="text-xs font-bold px-2.5 py-1 rounded-full">
-                      {{ p.readiness }}
+                    <span v-if="p.maturity" :class="maturityClass(p.maturity)" class="text-xs font-bold px-2.5 py-1 rounded-full">
+                      {{ p.maturity }}
                     </span>
                     <span v-else class="text-slate-300">—</span>
                   </td>
                   <td class="py-4 pr-6">
                     <span class="text-slate-500 dark:text-slate-400 text-xs font-mono">{{ p.lastUpdated || '—' }}</span>
                   </td>
-                  <td class="py-4">
-                    <div v-if="p.sources?.length" class="flex flex-col gap-1">
-                      <span
-                        v-for="src in p.sources"
-                        :key="src"
-                        class="text-[10px] font-mono text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded truncate max-w-xs"
-                        :title="src"
-                      >{{ src.split('/').pop() }}</span>
+                  <td class="py-4" @click.stop>
+                    <div class="flex items-center gap-1">
+                      <button
+                        @click="emit('swot-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="SWOT 分析"
+                      >
+                        <BarChart2 class="w-3.5 h-3.5" /> SWOT
+                      </button>
+                      <button
+                        @click="emit('market-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="市場行銷分析"
+                      >
+                        <TrendingUp class="w-3.5 h-3.5" /> 市場行銷
+                      </button>
+                      <button
+                        @click="emit('tech-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="技術分享"
+                      >
+                        <Code2 class="w-3.5 h-3.5" /> 技術分享
+                      </button>
+                      <button
+                        @click="emit('record-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="會議記錄"
+                      >
+                        <BookOpen class="w-3.5 h-3.5" /> 會議記錄
+                      </button>
                     </div>
-                    <span v-else class="text-slate-300">—</span>
                   </td>
                 </tr>
               </tbody>
@@ -246,16 +295,16 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
-  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2
+  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
 
-const emit = defineEmits(['swot-project'])
+const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'record-project', 'project-change'])
 
-const mode = ref('split')
+const mode = ref('preview')
 const sidebarOpen = ref(true)
 
 // Project list state
@@ -284,6 +333,7 @@ function selectOverview() {
   currentTitle.value = ''
   fileContent.value = ''
   originalContent.value = ''
+  emit('project-change', { slug: '__overview__', title: '' })
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────────
@@ -315,8 +365,10 @@ async function loadProject(slug) {
   isLoadingFile.value = true
   currentSlug.value = slug
   currentTitle.value = projectFiles.value.find(f => f.slug === slug)?.title || slug
+  mode.value = 'preview'
   fileContent.value = ''
   originalContent.value = ''
+  emit('project-change', { slug, title: currentTitle.value })
 
   try {
     const res = await fetch(`/api/project-insights/file?name=${encodeURIComponent(slug)}`, { headers: authHeaders() })
@@ -393,6 +445,7 @@ async function deleteFile() {
     currentTitle.value = ''
     fileContent.value = ''
     originalContent.value = ''
+    emit('project-change', { slug: '__overview__', title: '' })
     await fetchProjectList()
   } catch (err) {
     console.error('[reviewer] delete error:', err.message)
@@ -521,9 +574,9 @@ function maturityClass(m) {
   if (!m) return 'bg-slate-100 dark:bg-slate-800 text-slate-500'
   const v = String(m).toLowerCase()
   if (v.includes('not ready')) return 'bg-slate-200 dark:bg-slate-700 text-slate-500'
-  if (v.includes('internal')) return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
-  if (v.includes('soft')) return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-  if (v.includes('public')) return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+  if (v.includes('internal only')) return 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+  if (v.includes('soft launch ready')) return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+  if (v.includes('public launch candidate')) return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
   return 'bg-slate-100 dark:bg-slate-800 text-slate-400'
 }
 
@@ -532,20 +585,22 @@ function maturityShort(m) {
   const v = String(m).toLowerCase()
   if (v.includes('not ready')) return 'NR'
   if (v.includes('internal')) return 'INT'
-  if (v.includes('soft')) return 'SL'
-  if (v.includes('public')) return 'PUB'
+  if (v.includes('soft launch ready')) return 'SL'
+  if (v.includes('public launch candidate')) return 'PUB'
   return m.slice(0, 3)
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 watch(() => props.initialSlug, (slug) => {
-  if (slug) loadProject(slug)
+  if (slug === '__overview__') selectOverview()
+  else if (slug) loadProject(slug)
 })
 
 onMounted(async () => {
   await fetchProjectList()
-  if (props.initialSlug) loadProject(props.initialSlug)
+  if (props.initialSlug === '__overview__') selectOverview()
+  else if (props.initialSlug) loadProject(props.initialSlug)
   window.addEventListener('keydown', handleKeydown)
 })
 

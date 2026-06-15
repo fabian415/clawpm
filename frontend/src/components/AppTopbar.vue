@@ -1,9 +1,22 @@
 <template>
   <header class="h-16 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-8 bg-white/50 dark:bg-slate-950/50 backdrop-blur-sm sticky top-0 z-10">
-    <div class="flex items-center gap-2 text-sm text-slate-500">
-      <span class="hover:text-blue-600 cursor-pointer" @click="$emit('navigate', 'dashboard')">ClawPM</span>
-      <ChevronRight class="w-4 h-4" />
-      <span class="text-slate-900 dark:text-slate-100 font-medium">{{ breadcrumb }}</span>
+    <div class="flex items-center gap-1.5 text-sm text-slate-500">
+      <span class="hover:text-blue-600 cursor-pointer" @click="$emit('navigate', 'dashboard')">MemoSynth</span>
+      <template v-for="(item, i) in breadcrumbs" :key="i">
+        <ChevronRight class="w-4 h-4 shrink-0" />
+        <span
+          v-if="item.page"
+          class="hover:text-blue-600 cursor-pointer flex items-center gap-1"
+          @click="$emit('navigate', item.page)"
+        >
+          <span v-if="item.icon === 'project'" class="w-2 h-2 rounded-sm bg-red-500 inline-block shrink-0"></span>
+          {{ item.label }}
+        </span>
+        <span v-else class="text-slate-900 dark:text-slate-100 font-medium flex items-center gap-1">
+          <span v-if="item.icon === 'project'" class="w-2 h-2 rounded-sm bg-red-500 inline-block shrink-0"></span>
+          {{ item.label }}
+        </span>
+      </template>
     </div>
 
     <div class="flex items-center gap-4">
@@ -30,7 +43,7 @@ import { computed } from 'vue'
 import { ChevronRight, ChevronDown } from 'lucide-vue-next'
 
 const props = defineProps({
-  breadcrumb: String,
+  breadcrumbs: { type: Array, default: () => [] },
   currentUser: Object
 })
 

@@ -9,7 +9,7 @@
         <Terminal class="text-white w-5 h-5" />
       </div>
       <div v-if="!collapsed" class="flex flex-col leading-none">
-        <span class="text-xl font-bold text-white tracking-tight">ClawPM</span>
+        <span class="text-xl font-bold text-white tracking-tight">MemoSynth</span>
         <span v-if="appVersion" class="text-[10px] text-slate-500 mt-0.5">{{ appVersion }}</span>
       </div>
     </div>

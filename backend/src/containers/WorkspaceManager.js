@@ -20,6 +20,8 @@ const SKILL_NAMES = [
   'meeting-proper-noun-extractor',
   'project-insight-synthesizer',
   'swot-analyzer', 
+  'market-analyzer',   
+  'tech-analyzer', 
 ]
 
 // Always overwrite on init to keep assistant character and workspace instructions current.
@@ -100,11 +102,31 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
       },
     },
     session: { dmScope: 'per-channel-peer' },
-    tools: { profile: 'coding' },
+    tools: { 
+      profile: 'coding', 
+      web: {
+        "search": {
+          "provider": "searxng",
+          "enabled": true,
+          "openaiCodex": {}
+        },
+        "fetch": {
+          "enabled": true
+        }
+      } 
+    },
     plugins: {
       entries: {
         google: { enabled: true },
         tokenjuice: { enabled: true },
+        searxng: {
+          "enabled": true,
+          "config": {
+            "webSearch": {
+              "baseUrl": process.env.SEARXNG_BASE_URL
+            }
+          }
+        }
       },
     },
     meta: {
@@ -220,7 +242,7 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
 
   // Create workspace .env (empty placeholder, skip if already exists)
   if (!fs.existsSync(paths.workspaceEnv)) {
-    let envContent = `# ClawPM user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
+    let envContent = `# MemoSynth user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
     envContent += `SMTP_USER=aa107g2@gmail.com\n`
     envContent += `SMTP_PASS=pewfcqsemkuhjfga\n`
     envContent += `EMAIL_FROM_NAME=Jarvis 會議助理\n`

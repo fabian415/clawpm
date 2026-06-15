@@ -23,7 +23,7 @@ export function useApp() {
   const isProcessing = ref(false)
   const uploadProgress = ref(0)
   const uploadedDocs = ref([{ name: '需求規格書.pdf', size: '2.4MB' }])
-  const tags = ref(['ClawPM', 'Vue 3', 'Tailwind', 'AI 專案管理', 'GPU 加速', '前端架構'])
+  const tags = ref(['MemoSynth', 'Vue 3', 'Tailwind', 'AI 專案管理', 'GPU 加速', '前端架構'])
   const newTag = ref('')
 
   const reviewerMode = ref('split')
@@ -62,7 +62,7 @@ export function useApp() {
   ])
 
   const mockTranscript = [
-    { id: 1, time: '00:00', speaker: 'Jason', text: '大家好，今天我們要討論 ClawPM 的前端介面設計。' },
+    { id: 1, time: '00:00', speaker: 'Jason', text: '大家好，今天我們要討論 MemoSynth 的前端介面設計。' },
     { id: 2, time: '00:15', speaker: 'Alice', text: '我覺得側邊欄應該支援折疊，這樣使用者在小螢幕上比較好操作。' },
     { id: 3, time: '00:32', speaker: 'Jason', text: '沒錯，我們還要加上容器狀態指示燈，讓用戶知道後端 AI 是否運行中。' },
     { id: 4, time: '00:50', speaker: 'Bob', text: '關於專案列表，我希望能有雙欄即時預覽功能。' }
@@ -245,7 +245,7 @@ export function useApp() {
       localStorage.setItem('clawpm_user', JSON.stringify(currentUser.value))
     }
     containerStatus.value = 'Running'
-    showToast('容器設定完成，歡迎使用 ClawPM！', 'Server')
+    showToast('容器設定完成，歡迎使用 MemoSynth', 'Server')
   }
 
   function simulateUpload() {

@@ -58,6 +58,30 @@
                   SWOT
                 </button>
                 <button
+                  @click.stop="$emit('market-project', p)"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/20 rounded-md transition-colors"
+                  title="市場行銷分析"
+                >
+                  <TrendingUp class="w-3.5 h-3.5" />
+                  市場行銷
+                </button>
+                <button
+                  @click.stop="$emit('tech-project', p)"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-md transition-colors"
+                  title="技術分享"
+                >
+                  <Code2 class="w-3.5 h-3.5" />
+                  技術分享
+                </button>
+                <button
+                  @click.stop="$emit('record-project', p)"
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors"
+                  title="會議記錄"
+                >
+                  <BookOpen class="w-3.5 h-3.5" />
+                  會議記錄
+                </button>
+                <button
                   @click.stop="confirmDeleteSlug = p.slug"
                   class="p-2 hover:bg-red-100 dark:hover:bg-red-950/50 hover:text-red-600 text-slate-400 rounded-md transition-colors"
                   title="刪除專案"
@@ -77,9 +101,9 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { Plus, Trash2, Loader2, BarChart2 } from 'lucide-vue-next'
+import { Plus, Trash2, Loader2, BarChart2, TrendingUp, Code2, BookOpen } from 'lucide-vue-next'
 
-const emit = defineEmits(['select-project', 'new-project', 'swot-project'])
+const emit = defineEmits(['select-project', 'new-project', 'swot-project', 'market-project', 'tech-project', 'record-project'])
 
 const isLoading = ref(false)
 const isDeleting = ref(false)
