@@ -110,6 +110,7 @@
             :loading="jsonlLoading"
             :auto-scroll="jsonlAutoScroll"
             :has-new="jsonlHasNew"
+            :download-filename="`${selectedSession.sessionId}.jsonl`"
             @scroll-toggle="jsonlAutoScroll = $event"
             @scroll-to-bottom="scrollPaneToBottom('jsonl')"
             ref="jsonlPane"
@@ -123,6 +124,7 @@
             :loading="trajectoryLoading"
             :auto-scroll="trajectoryAutoScroll"
             :has-new="trajectoryHasNew"
+            :download-filename="`${selectedSession.sessionId}.trajectory.jsonl`"
             @scroll-toggle="trajectoryAutoScroll = $event"
             @scroll-to-bottom="scrollPaneToBottom('trajectory')"
             ref="trajectoryPane"
@@ -157,7 +159,7 @@
 
 <script setup>
 import { ref, watch, onUnmounted, onMounted, nextTick, defineComponent, h } from 'vue'
-import { RefreshCw, Trash2, Loader2, ArrowDown, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
+import { RefreshCw, Trash2, Loader2, ArrowDown, PanelLeftClose, PanelLeftOpen, Download } from 'lucide-vue-next'
 
 // ── TailPane inline component ──────────────────────────────────────────────────
 
@@ -169,6 +171,7 @@ const TailPane = defineComponent({
     loading: Boolean,
     autoScroll: Boolean,
     hasNew: Boolean,
+    downloadFilename: { type: String, default: 'session.jsonl' },
   },
   emits: ['scroll-toggle', 'scroll-to-bottom'],
   setup(props, { emit, expose }) {
@@ -203,6 +206,20 @@ const TailPane = defineComponent({
     watch(() => props.autoScroll, (v) => {
       if (v) scrollToBottom()
     })
+
+    function downloadFile() {
+      const content = props.lines.map(line => {
+        if (line.raw) return line.raw
+        try { return JSON.stringify(line) } catch { return String(line) }
+      }).join('\n')
+      const blob = new Blob([content], { type: 'application/x-ndjson' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = props.downloadFilename
+      a.click()
+      URL.revokeObjectURL(url)
+    }
 
     function lineColor(line) {
       if (line.raw) return '#94a3b8'
@@ -251,6 +268,11 @@ const TailPane = defineComponent({
             h(ArrowDown, { class: 'w-3 h-3' }),
             '新內容'
           ]),
+          props.lines.length > 0 && h('button', {
+            onClick: downloadFile,
+            class: 'flex items-center gap-1 px-2 py-0.5 rounded text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors',
+            title: `下載 ${props.downloadFilename}`
+          }, [h(Download, { class: 'w-3.5 h-3.5' })]),
         ]),
       ]),
       // Content
