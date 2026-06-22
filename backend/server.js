@@ -37,7 +37,6 @@ import {
   execStreamInContainer,
 } from './src/containers/ContainerManager.js'
 import {
-  pairDevice,
   saveContainerConfig,
   getContainerConfig,
   deleteContainerConfig,
@@ -2410,7 +2409,7 @@ app.get('/api/chat/sessions/:sessionId/history', requireAuth, async (req, res) =
         messages.push({
           id: obj.id ?? msgObj.id ?? `${sessionId}-${messages.length}`,
           role: rawRole,
-          content: rawRole === 'user' ? stripSenderMetadata(textContent) : textContent,
+          content: rawRole === 'user' ? stripSenderMetadata(textContent) : stripDirectiveTags(textContent),
           events: [],
           timestamp: obj.timestamp ?? msgObj.timestamp ?? null,
           isStreaming: false,
@@ -2561,7 +2560,6 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
           sandbox: { mode: 'off' },
           models: { 'google/gemini-2.5-flash': {} },
           model: { primary: 'google/gemini-2.5-flash' },
-          llm: { idleTimeoutSeconds: 0 },
         },
       },
       gateway,
@@ -2609,7 +2607,6 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
         sandbox: { mode: 'off' },
         model: { primary: modelRef },
         models: { [modelRef]: {} },
-        llm: { idleTimeoutSeconds: 0 },
       },
     },
     models: {
@@ -2619,6 +2616,10 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
           baseUrl,
           apiKey: apiKey || 'dummy-key',
           api: 'openai-completions',
+          // Replaces the legacy agents.defaults.llm.idleTimeoutSeconds (removed in 2026.6.8).
+          // Without this the gateway falls back to a 120s idle timeout, which slower
+          // custom/Azure-hosted models can exceed.
+          timeoutSeconds: 600,
           models: [
             {
               id: modelId,
@@ -2628,6 +2629,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 131072,
               maxTokens: 16384,
+              compat: { supportsUsageInStreaming: true },
             },
           ],
         },
@@ -2763,7 +2765,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
     // 1. Allocate ports
     send('info', 'Allocating ports...')
     const ports = await allocatePorts(userId)
-    send('success', `Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}`)
+    send('success', `Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}, relay: ${ports.relayPort}`)
 
     // 2. Initialize workspace
     send('info', 'Initializing workspace...')
@@ -2826,6 +2828,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
             createAndStartContainer(userId, {
               gatewayPort: ports.gatewayPort,
               bridgePort: ports.bridgePort,
+              relayPort: ports.relayPort,
               workspaceDir: paths.workspace,
               configDir: paths.config,
               gatewayToken,
@@ -2844,6 +2847,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
           containerId,
           gatewayPort: ports.gatewayPort,
           bridgePort: ports.bridgePort,
+          relayPort: ports.relayPort,
           gatewayToken,
           workspacePath: paths.workspace,
           provisionedAt: new Date().toISOString(),
@@ -2851,18 +2855,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
       }
     }
 
-    // 7. Device pairing
-    send('info', 'Starting device pairing (waiting for healthy gateway)...')
-    try {
-      const { deviceId, operatorToken } = await pairDevice(userId, { healthTimeoutMs: 90_000 })
-      send('success', `Device paired — ID: ${deviceId.slice(0, 16)}...`)
-      send('success', `Operator token: ${operatorToken.slice(0, 8)}...`)
-    } catch (err) {
-      send('warn', `Device pairing failed (可稍後重試)`)
-      send('warn', `  Reason: ${err.message}`)
-    }
-
-    // 8. Link team → workspace so getProvisionUserId resolves correctly
+    // 7. Link team → workspace so getProvisionUserId resolves correctly
     try {
       await completeTeamSetup(req.user.teamId, {
         provider,
@@ -2929,6 +2922,7 @@ app.get('/api/container/config', requireAuth, async (req, res) => {
     deviceId: config?.deviceId,
     gatewayPort: config?.gatewayPort || status.gatewayPort,
     bridgePort: config?.bridgePort || status.bridgePort,
+    relayPort: config?.relayPort || status.relayPort,
     containerId: config?.containerId || status.id,
     containerStatus: status.status,
     containerHealth: status.health,
@@ -3570,11 +3564,15 @@ async function handleChatMessage(ws, authUserId, sessionKey, content) {
         currentGatewayMsgId = lastAssistantMsg.id
       }
 
-      // Stream new characters of the current assistant message.
-      if (lastAssistantMsg && lastAssistantMsg.content.length > lastSentText.length) {
-        const delta = lastAssistantMsg.content.slice(lastSentText.length)
-        send({ type: 'chunk', messageId: frontendMsgId, text: delta })
-        lastSentText = lastAssistantMsg.content
+      // Stream new characters of the current assistant message (with directive
+      // tags like [[reply_to_current]] stripped before they reach the UI).
+      if (lastAssistantMsg) {
+        const displayText = stripDirectiveTags(lastAssistantMsg.content)
+        if (displayText.length > lastSentText.length) {
+          const delta = displayText.slice(lastSentText.length)
+          send({ type: 'chunk', messageId: frontendMsgId, text: delta })
+          lastSentText = displayText
+        }
       }
 
       if (processEntries.length > 0) {
@@ -3668,6 +3666,16 @@ function stripSenderMetadata(content) {
   return stripped || content.trim()
 }
 
+// OpenClaw lets the model emit inline directive tags (e.g. [[reply_to_current]],
+// [[reply_to: <id>]], [[audio_as_voice]]) that control delivery behavior but
+// must never reach the user as literal text.
+const DIRECTIVE_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+|audio_as_voice)\s*\]\]/gi
+
+function stripDirectiveTags(content) {
+  if (typeof content !== 'string' || !content || !content.includes('[[')) return content
+  return content.replace(DIRECTIVE_TAG_RE, '').replace(/^\s+/, '')
+}
+
 async function loadLatestSessionHistory(provisionUserId) {
   const sessionsDir = getSessionsDir(provisionUserId)
   if (!fs.existsSync(sessionsDir)) return { history: [], sessionKey: getDefaultSessionKey() }
@@ -3710,7 +3718,7 @@ async function loadLatestSessionHistory(provisionUserId) {
         messages.push({
           id: obj.id ?? msgObj.id ?? `${sessionId}-${messages.length}`,
           role: rawRole,
-          content: rawRole === 'user' ? stripSenderMetadata(textContent) : textContent,
+          content: rawRole === 'user' ? stripSenderMetadata(textContent) : stripDirectiveTags(textContent),
           events: [],
           timestamp: obj.timestamp ?? msgObj.timestamp ?? null,
           isStreaming: false,
@@ -3786,11 +3794,15 @@ wss.on('connection', (ws) => {
         lastGatewayMsgId = lastAssistantMsg.id
       }
 
-      // Stream new characters
-      if (lastAssistantMsg?.content && lastAssistantMsg.content.length > lastSentText.length) {
-        const delta = lastAssistantMsg.content.slice(lastSentText.length)
-        send({ type: 'chunk', messageId: currentMsgId, text: delta })
-        lastSentText = lastAssistantMsg.content
+      // Stream new characters (with directive tags like [[reply_to_current]]
+      // stripped before they reach the UI).
+      if (lastAssistantMsg?.content) {
+        const displayText = stripDirectiveTags(lastAssistantMsg.content)
+        if (displayText.length > lastSentText.length) {
+          const delta = displayText.slice(lastSentText.length)
+          send({ type: 'chunk', messageId: currentMsgId, text: delta })
+          lastSentText = displayText
+        }
       }
 
       // Forward tool events

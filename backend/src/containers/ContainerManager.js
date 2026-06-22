@@ -30,7 +30,7 @@ export function getContainerName(userId) {
  * @param {string} userId
  * @param {{ gatewayPort: number, bridgePort: number, workspaceDir: string, configDir: string, gatewayToken?: string }} options
  */
-export async function createAndStartContainer(userId, { gatewayPort, bridgePort, workspaceDir, configDir, gatewayToken }) {
+export async function createAndStartContainer(userId, { gatewayPort, bridgePort, relayPort, workspaceDir, configDir, gatewayToken }) {
   const containerName = getContainerName(userId)
 
   const env = [
@@ -47,11 +47,16 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
     ExposedPorts: {
       '18789/tcp': {},
       '18790/tcp': {},
+      '18791/tcp': {},
     },
     HostConfig: {
       PortBindings: {
         '18789/tcp': [{ HostPort: String(gatewayPort) }],
         '18790/tcp': [{ HostPort: String(bridgePort) }],
+        // Loopback-only: this port only carries clawpm-backend's own gateway connection,
+        // relayed through a same-container TCP forwarder so the gateway sees it as a
+        // genuine local-backend connection (see relay.cjs) and skips device pairing.
+        '18791/tcp': [{ HostIp: '127.0.0.1', HostPort: String(relayPort) }],
       },
       ExtraHosts: ['host.docker.internal:host-gateway'],
       Binds: [
@@ -60,7 +65,7 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
       ],
       RestartPolicy: { Name: 'unless-stopped' },
     },
-    Cmd: ['node', 'dist/index.js', 'gateway', '--bind', 'lan', '--port', '18789'],
+    Cmd: ['sh', '-c', 'node /home/node/.openclaw/relay.cjs & exec node dist/index.js gateway --bind lan --port 18789'],
     Healthcheck: {
       Test: [
         'CMD',
@@ -93,6 +98,7 @@ export async function getContainerStatus(userId) {
     const portBindings = info.HostConfig?.PortBindings || {}
     const gatewayPort = portBindings['18789/tcp']?.[0]?.HostPort
     const bridgePort = portBindings['18790/tcp']?.[0]?.HostPort
+    const relayPort = portBindings['18791/tcp']?.[0]?.HostPort
 
     return {
       exists: true,
@@ -105,6 +111,7 @@ export async function getContainerStatus(userId) {
       startedAt: info.State.StartedAt,
       gatewayPort: gatewayPort ? parseInt(gatewayPort) : null,
       bridgePort: bridgePort ? parseInt(bridgePort) : null,
+      relayPort: relayPort ? parseInt(relayPort) : null,
     }
   }
   catch (error) {

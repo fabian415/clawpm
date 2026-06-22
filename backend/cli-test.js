@@ -171,6 +171,7 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
           baseUrl,
           apiKey,
           api: 'openai-completions',
+          timeoutSeconds: 600,
           models: [
             {
               id: modelId,
@@ -180,6 +181,7 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 131072,
               maxTokens: 8192,
+              compat: { supportsUsageInStreaming: true },
             },
           ],
         },
@@ -230,8 +232,8 @@ async function cmdProvision(userId) {
 
   // 1. Allocate ports
   info('Allocating ports...')
-  const ports = allocatePorts(userId)
-  ok(`Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}`)
+  const ports = await allocatePorts(userId)
+  ok(`Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}, relay: ${ports.relayPort}`)
 
   // 2. Initialize workspace (pass hostPort so allowedOrigins is correct)
   info('Initializing workspace...')
@@ -285,6 +287,7 @@ async function cmdProvision(userId) {
     const containerId = await createAndStartContainer(userId, {
       gatewayPort: ports.gatewayPort,
       bridgePort: ports.bridgePort,
+      relayPort: ports.relayPort,
       workspaceDir: paths.workspace,
       configDir: paths.config,
       gatewayToken,
@@ -296,22 +299,11 @@ async function cmdProvision(userId) {
       containerId,
       gatewayPort: ports.gatewayPort,
       bridgePort: ports.bridgePort,
+      relayPort: ports.relayPort,
       gatewayToken,
       workspacePath: paths.workspace,
       provisionedAt: new Date().toISOString(),
     })
-  }
-
-  // 7. Device pairing (optional — skip on failure so provision still completes)
-  info('Starting device pairing (waiting for healthy gateway)...')
-  try {
-    const { deviceId, operatorToken } = await pairDevice(userId, { healthTimeoutMs: 90_000 })
-    ok(`Device paired — ID: ${deviceId}`)
-    ok(`Operator token: ${operatorToken.slice(0, 8)}...`)
-  }
-  catch (error) {
-    warn(`Device pairing failed (can retry with: node cli-test.js pair ${userId})`)
-    warn(`  Reason: ${error.message}`)
   }
 
   header('Provision complete.')
