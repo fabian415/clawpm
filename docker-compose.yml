@@ -25,49 +25,79 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
-  clawpm-backend:
-    build:
-      context: .
-      dockerfile: backend/Dockerfile
-    image: clawpm-backend:latest
-    container_name: clawpm-backend
+  # ── Headroom Context Compression Proxy ─────────────────────────────────────
+  headroom-proxy:
+    image: python:3.12-slim
+    container_name: headroom-proxy
     restart: unless-stopped
-    depends_on:
-      clawpm-db:
-        condition: service_healthy
-    env_file:
-      - ./backend/.env
-    environment:
-      # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
-      OPENCLAW_GATEWAY_HOST: host.docker.internal
-      # FTP server 與 backend 同在 compose 網路內，直接用 service name
-      FTP_HOST: openclaw-ftp-server
-      FTP_USER: ${FTP_USER}
-      FTP_PASS: ${FTP_PASS}
-      # # SearXNG 暫時走 host machine（host 上需有 SearXNG 跑在 SEARXNG_PORT）
-      # SEARXNG_BASE_URL: http://host.docker.internal:${SEARXNG_PORT:-8080}
-      # SearXNG 同在 compose 網路內，用 service name 連線（不能用 localhost）
-      SEARXNG_BASE_URL: http://searxng-core:${SEARXNG_PORT:-8080}
-      DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    command: >
+      sh -c "pip install --no-cache-dir 'headroom-ai[proxy]' &&
+             headroom proxy --host 0.0.0.0 --port 8786
+             --no-ccr-inject-tool --no-ccr-marker"
     ports:
-      - "${API_PORT:-3002}:${API_PORT:-3002}"
-    volumes:
-      - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Published to host so a locally-run (non-docker) backend process can reach it
+      # via host.docker.internal:8786 during local dev. Containerized backend uses
+      # the service name (http://headroom-proxy:8786) over the compose network instead.
+      - "8786:8786"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:${API_PORT:-3002}/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8786/health')"]
+      interval: 15s
+      timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
-        max-size: "50m"
-        max-file: "5"
+        max-size: "20m"
+        max-file: "3"
+
+  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
+  # clawpm-backend:
+  #   build:
+  #     context: .
+  #     dockerfile: backend/Dockerfile
+  #   image: clawpm-backend:latest
+  #   container_name: clawpm-backend
+  #   restart: unless-stopped
+  #   depends_on:
+  #     clawpm-db:
+  #       condition: service_healthy
+  #     headroom-proxy:
+  #       condition: service_healthy
+  #   env_file:
+  #     - ./backend/.env
+  #   environment:
+  #     # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
+  #     OPENCLAW_GATEWAY_HOST: host.docker.internal
+  #     # FTP server 與 backend 同在 compose 網路內，直接用 service name
+  #     FTP_HOST: openclaw-ftp-server
+  #     FTP_USER: ${FTP_USER}
+  #     FTP_PASS: ${FTP_PASS}
+  #     # # SearXNG 暫時走 host machine（host 上需有 SearXNG 跑在 SEARXNG_PORT）
+  #     # SEARXNG_BASE_URL: http://host.docker.internal:${SEARXNG_PORT:-8080}
+  #     # SearXNG 同在 compose 網路內，用 service name 連線（不能用 localhost）
+  #     SEARXNG_BASE_URL: http://searxng-core:${SEARXNG_PORT:-8080}
+  #     # Headroom 同在 compose 網路內，用 service name 連線
+  #     HEADROOM_PROXY_URL: http://headroom-proxy:8786
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   ports:
+  #     - "${API_PORT:-3002}:${API_PORT:-3002}"
+  #   volumes:
+  #     - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -qO- http://localhost:${API_PORT:-3002}/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 15s
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "50m"
+  #       max-file: "5"
 
   # ── FTP Server ─────────────────────────────────────────────────────────────
   openclaw-ftp-server:

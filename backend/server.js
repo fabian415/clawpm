@@ -5,12 +5,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
+import { Readable } from 'node:stream'
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import { Client as FtpClient } from 'basic-ftp'
 import nodemailer from 'nodemailer'
+import { compress } from 'headroom-ai'
 import { runMigrations } from './src/migrate.js'
 import { query } from './src/db.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers, deleteAllTeamMembers } from './src/managers/UserManager.js'
@@ -57,12 +59,17 @@ const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
 const WHISPERX_BASE = `http://${process.env.LOCAL_SERVER_IP || '172.22.12.162'}:${process.env.LOCAL_SERVER_PORT || '8787'}`
 const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
 
-// Azure proxy — host reachable from inside the Docker container.
+// LLM proxy — host reachable from inside the Docker container.
 // host.docker.internal is the Docker Desktop magic hostname (always resolves to the Windows/Mac host).
 // Override with CLAWPM_PROXY_HOST if your Docker setup uses a different bridge IP.
 const CLAWPM_PROXY_HOST = process.env.CLAWPM_PROXY_HOST || 'host.docker.internal'
 const AZURE_API_VERSION = process.env.AZURE_API_VERSION || '2025-04-01-preview'
-const AZURE_CONFIGS_DIR = path.resolve('./data/azure_configs')
+const GEMINI_OPENAI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai'
+const LLM_CONFIGS_DIR = path.resolve('./data/llm_configs')
+
+// Headroom context compression — compresses messages before they hit the real upstream.
+const HEADROOM_ENABLED = (process.env.HEADROOM_ENABLED ?? 'true') === 'true'
+const HEADROOM_PROXY_URL = process.env.HEADROOM_PROXY_URL || 'http://headroom-proxy:8787'
 let RUNNING_PORT = INITIAL_PORT  // updated once the server binds
 
 // In-memory store for active transcription jobs
@@ -2552,52 +2559,6 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     },
   }
 
-  if (llmConfig.provider === 'gemini') {
-    return {
-      agents: {
-        defaults: {
-          workspace: '/home/node/.openclaw/workspace',
-          sandbox: { mode: 'off' },
-          models: { 'google/gemini-2.5-flash': {} },
-          model: { primary: 'google/gemini-2.5-flash' },
-        },
-      },
-      gateway,
-      session: { dmScope: 'per-channel-peer' },
-      tools: { 
-        profile: 'coding', 
-        web: {
-          "search": {
-            "provider": "searxng",
-            "enabled": true,
-            "openaiCodex": {}
-          },
-          "fetch": {
-            "enabled": true
-          }
-        }   
-      },
-      plugins: {
-        entries: {
-          google: { enabled: true },
-          tokenjuice: { enabled: true },
-          searxng: {
-            "enabled": true,
-            "config": {
-              "webSearch": {
-                "baseUrl": process.env.SEARXNG_BASE_URL
-              }
-            }
-          }
-        },
-      },
-      meta: {
-        lastTouchedVersion: OPENCLAW_VERSION,
-        lastTouchedAt: new Date().toISOString(),
-      },
-    }
-  }
-
   const { baseUrl, apiKey, modelId } = llmConfig
   const modelRef = `custom/${modelId}`
   return {
@@ -2670,6 +2631,45 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
   }
 }
 
+const GEMINI_MODEL_ID = 'gemini-2.5-flash'
+
+function llmProxyUrl(userId) {
+  return `http://${CLAWPM_PROXY_HOST}:${RUNNING_PORT}/api/llm-proxy/${userId}/v1`
+}
+
+/**
+ * Resolves a /api/provision or /api/container/update-llm request body into:
+ *  - realConfig: the real upstream credentials (Azure endpoint, Gemini key, or user-supplied
+ *    custom baseUrl), persisted server-side via saveLlmProxyConfig().
+ *  - llmConfig: what gets written into openclaw.json. Always points at this backend's
+ *    /api/llm-proxy, regardless of provider, so every provider's traffic is compressed via
+ *    Headroom before it leaves clawpm.
+ */
+function resolveLlmConfigs(userId, body) {
+  const { provider, geminiApiKey, baseUrl, apiKey, modelId, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = body ?? {}
+
+  const realConfig = provider === 'azure'
+    ? {
+        provider: 'azure',
+        endpoint: azureEndpoint,
+        apiKey: azureApiKey,
+        modelId: azureDeploymentName,
+        reasoningEffort: ['low', 'medium', 'high'].includes(azureReasoningEffort) ? azureReasoningEffort : 'high',
+      }
+    : provider === 'gemini'
+      ? { provider: 'gemini', baseUrl: GEMINI_OPENAI_BASE_URL, apiKey: geminiApiKey, modelId: GEMINI_MODEL_ID }
+      : { provider: 'custom', baseUrl, apiKey, modelId }
+
+  const llmConfig = {
+    provider: 'custom',
+    baseUrl: llmProxyUrl(userId),
+    apiKey: 'dummy-key',
+    modelId: realConfig.modelId,
+  }
+
+  return { realConfig, llmConfig }
+}
+
 function applyEnvKey(envPath, key, value) {
   let content = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf8') : ''
   const line = `${key}=${value}`
@@ -2740,26 +2740,10 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
 
   const send = (type, text) => res.write(`data: ${JSON.stringify({ type, text })}\n\n`)
 
-  // For azure, save credentials for the local proxy; OpenClaw points to proxy URL.
-  if (provider === 'azure') {
-    saveAzureProxyConfig(userId, {
-      endpoint: azureEndpoint,
-      apiKey: azureApiKey,
-      deploymentName: azureDeploymentName,
-      reasoningEffort: ['low', 'medium', 'high'].includes(azureReasoningEffort) ? azureReasoningEffort : 'high',
-    })
-  }
-
-  const llmConfig = provider === 'gemini'
-    ? { provider: 'gemini', geminiApiKey }
-    : provider === 'azure'
-      ? {
-          provider: 'custom',
-          baseUrl: `http://${CLAWPM_PROXY_HOST}:${RUNNING_PORT}/api/azure-proxy/${userId}/v1`,
-          apiKey: 'dummy-key',
-          modelId: azureDeploymentName,
-        }
-      : { provider: 'custom', baseUrl, apiKey, modelId }
+  // Real upstream credentials are stored server-side; openclaw.json always points at this
+  // backend's /api/llm-proxy, which compresses messages via Headroom before forwarding upstream.
+  const { realConfig, llmConfig } = resolveLlmConfigs(userId, req.body)
+  saveLlmProxyConfig(userId, realConfig)
 
   try {
     // 1. Allocate ports
@@ -2779,15 +2763,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
     const cfg = buildOpenClawConfig(gatewayToken, llmConfig, { hostPort: ports.gatewayPort })
     fs.writeFileSync(paths.openclawJson, JSON.stringify(cfg, null, 2), 'utf8')
     fs.chmodSync(paths.openclawJson, 0o666)
-    if (provider === 'gemini') {
-      send('success', 'LLM provider: Gemini (google/gemini-2.5-flash)')
-      applyEnvKey(path.join(paths.config, '.env'), 'GEMINI_API_KEY', geminiApiKey)
-      send('success', 'GEMINI_API_KEY written to config/.env')
-    } else if (provider === 'azure') {
-      send('success', `LLM provider: Azure OpenAI (${llmConfig.modelId}) → ${llmConfig.baseUrl}`)
-    } else {
-      send('success', `LLM provider: Custom (custom/${modelId}) → ${baseUrl}`)
-    }
+    send('success', `LLM provider: ${provider} (${realConfig.modelId}) → Headroom proxy → ${realConfig.baseUrl || realConfig.endpoint}`)
 
     // 4. Check if container already exists
     const existing = await getContainerStatus(userId)
@@ -2859,9 +2835,9 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
     try {
       await completeTeamSetup(req.user.teamId, {
         provider,
-        apiKey: provider === 'gemini' ? geminiApiKey : (llmConfig.apiKey ?? ''),
-        baseUrl: provider === 'gemini' ? null : (llmConfig.baseUrl ?? null),
-        model: provider === 'gemini' ? 'google/gemini-2.5-flash' : (llmConfig.modelId ?? ''),
+        apiKey: realConfig.apiKey ?? '',
+        baseUrl: realConfig.baseUrl ?? realConfig.endpoint ?? null,
+        model: realConfig.modelId ?? '',
         workspaceFolder: userId,
       })
     } catch (e) {
@@ -2957,34 +2933,13 @@ app.post('/api/container/update-llm', requireAuth, requireAdmin, async (req, res
   const savedConfig = await getContainerConfig(userId).catch(() => null)
   const hostPort = savedConfig?.gatewayPort
 
-  if (provider === 'azure') {
-    saveAzureProxyConfig(userId, {
-      endpoint: azureEndpoint,
-      apiKey: azureApiKey,
-      deploymentName: azureDeploymentName,
-      reasoningEffort: ['low', 'medium', 'high'].includes(azureReasoningEffort) ? azureReasoningEffort : 'high',
-    })
-  }
-
-  const llmConfig = provider === 'gemini'
-    ? { provider: 'gemini', geminiApiKey }
-    : provider === 'azure'
-      ? {
-          provider: 'custom',
-          baseUrl: `http://${CLAWPM_PROXY_HOST}:${RUNNING_PORT}/api/azure-proxy/${userId}/v1`,
-          apiKey: 'dummy-key',
-          modelId: azureDeploymentName,
-        }
-      : { provider: 'custom', baseUrl, apiKey, modelId }
+  const { realConfig, llmConfig } = resolveLlmConfigs(userId, req.body)
+  saveLlmProxyConfig(userId, realConfig)
 
   try {
     const cfg = buildOpenClawConfig(gatewayToken, llmConfig, { hostPort })
     fs.writeFileSync(paths.openclawJson, JSON.stringify(cfg, null, 2), 'utf8')
     fs.chmodSync(paths.openclawJson, 0o666)
-
-    if (provider === 'gemini') {
-      applyEnvKey(path.join(paths.config, '.env'), 'GEMINI_API_KEY', geminiApiKey)
-    }
 
     // Restart container to pick up the new config
     const status = await getContainerStatus(userId)
@@ -2996,19 +2951,77 @@ app.post('/api/container/update-llm', requireAuth, requireAdmin, async (req, res
     // Sync team setup
     await completeTeamSetup(req.user.teamId, {
       provider,
-      apiKey: provider === 'gemini' ? geminiApiKey : (llmConfig.apiKey ?? ''),
-      baseUrl: provider === 'gemini' ? null : (llmConfig.baseUrl ?? null),
-      model: provider === 'gemini' ? 'google/gemini-2.5-flash' : (llmConfig.modelId ?? ''),
+      apiKey: realConfig.apiKey ?? '',
+      baseUrl: realConfig.baseUrl ?? realConfig.endpoint ?? null,
+      model: realConfig.modelId ?? '',
       workspaceFolder: userId,
     }).catch(() => {})
 
     // Drop cached gateway client so next chat picks up fresh credentials
     disconnectClientForUser(userId)
 
-    res.json({ success: true, provider, modelId: llmConfig.modelId ?? null })
+    res.json({ success: true, provider, modelId: realConfig.modelId ?? null })
   } catch (err) {
     res.status(500).json({ error: err.message })
   }
+})
+
+// One-time backfill for teams provisioned before the llm-proxy/Headroom integration existed —
+// their openclaw.json still points directly at the real upstream instead of this backend.
+// Manually triggered (not run on deploy/startup) since it restarts every matching container.
+app.post('/api/admin/backfill-llm-proxy', requireAuth, requireAdmin, async (req, res) => {
+  const teamSummaries = await listTeams()
+  const results = []
+
+  for (const summary of teamSummaries) {
+    const team = await getTeam(summary.id)
+    const userId = team?.workspace_folder
+    if (!team?.setup_completed || !team?.setup_config || !userId) continue
+
+    try {
+      const { provider, apiKey, baseUrl, model } = team.setup_config
+
+      // Skip configs whose "baseUrl" is actually one of this backend's own (possibly
+      // now-removed) proxy routes — those never held real upstream credentials, so
+      // backfilling them would just carry forward a broken URL. Needs manual re-entry
+      // via /api/container/update-llm with the real upstream instead.
+      if (typeof baseUrl === 'string' && /\/api\/(azure|custom|llm)-proxy\//.test(baseUrl)) {
+        results.push({ userId, teamId: team.id, ok: false, error: 'baseUrl 指向 backend 自己的舊路由，沒有真實上游憑證可回填，請改用 update-llm 手動重填' })
+        continue
+      }
+
+      const body = provider === 'azure'
+        ? { provider, azureEndpoint: baseUrl, azureApiKey: apiKey, azureDeploymentName: model }
+        : provider === 'gemini'
+          ? { provider, geminiApiKey: apiKey }
+          : { provider, baseUrl, apiKey, modelId: model }
+
+      const { realConfig, llmConfig } = resolveLlmConfigs(userId, body)
+      saveLlmProxyConfig(userId, realConfig)
+
+      const paths = getUserPaths(userId)
+      const gatewayToken = readGatewayToken(paths)
+      if (!gatewayToken) throw new Error('找不到 gateway token，請確認容器已完成初始化')
+
+      const savedConfig = await getContainerConfig(userId).catch(() => null)
+      const cfg = buildOpenClawConfig(gatewayToken, llmConfig, { hostPort: savedConfig?.gatewayPort })
+      fs.writeFileSync(paths.openclawJson, JSON.stringify(cfg, null, 2), 'utf8')
+      fs.chmodSync(paths.openclawJson, 0o666)
+
+      const status = await getContainerStatus(userId)
+      if (status.exists) {
+        if (status.running) await stopContainer(userId)
+        await startContainer(userId)
+      }
+
+      disconnectClientForUser(userId)
+      results.push({ userId, teamId: team.id, ok: true, provider, modelId: realConfig.modelId })
+    } catch (err) {
+      results.push({ userId, teamId: team.id, ok: false, error: err.message })
+    }
+  }
+
+  res.json({ results })
 })
 
 app.post('/api/container/restart', requireAuth, requireAdmin, async (req, res) => {
@@ -3206,58 +3219,147 @@ app.delete('/api/speakers/:team/:name', requireAuth, async (req, res) => {
   }
 })
 
-// ── Azure OpenAI proxy ────────────────────────────────────────────────────────
-// Handles two Azure models families:
-//   mode "responses" : Codex models (gpt-5.3-codex) that only support Responses API.
-//                      Translates chat/completions ↔ Responses API format.
-//   mode "chat"      : Standard models (gpt-4o, gpt-4o-mini) that use chat/completions
-//                      but require the Azure api-version query parameter.
-//
-// Set azureConfig.mode = 'chat' for standard models; 'responses' for Codex/reasoning.
+// ── LLM proxy ──────────────────────────────────────────────────────────────────
+// Every provider (gemini / azure / custom) routes through this single backend endpoint so
+// Headroom can compress conversation history/tool results before they reach the real upstream.
+// Per-user upstream credentials live in LLM_CONFIGS_DIR, keyed by provider:
+//   azure  — two model families:
+//            mode "responses": Codex models (gpt-5.3-codex) — Chat Completions ↔ Responses API translation.
+//            mode "chat":      Standard models (gpt-4o, gpt-4o-mini) — chat/completions passthrough
+//                               with the Azure api-version query parameter.
+//   gemini — Google's OpenAI-compatible endpoint (generativelanguage.googleapis.com/v1beta/openai).
+//            Already chat-completions shaped — pure passthrough, no translation.
+//   custom — user-supplied OpenAI-compatible baseUrl — pure passthrough, no translation.
 
-function saveAzureProxyConfig(userId, config) {
-  fs.mkdirSync(AZURE_CONFIGS_DIR, { recursive: true })
-  // mode: 'responses' = Codex/reasoning models (Responses API)
-  //       'chat'      = Standard models like gpt-4o (Chat Completions API)
-  if (!config.mode) config.mode = 'responses'
+function saveLlmProxyConfig(userId, config) {
+  fs.mkdirSync(LLM_CONFIGS_DIR, { recursive: true })
+  // mode: 'responses' = Codex/reasoning Azure models (Responses API)
+  //       'chat'      = Standard Azure models like gpt-4o (Chat Completions API)
+  if (config.provider === 'azure' && !config.mode) config.mode = 'responses'
   fs.writeFileSync(
-    path.join(AZURE_CONFIGS_DIR, `${userId}.json`),
+    path.join(LLM_CONFIGS_DIR, `${userId}.json`),
     JSON.stringify(config, null, 2),
     'utf8'
   )
 }
 
-function loadAzureProxyConfig(userId) {
+function loadLlmProxyConfig(userId) {
   try {
-    return JSON.parse(fs.readFileSync(path.join(AZURE_CONFIGS_DIR, `${userId}.json`), 'utf8'))
+    return JSON.parse(fs.readFileSync(path.join(LLM_CONFIGS_DIR, `${userId}.json`), 'utf8'))
   } catch {
     return null
   }
 }
 
-async function handleAzureProxy(req, res) {
+// Pure OpenAI-compatible passthrough — shared by gemini and custom, neither of which need any
+// format translation (unlike Azure's Responses API models, handled separately below).
+async function forwardOpenAiCompatible(res, {
+  baseUrl, apiKey, modelId, compressedMessages, restBody, stream, tools, tool_choice,
+  max_tokens, max_completion_tokens, logTag,
+}) {
+  const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const body = { model: modelId, messages: compressedMessages, ...restBody }
+  // Pass through whichever token-limit field the caller actually sent — newer models
+  // (e.g. gpt-5.x) reject 'max_tokens' and require 'max_completion_tokens'; coercing one
+  // into the other breaks whichever family wasn't the one being coerced to.
+  if (max_completion_tokens) body.max_completion_tokens = max_completion_tokens
+  else if (max_tokens) body.max_tokens = max_tokens
+  if (tools?.length) { body.tools = tools; body.tool_choice = tool_choice ?? 'auto' }
+
+  if (stream) {
+    body.stream = true
+    const upstreamRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+      body: JSON.stringify(body),
+    }).catch(err => { throw new Error(`${logTag} fetch error: ${err.message}`) })
+
+    if (!upstreamRes.ok) {
+      const errText = await upstreamRes.text().catch(() => '')
+      dbgErr(`${logTag} ✗ ${upstreamRes.status}: ${errText.slice(0, 200)}`)
+      return res.status(upstreamRes.status).json({ error: { message: `${logTag} ${upstreamRes.status}: ${errText}` } })
+    }
+    dbg(`${logTag} ✓ streaming response started`)
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    Readable.fromWeb(upstreamRes.body).pipe(res)
+    return
+  }
+
+  const upstreamRes = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+    body: JSON.stringify(body),
+  }).catch(err => { throw new Error(`${logTag} fetch error: ${err.message}`) })
+  const data = await upstreamRes.json()
+  dbg(`${logTag} ✓ responded choices=${data.choices?.length}`)
+  return res.status(upstreamRes.status).json(data)
+}
+
+async function handleLlmProxy(req, res) {
   const { userId } = req.params
-  dbg(`[azure-proxy] ▶ userId=${userId} path=${req.path} stream=${!!req.body?.stream}`)
+  dbg(`[llm-proxy] ▶ userId=${userId} path=${req.path} stream=${!!req.body?.stream}`)
   if (!/^[\w-]+$/.test(userId)) {
     return res.status(400).json({ error: { message: 'Invalid userId' } })
   }
 
-  const azureConfig = loadAzureProxyConfig(userId)
-  if (!azureConfig?.endpoint || !azureConfig?.deploymentName) {
-    dbgErr(`[azure-proxy] ✗ no config found for userId=${userId}`)
-    return res.status(500).json({ error: { message: 'Azure config not found for this user' } })
+  const config = loadLlmProxyConfig(userId)
+  if (!config?.provider) {
+    dbgErr(`[llm-proxy] ✗ no config found for userId=${userId}`)
+    return res.status(500).json({ error: { message: 'LLM config not found for this user' } })
   }
 
-  const { endpoint, apiKey, deploymentName, mode = 'responses', reasoningEffort = 'medium' } = azureConfig
+  const { provider, modelId } = config
   const { messages, max_tokens, max_completion_tokens, stream, tools, tool_choice, ...restBody } = req.body
-  dbg(`[azure-proxy] mode=${mode} deployment=${deploymentName} msgs=${messages?.length} tools=${tools?.length ?? 0} → ${endpoint}`)
+  dbg(`[llm-proxy] provider=${provider} model=${modelId} msgs=${messages?.length} tools=${tools?.length ?? 0}`)
+
+  // Compress conversation history/tool results before they hit the real upstream. Fails open —
+  // if the Headroom proxy is unreachable or errors, the original messages are used and the
+  // request proceeds unaffected.
+  let compressedMessages = messages
+  if (HEADROOM_ENABLED && messages?.length) {
+    try {
+      const result = await compress(messages, {
+        baseUrl: HEADROOM_PROXY_URL,
+        model: modelId,
+        fallback: true,
+        timeout: 8000,
+      })
+      compressedMessages = result.messages
+      const savedPercent = result.tokensBefore > 0 ? ((result.tokensSaved / result.tokensBefore) * 100).toFixed(0) : '0'
+      dbg(`[headroom] tokens ${result.tokensBefore}→${result.tokensAfter} (saved ${result.tokensSaved}, ${savedPercent}%) transforms=${result.transformsApplied.join(',')}`)
+    } catch (err) {
+      dbgErr(`[headroom] compress failed, using original messages: ${err.message}`)
+    }
+  }
+
+  // ── gemini / custom — pure OpenAI-compatible passthrough, no translation needed ──────────
+  if (provider === 'gemini' || provider === 'custom') {
+    const { baseUrl, apiKey } = config
+    try {
+      return await forwardOpenAiCompatible(res, {
+        baseUrl, apiKey, modelId, compressedMessages, restBody, stream, tools, tool_choice,
+        max_tokens, max_completion_tokens, logTag: `[llm-proxy:${provider}]`,
+      })
+    } catch (err) {
+      dbgErr(`[llm-proxy:${provider}] ✗ ${err.message}`)
+      return res.status(502).json({ error: { message: err.message } })
+    }
+  }
+
+  // ── azure — two model families ───────────────────────────────────────────────────────────
+  const { endpoint, apiKey, mode = 'responses', reasoningEffort = 'medium' } = config
+  const deploymentName = modelId
 
   // ── Mode: chat — standard Azure OpenAI (gpt-4o, gpt-4o-mini, etc.) ──────────
   // Just add api-version and proxy the request through as-is.
   if (mode === 'chat') {
     const chatUrl = `${endpoint.replace(/\/+$/, '')}/openai/deployments/${deploymentName}/chat/completions?api-version=${AZURE_API_VERSION}`
-    const chatBody = { messages, ...restBody }
-    if (max_tokens || max_completion_tokens) chatBody.max_tokens = max_tokens || max_completion_tokens
+    const chatBody = { messages: compressedMessages, ...restBody }
+    // Pass through whichever token-limit field the caller actually sent — see the same
+    // fix in forwardOpenAiCompatible() for why coercing one into the other is wrong.
+    if (max_completion_tokens) chatBody.max_completion_tokens = max_completion_tokens
+    else if (max_tokens) chatBody.max_tokens = max_tokens
     if (tools?.length) { chatBody.tools = tools; chatBody.tool_choice = tool_choice ?? 'auto' }
 
     if (stream) {
@@ -3270,13 +3372,13 @@ async function handleAzureProxy(req, res) {
 
       if (!azureRes.ok) {
         const errText = await azureRes.text().catch(() => '')
-        dbgErr(`[azure-proxy] ✗ chat ${azureRes.status}: ${errText.slice(0, 200)}`)
+        dbgErr(`[llm-proxy:azure] ✗ chat ${azureRes.status}: ${errText.slice(0, 200)}`)
         return res.status(azureRes.status).json({ error: { message: `Azure API ${azureRes.status}: ${errText}` } })
       }
-      dbg(`[azure-proxy] ✓ chat streaming response started`)
+      dbg(`[llm-proxy:azure] ✓ chat streaming response started`)
       res.setHeader('Content-Type', 'text/event-stream')
       res.setHeader('Cache-Control', 'no-cache')
-      azureRes.body.pipe(res)
+      Readable.fromWeb(azureRes.body).pipe(res)
       return
     }
 
@@ -3286,7 +3388,7 @@ async function handleAzureProxy(req, res) {
       body: JSON.stringify(chatBody),
     }).catch(err => { throw new Error(`Azure fetch error: ${err.message}`) })
     const data = await azureRes.json()
-    dbg(`[azure-proxy] ✓ chat responded choices=${data.choices?.length}`)
+    dbg(`[llm-proxy:azure] ✓ chat responded choices=${data.choices?.length}`)
     return res.status(azureRes.status).json(data)
   }
 
@@ -3449,7 +3551,7 @@ async function handleAzureProxy(req, res) {
   }
 
   // Build the Responses API request
-  const { items: raInput, instructions } = ccMessagesToRA(messages)
+  const { items: raInput, instructions } = ccMessagesToRA(compressedMessages)
   const raTools = ccToolsToRA(tools)
 
   const responsesBody = {
@@ -3461,10 +3563,10 @@ async function handleAzureProxy(req, res) {
   if (instructions) responsesBody.instructions = instructions
   if (raTools?.length) { responsesBody.tools = raTools; responsesBody.tool_choice = 'auto' }
 
-  dbg(`[azure-proxy] → Responses API: items=${raInput.length} tools=${raTools?.length ?? 0} instructions=${!!instructions}`)
+  dbg(`[llm-proxy:azure] → Responses API: items=${raInput.length} tools=${raTools?.length ?? 0} instructions=${!!instructions}`)
   // Debug: show the role sequence of what we're sending so we can verify history is included
   const roleSeq = raInput.map(it => it.role ?? it.type).join(' → ')
-  dbg(`[azure-proxy]   role seq: ${roleSeq}`)
+  dbg(`[llm-proxy:azure]   role seq: ${roleSeq}`)
 
   const azureUrl = `${endpoint.replace(/\/+$/, '')}/openai/responses?api-version=${AZURE_API_VERSION}`
 
@@ -3480,14 +3582,14 @@ async function handleAzureProxy(req, res) {
     })
     if (!azureRes.ok) {
       const errText = await azureRes.text().catch(() => '')
-      dbgErr(`[azure-proxy] ✗ responses ${azureRes.status}: ${errText.slice(0, 300)}`)
+      dbgErr(`[llm-proxy:azure] ✗ responses ${azureRes.status}: ${errText.slice(0, 300)}`)
       return res.status(azureRes.status).json({ error: { message: `Azure API ${azureRes.status}: ${errText}` } })
     }
     azureData = await azureRes.json()
     const fnCount = (azureData.output ?? []).filter(o => o.type === 'function_call').length
-    dbg(`[azure-proxy] ✓ responses status=${azureData.status} fnCalls=${fnCount} outputItems=${azureData.output?.length}`)
+    dbg(`[llm-proxy:azure] ✓ responses status=${azureData.status} fnCalls=${fnCount} outputItems=${azureData.output?.length}`)
   } catch (err) {
-    dbgErr(`[azure-proxy] ✗ fetch error: ${err.message}`)
+    dbgErr(`[llm-proxy:azure] ✗ fetch error: ${err.message}`)
     return res.status(502).json({ error: { message: `Azure proxy error: ${err.message}` } })
   }
 
@@ -3504,8 +3606,8 @@ async function handleAzureProxy(req, res) {
 }
 
 // Accept both /v1/chat/completions and /chat/completions since OpenClaw may try either
-app.post('/api/azure-proxy/:userId/v1/chat/completions', handleAzureProxy)
-app.post('/api/azure-proxy/:userId/chat/completions', handleAzureProxy)
+app.post('/api/llm-proxy/:userId/v1/chat/completions', handleLlmProxy)
+app.post('/api/llm-proxy/:userId/chat/completions', handleLlmProxy)
 
 // ── WebSocket chat ────────────────────────────────────────────────────────────
 
