@@ -109,7 +109,9 @@ async function promptLlmConfig() {
     modelId = await askQuestion('請輸入 Model ID (例如 gpt-4o): ')
     if (!modelId) warn('Model ID 不能為空')
   }
-  return { provider: 'custom', baseUrl, apiKey, modelId }
+  const reasoningAnswer = await askQuestion('是否為推理模型 (gpt-5/o1/o3 系列等，需要 max_completion_tokens)？(y/N): ')
+  const isReasoningModel = /^y(es)?$/i.test(reasoningAnswer.trim())
+  return { provider: 'custom', baseUrl, apiKey, modelId, isReasoningModel }
 }
 
 function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = {}) {
@@ -154,7 +156,7 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
     }
   }
 
-  const { baseUrl, apiKey, modelId } = llmConfig
+  const { baseUrl, apiKey, modelId, isReasoningModel } = llmConfig
   const modelRef = `custom/${modelId}`
   return {
     agents: {
@@ -171,17 +173,19 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
           baseUrl,
           apiKey,
           api: 'openai-completions',
-          timeoutSeconds: 600,
+          timeoutSeconds: 1200,
           models: [
             {
               id: modelId,
               name: modelId,
-              reasoning: false,
-              input: ['text'],
+              reasoning: !!isReasoningModel,
+              input: ['text', 'image'],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 131072,
-              maxTokens: 8192,
-              compat: { supportsUsageInStreaming: true },
+              maxTokens: 32768,
+              compat: isReasoningModel
+                ? { supportsUsageInStreaming: true, maxTokensField: 'max_completion_tokens' }
+                : { supportsUsageInStreaming: true },
             },
           ],
         },

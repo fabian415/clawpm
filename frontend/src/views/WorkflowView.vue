@@ -233,11 +233,12 @@
       <!-- Ready state -->
       <div v-else class="space-y-4 text-left">
         <!-- Error -->
-        <div v-if="extractionError" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+        <div v-if="extractionError || stepError.step === 2" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
           <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-          <div>
+          <div class="flex-1">
             <p class="font-medium text-red-700 dark:text-red-400 text-sm">萃取失敗</p>
-            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ extractionError }}</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ extractionError || stepError.message }}</p>
+            <button v-if="stepError.step === 2" @click="retryStep" class="mt-2 text-xs font-medium text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-100 dark:hover:bg-red-900/30">重試</button>
           </div>
         </div>
 
@@ -546,6 +547,16 @@
 
       <!-- Ready -->
       <div v-else class="space-y-5">
+        <!-- Error -->
+        <div v-if="stepError.step === 4" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div class="flex-1">
+            <p class="font-medium text-red-700 dark:text-red-400 text-sm">會議記錄生成失敗</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ stepError.message }}</p>
+            <button @click="retryStep" class="mt-2 text-xs font-medium text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-100 dark:hover:bg-red-900/30">重試</button>
+          </div>
+        </div>
+
         <!-- Header -->
         <div class="flex items-center justify-between">
           <h3 class="text-xl font-bold">會議記錄</h3>
@@ -621,6 +632,17 @@
 
       <!-- Done -->
       <div v-else class="space-y-5">
+        <!-- Error -->
+        <div v-if="stepError.step === 5" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div class="flex-1">
+            <p class="font-medium text-red-700 dark:text-red-400 text-sm">洞見生成失敗</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ stepError.message }}</p>
+            <button @click="retryStep" class="mt-2 text-xs font-medium text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-100 dark:hover:bg-red-900/30">重試</button>
+          </div>
+        </div>
+
+        <template v-else>
         <!-- Success banner -->
         <div class="p-5 bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-900/30 rounded-2xl flex items-start gap-4">
           <div class="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center shrink-0">
@@ -668,6 +690,7 @@
         <button @click="$emit('navigate', 'reviewerOverview')" class="w-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium py-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center justify-center gap-2">
           開啟專案列表 <ExternalLink class="w-4 h-4" />
         </button>
+        </template>
       </div>
     </div>
 
@@ -714,6 +737,77 @@
           </div>
         </div>
 
+        <!-- Image classification review (mandatory when supplementary docs had images) -->
+        <div v-if="imageReviewImages.length > 0" class="bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/40 rounded-2xl overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2">
+            <h4 class="font-bold flex items-center gap-2">
+              <ImageIcon class="w-4 h-4 text-amber-500" />
+              圖片分類確認 ({{ imageReviewImages.length - unconfirmedImageCount }} / {{ imageReviewImages.length }})
+            </h4>
+            <div class="flex items-center gap-3">
+              <span v-if="unconfirmedImageCount > 0" class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                還有 {{ unconfirmedImageCount }} 張待確認，請手動選擇分類
+              </span>
+              <span v-else class="text-xs font-medium text-emerald-600 dark:text-emerald-400">全部已確認</span>
+              <button @click="loadImageReview({ poll: true, manual: true })" :disabled="imageReviewRefreshing"
+                title="AI 建議仍在生成中？點此重新檢查"
+                class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 flex items-center gap-1">
+                <RefreshCw :class="['w-3.5 h-3.5', imageReviewRefreshing && 'animate-spin']" />
+                重新整理建議
+              </button>
+            </div>
+          </div>
+          <div class="divide-y divide-slate-100 dark:divide-slate-800">
+            <div v-for="img in imageReviewImages" :key="img.file" class="px-6 py-4 flex gap-4">
+              <button type="button" @click="lightboxImage = img.file" class="relative shrink-0 group" title="點擊放大">
+                <img :src="assetUrl(img.file)" class="w-28 h-20 object-cover rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800" />
+                <span class="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                  <ZoomIn class="w-5 h-5 text-white opacity-0 group-hover:opacity-100" />
+                </span>
+              </button>
+              <div class="flex-1 min-w-0">
+                <template v-if="img.confirmed">
+                  <p class="text-sm">
+                    <span v-if="img.skipped" class="text-slate-500">已標記為不相關</span>
+                    <span v-else class="text-emerald-600 dark:text-emerald-400 font-medium">已分類至「{{ projectName(img.currentSlug) }}」</span>
+                  </p>
+                  <p v-if="!img.skipped" class="text-xs text-slate-500 mt-0.5">{{ img.captionDraft }}</p>
+                  <button @click="img.confirmed = false" class="text-xs text-blue-600 hover:underline mt-1">重新指派</button>
+                </template>
+                <template v-else>
+                  <p v-if="img.suggestedSlug || img.reason" class="text-xs text-slate-400 mb-1.5">
+                    AI 建議：{{ img.suggestedSlug ? projectName(img.suggestedSlug) : '無對應專案' }}<span v-if="img.reason">（{{ img.reason }}）</span>
+                  </p>
+                  <div class="flex flex-wrap gap-2 items-start">
+                    <select v-model="img.selectedSlug" @change="img.touched = true" class="text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-lg px-2 py-1.5">
+                      <option value="" disabled>選擇專案...</option>
+                      <option v-for="p in insightsProjects" :key="p.slug || p.id" :value="p.slug || p.id">{{ p.name || p.title || p.slug || p.id }}</option>
+                      <option value="__new__">＋ 建立新專案...</option>
+                    </select>
+                    <input v-if="img.selectedSlug === '__new__'" v-model="img.newProjectName" @input="img.touched = true" type="text" placeholder="新專案名稱"
+                      class="text-sm border border-blue-300 dark:border-blue-700 dark:bg-slate-800 rounded-lg px-2 py-1.5" />
+                    <input v-model="img.captionDraft" @input="img.touched = true" type="text" placeholder="一句話說明這張圖在說什麼"
+                      class="flex-1 min-w-[180px] text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-lg px-2 py-1.5" />
+                    <button @click="testImageCaption(img)" :disabled="img.testing" title="請 AI 直接看這張圖、測試目前環境是否真的讀得到畫面內容"
+                      class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap">
+                      {{ img.testing ? '判讀中…' : '產生標題' }}
+                    </button>
+                  </div>
+                  <p v-if="img.selectedSlug === '__new__'" class="text-xs text-blue-500 mt-1">
+                    確認後會先建立這個新專案（成熟度預設「Not Ready」），再把這張圖分類進去，之後可以到專案列表補完其他資訊。
+                  </p>
+                  <div class="flex gap-2 mt-2">
+                    <button @click="confirmImageAssignment(img)" :disabled="img.saving"
+                      class="text-xs font-medium bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-50">確認</button>
+                    <button @click="confirmImageAssignment(img, { skip: true })" :disabled="img.saving"
+                      class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50">不相關</button>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Distributed list -->
         <div v-if="distributedRecords.length > 0" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
           <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
@@ -738,8 +832,15 @@
           </p>
         </div>
 
+        <p v-if="unconfirmedImageCount > 0" class="text-xs text-center text-amber-600 dark:text-amber-400">
+          請先完成上方圖片分類確認，再開啟專案列表
+        </p>
+
         <!-- Open project list -->
-        <button @click="$emit('navigate', 'reviewerOverview')" class="w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2">
+        <button @click="$emit('navigate', 'reviewerOverview')" :disabled="unconfirmedImageCount > 0"
+          :class="unconfirmedImageCount > 0
+            ? 'w-full bg-slate-300 dark:bg-slate-700 text-white font-bold py-3 rounded-xl cursor-not-allowed flex items-center justify-center gap-2'
+            : 'w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2'">
           開啟專案列表 <ExternalLink class="w-4 h-4" />
         </button>
       </div>
@@ -764,6 +865,14 @@
     </div>
     </div><!-- end main workflow content -->
   </div><!-- end flex container -->
+
+  <!-- Image Lightbox -->
+  <div v-if="lightboxImage" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" @click.self="lightboxImage = null">
+    <button @click="lightboxImage = null" class="absolute top-4 right-4 text-white/80 hover:text-white">
+      <X class="w-7 h-7" />
+    </button>
+    <img :src="assetUrl(lightboxImage)" class="max-w-full max-h-full rounded-lg shadow-2xl" @click.stop />
+  </div>
 </template>
 
 <script setup>
@@ -772,7 +881,7 @@ import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar,
-  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy
+  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy, Image as ImageIcon, ZoomIn, RefreshCw
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, initialTask: Object, team: String })
@@ -997,10 +1106,49 @@ function dismissRepair() {
 const meetingDate = ref(new Date().toISOString().slice(0, 10))
 
 const taskId = ref(null)
+const stepError = ref({ step: null, message: '' })
 
 watch(meetingDate, (val) => {
   if (taskId.value) syncTask({ meetingDate: val })
 })
+
+// 檢查任務是否已經在後端被標記為失敗（例如 LLM 沒有回應、逾時），
+// 避免前端 polling 在這種情況下永遠停在 loading 畫面。
+async function checkTaskFailed(step) {
+  if (!taskId.value) return false
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/tasks/${taskId.value}`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) return false
+    const t = await res.json()
+    if (t.status === 'error' && t.errorStep === step) {
+      stepError.value = { step, message: t.errorMessage || '處理失敗，請重試' }
+      isProcessing.value = false
+      return true
+    }
+  } catch {}
+  return false
+}
+
+async function retryStep() {
+  const step = stepError.value.step
+  if (!step || !taskId.value) return
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/tasks/${taskId.value}/retry`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return
+  } catch {
+    return
+  }
+  stepError.value = { step: null, message: '' }
+  isProcessing.value = true
+  if (step === 2) startExtractionPolling()
+  else if (step === 4) startMeetingNotesPolling()
+  else if (step === 5) startInsightsPolling()
+}
 
 const meetingNotesOutputPath = ref(null)
 const meetingNotesContent = ref('')
@@ -1022,6 +1170,15 @@ const distributedRecords = ref([])
 const recordError = ref('')
 const recordExpectedSlugs = ref([])
 let recordDistPollTimer = null
+
+const imageReviewImages = ref([])
+const imageReviewRefreshing = ref(false)
+const lightboxImage = ref(null)
+let imageReviewPollTimer = null
+let imageReviewPollCount = 0
+// reasoning 模型逐張用 Read 工具看圖再分類，10 張圖片合計常超過 1-2 分鐘；
+// 40 次 ×5 秒 ≈ 3.3 分鐘，給足時間讓建議自動補上，避免面板卡在「還沒有建議」的空白狀態。
+const IMAGE_REVIEW_MAX_POLLS = 40
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -1342,6 +1499,7 @@ function startMeetingNotesPolling() {
         return
       }
     } catch {}
+    if (await checkTaskFailed(4)) return
     meetingNotesPollTimer = setTimeout(poll, 10000)
   }
   meetingNotesPollTimer = setTimeout(poll, 10000)
@@ -1438,6 +1596,7 @@ function startExtractionPolling() {
         return
       }
     } catch {}
+    if (await checkTaskFailed(2)) return
     extractionPollTimer = setTimeout(poll, 3000)
   }
   extractionPollTimer = setTimeout(poll, 3000)
@@ -1584,6 +1743,7 @@ function startInsightsPolling() {
         return
       }
     } catch {}
+    if (await checkTaskFailed(5)) return
     insightsPollTimer = setTimeout(poll, 10000)
   }
   insightsPollTimer = setTimeout(poll, 10000)
@@ -1597,7 +1757,7 @@ async function startRecordDistribution() {
   clearTimeout(recordDistPollTimer)
 
   let projects = insightsProjects.value
-    .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id }))
+    .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id, description: p.description || '' }))
     .filter(p => p.slug)
 
   if (projects.length === 0) {
@@ -1610,7 +1770,7 @@ async function startRecordDistribution() {
       if (res.ok && Array.isArray(data.projects) && data.projects.length > 0) {
         insightsProjects.value = data.projects
         projects = data.projects
-          .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id }))
+          .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id, description: p.description || '' }))
           .filter(p => p.slug)
       }
     } catch {}
@@ -1637,6 +1797,7 @@ async function startRecordDistribution() {
         meetingDate: meetingDate.value,
         notesContainerPath: meetingNotesOutputPath.value,
         projects,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
       }),
     })
     const data = await res.json()
@@ -1667,6 +1828,7 @@ function startRecordDistPoll() {
     distributedRecords.value = (completed || []).map(s => ({ slug: s, date: meetingDate.value }))
     recordDistributing.value = false
     syncTask({ currentStep: 6, status: 'completed', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done', 6: 'done' }, data: { distributedRecords: distributedRecords.value } })
+    loadImageReview({ poll: true })
   }
 
   const poll = async () => {
@@ -1707,6 +1869,143 @@ function startRecordDistPoll() {
     recordDistPollTimer = setTimeout(poll, 8000)
   }
   recordDistPollTimer = setTimeout(poll, 8000)
+}
+
+async function loadImageReview({ poll = false, manual = false } = {}) {
+  if (!meetingDate.value) return
+  clearTimeout(imageReviewPollTimer)
+  if (manual) imageReviewPollCount = 0
+  if (manual) imageReviewRefreshing.value = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/meeting-record/image-review?meetingDate=${encodeURIComponent(meetingDate.value)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await res.json()
+    if (!res.ok) return
+
+    const existingByFile = new Map(imageReviewImages.value.map(img => [img.file, img]))
+    imageReviewImages.value = (data.images || []).map(img => {
+      const prior = existingByFile.get(img.file)
+      // 不要覆蓋使用者已經手動編輯過、但還沒送出確認的內容
+      if (prior?.touched && !img.confirmed) return prior
+      return {
+        ...img,
+        selectedSlug: img.currentSlug || img.suggestedSlug || '',
+        captionDraft: img.currentCaption || img.suggestedCaption || '',
+        newProjectName: '',
+        touched: false,
+        saving: false,
+      }
+    })
+
+    // suggestions 可能還在生成中（reasoning 模型逐張用 Read 工具看圖，10 張常超過 1 分鐘），
+    // 短時間內重試讓建議自動補上
+    if (poll && imageReviewPollCount < IMAGE_REVIEW_MAX_POLLS &&
+        (!data.fresh || imageReviewImages.value.some(i => !i.confirmed && !i.suggestedSlug && !i.reason))) {
+      imageReviewPollCount++
+      imageReviewPollTimer = setTimeout(() => loadImageReview({ poll: true }), 5000)
+    } else {
+      imageReviewPollCount = 0
+    }
+  } catch {
+  } finally {
+    imageReviewRefreshing.value = false
+  }
+}
+
+async function confirmImageAssignment(img, { skip = false } = {}) {
+  if (img.saving) return
+  if (!skip && !img.selectedSlug) {
+    emit('toast', '請先選擇要分類到哪個專案', 'error')
+    return
+  }
+  if (!skip && img.selectedSlug === '__new__' && !img.newProjectName?.trim()) {
+    emit('toast', '請填寫新專案名稱', 'error')
+    return
+  }
+  if (!skip && !img.captionDraft?.trim()) {
+    emit('toast', '請填寫圖片說明', 'error')
+    return
+  }
+  img.saving = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    let targetSlug = img.selectedSlug
+
+    // 圖片不屬於任何既有專案：先建立新專案，再把圖片分類過去
+    if (!skip && targetSlug === '__new__') {
+      const createRes = await fetch('/api/project-insights/create', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: img.newProjectName.trim() }),
+      })
+      const createData = await createRes.json()
+      if (!createRes.ok || !createData.success) throw new Error(createData.error || '建立新專案失敗')
+      targetSlug = createData.slug
+      if (!insightsProjects.value.some(p => (p.slug || p.id) === targetSlug)) {
+        insightsProjects.value = [...insightsProjects.value, { slug: targetSlug, id: targetSlug, name: createData.name }]
+      }
+      img.selectedSlug = targetSlug
+    }
+
+    const res = await fetch('/api/meeting-record/image-review/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meetingDate: meetingDate.value,
+        file: img.file,
+        slug: skip ? null : targetSlug,
+        caption: skip ? null : img.captionDraft,
+        skip,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '確認失敗')
+    img.confirmed = true
+    img.skipped = skip
+    img.currentSlug = data.slug
+    img.touched = false
+    emit('toast', skip ? '已標記為不相關' : '圖片已分類並寫入記錄')
+  } catch (err) {
+    emit('toast', err.message || '確認失敗', 'error')
+  } finally {
+    img.saving = false
+  }
+}
+
+async function testImageCaption(img) {
+  if (img.testing) return
+  img.testing = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/meeting-record/image-review/test-caption', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: img.file }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || 'AI 測試判讀失敗')
+    img.captionDraft = data.caption
+    img.touched = true
+    emit('toast', 'AI 已重新看圖，請確認下方文字是否真的符合圖片內容')
+  } catch (err) {
+    emit('toast', err.message || 'AI 測試判讀失敗', 'error')
+  } finally {
+    img.testing = false
+  }
+}
+
+const unconfirmedImageCount = computed(() => imageReviewImages.value.filter(i => !i.confirmed).length)
+
+function projectName(slug) {
+  const p = insightsProjects.value.find(p => (p.slug || p.id) === slug)
+  return p?.name || p?.title || slug
+}
+
+function assetUrl(file) {
+  const token = localStorage.getItem('clawpm_token')
+  return `/api/project-insights/asset?file=${encodeURIComponent(file)}&token=${encodeURIComponent(token || '')}`
 }
 
 function isNewInsightProject(p) {
@@ -1771,6 +2070,7 @@ function restoreFromTask(task) {
   // Step 6 state
   distributedRecords.value = (task.data.distributedRecords || [])
   recordExpectedSlugs.value = (task.data.recordExpectedSlugs || [])
+  if (distributedRecords.value.length > 0) loadImageReview()
 
   // Set current step
   step.value = task.currentStep || 1
@@ -1799,6 +2099,9 @@ function restoreFromTask(task) {
       startRecordDistPoll()
     }
     // else: insufficient data to resume — leave isProcessing false so UI isn't stuck
+  } else if (task.status === 'error' && task.errorStep) {
+    step.value = task.errorStep
+    stepError.value = { step: task.errorStep, message: task.errorMessage || '處理失敗，請重試' }
   }
 }
 

@@ -9,9 +9,11 @@ DATE: 2026-06-22
 - 更新 OpenClaw 版本到 2026.6.8
 - 支援 token 用量的計算
 - 支援下載會話紀錄
+- 支援分離圖片並保存的功能
 
 [補強功能]
-- 更新 OpenClaw LLM timeout 為 10 分鐘，而不是永久
+- 更新 OpenClaw LLM timeout 為 20 分鐘，而不是永久
+- Disable Token Juice Plugin，雖然可以節省 5% tokens，但質量變差
 
 ================================================================
 

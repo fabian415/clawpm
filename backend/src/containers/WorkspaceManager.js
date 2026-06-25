@@ -118,7 +118,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
     plugins: {
       entries: {
         google: { enabled: true },
-        tokenjuice: { enabled: true },
+        tokenjuice: { enabled: false },
         searxng: {
           "enabled": true,
           "config": {

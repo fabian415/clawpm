@@ -204,7 +204,16 @@
                   class="border-b border-slate-100 dark:border-slate-800/60 hover:bg-slate-50 dark:hover:bg-slate-900/60 cursor-pointer transition-colors group"
                 >
                   <td class="py-4 pr-6">
-                    <span class="font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{{ p.name }}</span>
+                    <span class="inline-flex items-center gap-1.5">
+                      <span class="font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{{ p.name }}</span>
+                      <button
+                        @click.stop="openDescriptionModal(p)"
+                        :class="p.description ? 'text-blue-400 hover:text-blue-600' : 'text-slate-300 hover:text-slate-500'"
+                        title="查看／編輯專案描述"
+                      >
+                        <Info class="w-3.5 h-3.5" />
+                      </button>
+                    </span>
                   </td>
                   <td class="py-4 pr-6">
                     <span class="text-slate-600 dark:text-slate-400">{{ p.stage || '—' }}</span>
@@ -289,13 +298,52 @@
     </div>
 
   </div>
+
+  <!-- Project Description Modal -->
+  <div v-if="descriptionModal.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="descriptionModal.show = false">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+        <h3 class="font-bold text-base">{{ descriptionModal.name }} — 專案描述</h3>
+        <button @click="descriptionModal.show = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+      <div class="p-6 space-y-3">
+        <p class="text-xs text-slate-400">
+          1-3 句話描述這個專案的範疇與關鍵字（例如技術領域、產品名稱）。這段文字會被「會議記錄分發」與「補充圖片分類建議」拿來判斷內容是否屬於這個專案，請盡量具體。
+        </p>
+        <textarea
+          v-model="descriptionModal.draft"
+          rows="5"
+          class="w-full text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-xl px-3 py-2.5 resize-none outline-none focus:ring-2 focus:ring-blue-500/30"
+          placeholder="例如：與 Physical AI、Simulation、SO-101、GR00T 相關的機械手臂模擬訓練與控制平台。"
+        ></textarea>
+        <p v-if="descriptionModal.genError" class="text-xs text-red-500">{{ descriptionModal.genError }}</p>
+      </div>
+      <div class="flex justify-between gap-2 px-6 py-4 border-t border-slate-100 dark:border-slate-800">
+        <button @click="generateDescription" :disabled="descriptionModal.generating || descriptionModal.saving"
+          class="flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+          <Loader2 v-if="descriptionModal.generating" class="w-3.5 h-3.5 animate-spin" />
+          <Sparkles v-else class="w-3.5 h-3.5" />
+          {{ descriptionModal.generating ? 'AI 生成中...' : 'AI 自動生成' }}
+        </button>
+        <div class="flex gap-2">
+          <button @click="descriptionModal.show = false" class="px-4 py-2 text-sm rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800">取消</button>
+          <button @click="saveDescription" :disabled="descriptionModal.saving" class="px-4 py-2 text-sm rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+            {{ descriptionModal.saving ? '儲存中...' : '儲存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
-  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen
+  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen,
+  Info, X, Sparkles
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -355,6 +403,51 @@ async function fetchProjectList() {
     console.error('[reviewer] list error:', err.message)
   } finally {
     isLoadingList.value = false
+  }
+}
+
+const descriptionModal = ref({ show: false, slug: '', name: '', draft: '', saving: false, generating: false, genError: '' })
+
+function openDescriptionModal(p) {
+  descriptionModal.value = { show: true, slug: p.slug || p.id, name: p.name, draft: p.description || '', saving: false, generating: false, genError: '' }
+}
+
+async function generateDescription() {
+  descriptionModal.value.generating = true
+  descriptionModal.value.genError = ''
+  try {
+    const res = await fetch('/api/project-insights/description/generate', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: descriptionModal.value.slug }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || 'AI 生成失敗')
+    descriptionModal.value.draft = data.description
+  } catch (err) {
+    descriptionModal.value.genError = err.message
+  } finally {
+    descriptionModal.value.generating = false
+  }
+}
+
+async function saveDescription() {
+  descriptionModal.value.saving = true
+  try {
+    const res = await fetch('/api/project-insights/description', {
+      method: 'PATCH',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: descriptionModal.value.slug, description: descriptionModal.value.draft }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '儲存失敗')
+    const project = overviewProjects.value.find(p => (p.slug || p.id) === descriptionModal.value.slug)
+    if (project) project.description = data.description
+    descriptionModal.value.show = false
+  } catch (err) {
+    console.error('[reviewer] save description error:', err.message)
+  } finally {
+    descriptionModal.value.saving = false
   }
 }
 

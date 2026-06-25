@@ -190,6 +190,13 @@
                   </button>
                 </div>
               </div>
+              <label class="flex items-start gap-2 cursor-pointer">
+                <input v-model="customIsReasoningModel" type="checkbox" class="mt-0.5 w-4 h-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500" />
+                <span class="text-sm">
+                  這是推理模型（gpt-5 / o1 / o3 系列等）
+                  <span class="block text-xs text-slate-400 mt-0.5">這類模型不接受舊式 max_tokens 參數，勾選後會改用 max_completion_tokens，否則呼叫會被直接拒絕、完全沒有回應</span>
+                </span>
+              </label>
             </div>
           </div>
 
@@ -524,6 +531,7 @@ const provider = ref(null)
 const geminiApiKey = ref('')
 const customBaseUrl = ref('')
 const customApiKey = ref('')
+const customIsReasoningModel = ref(false)
 const azureEndpoint = ref('')
 const azureApiKey = ref('')
 const azureDeploymentName = ref('')
@@ -747,6 +755,7 @@ async function startContainerSetup() {
     body.baseUrl = customBaseUrl.value
     body.apiKey = customApiKey.value
     body.modelId = effectiveModel.value
+    body.isReasoningModel = customIsReasoningModel.value
   }
 
   // Track progress by counting log events

@@ -22,7 +22,10 @@ import {
   startPassiveSessionWatcher,
 } from './src/managers/OpenClawClient.js'
 import { allocatePorts, releasePorts, getPortsForUser } from './src/containers/PortManager.js'
-import { createTask, getTask, listTasksForTeam, updateTask, deleteTask, retryTask } from './src/managers/TaskManager.js'
+import {
+  createTask, getTask, listTasksForTeam, updateTask, deleteTask, retryTask, sendAndStreamOrThrow,
+  ensureProjectDescriptions, checkInsightsRegression, readProjectMarkdownSnapshot,
+} from './src/managers/TaskManager.js'
 import { initializeWorkspace } from './src/containers/WorkspaceManager.js'
 import {
   createAndStartContainer,
@@ -127,7 +130,7 @@ async function pollWhisperXJob(jobId, outputHostPath, taskId) {
   setTimeout(poll, 15000)
 }
 
-async function monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMtime) {
+async function monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMtime, followUp) {
   const MAX_CHECKS = 72  // 72 × 10s = 12 minutes max
   let checks = 0
 
@@ -139,6 +142,22 @@ async function monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMti
       if (fs.existsSync(projectsJsonHostPath)) {
         const mtime = fs.statSync(projectsJsonHostPath).mtimeMs
         if (mtime > beforeMtime) {
+          // 主要寫入已落地。在標記任務完成前，補跑跟 TaskManager.js 的 runInsightsStep 同一套
+          // 收尾檢查（內容縮水偵測、description 補齊）——這個 workflow 是由前端聊天視窗直接
+          // 觸發 LLM 對話，後端只負責準備 prompt 跟監測完成，這兩道保險原本只接在
+          // TaskManager.js 的任務式流程上，沒有套用到這裡，所以一併補上。
+          if (followUp) {
+            try {
+              // projects.json 剛被寫入時，agent 在前端聊天視窗裡的這一輪對話可能還在處理
+              // 其他檔案（index.md、HTML），稍微等一下再插話，降低跟同一個 session 撞期的機率。
+              await new Promise(r => setTimeout(r, 15000))
+              await checkInsightsRegression(followUp.client, followUp.sessionKey, followUp.workspaceHostPath, followUp.beforeSnapshots)
+              await ensureProjectDescriptions(followUp.client, followUp.sessionKey, followUp.workspaceHostPath)
+            } catch (e) {
+              console.warn('[insights-monitor] follow-up checks failed, leaving as-is:', e.message)
+            }
+          }
+
           const task = await getTask(taskId)
           if (task && task.status !== 'completed' && task.status !== 'error') {
             await updateTask(taskId, {
@@ -340,6 +359,17 @@ app.patch('/api/team/members/:memberId/role', requireAuth, requireAdmin, async (
   }
 })
 
+// multer/busboy 預設把 multipart 表單裡的 filename 欄位當 Latin-1 解碼；
+// 瀏覽器實際送出的是 UTF-8 位元組，因此非 ASCII 檔名（例如中文）會變成雙重編碼亂碼。
+// 這裡還原成正確的 UTF-8 字串，避免亂碼被寫進 FTP 路徑、進而流入 project-insights 的來源索引。
+function fixUploadedFilename(name) {
+  try {
+    return Buffer.from(name, 'latin1').toString('utf8')
+  } catch {
+    return name
+  }
+}
+
 // ── Media upload via FTP ──────────────────────────────────────────────────────
 
 const ALLOWED_AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.webm'])
@@ -376,7 +406,7 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
     ? rawDate
     : new Date().toISOString().slice(0, 10)
   const remoteDir = `/${provisionUserId}/workspace/ftp_data/media/${dateFolder}`
-  const originalName = req.file.originalname
+  const originalName = fixUploadedFilename(req.file.originalname)
 
   const client = new FtpClient()
   try {
@@ -429,7 +459,7 @@ app.post('/api/workflow/upload-doc', requireAuth, (req, res, next) => {
   const ftpPass = process.env.FTP_PASS || 'changeme'
   const dateFolder = new Date().toISOString().slice(0, 10)
   const remoteDir = `/${provisionUserId}/workspace/ftp_data/doc/${dateFolder}`
-  const originalName = req.file.originalname
+  const originalName = fixUploadedFilename(req.file.originalname)
 
   const client = new FtpClient()
   try {
@@ -1065,6 +1095,17 @@ app.put('/api/settings', requireAuth, (req, res) => {
 // ── Project Insights (Step 5) ─────────────────────────────────────────────────
 
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
+const IMAGE_EXTRACT_SCRIPT = `${CONTAINER_WORKSPACE}/skills/project-insight-synthesizer/scripts/extract_supplementary_images.py`
+const IMAGE_SOURCE_EXTS = new Set(['.pptx', '.xlsx', '.pdf'])
+
+// Convert FTP-relative doc paths (as stored when uploaded) into container-visible absolute paths.
+function ftpDocPathsToContainerPaths(provisionUserId, docFtpPaths) {
+  if (!Array.isArray(docFtpPaths) || docFtpPaths.length === 0) return []
+  const provisionPrefix = `/${provisionUserId}/workspace`
+  return docFtpPaths
+    .filter(p => typeof p === 'string' && p.startsWith(`${provisionPrefix}/ftp_data/doc/`))
+    .map(p => `${CONTAINER_WORKSPACE}${p.slice(provisionPrefix.length)}`)
+}
 
 app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
   const { transcriptContainerPath, notesContainerPath, meetingDate, taskId, docFtpPaths } = req.body ?? {}
@@ -1089,8 +1130,16 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
     const existing = JSON.parse(fs.readFileSync(projectsJsonHostPath, 'utf8'))
     existingProjectIds = (existing.projects || []).map(p => p.id || p.slug || p.name).filter(Boolean)
     knownProjects = (existing.projects || []).filter(p => p.name && (p.slug || p.id))
-      .map(p => ({ name: p.name, slug: p.slug || p.id }))
+      .map(p => ({ name: p.name, slug: p.slug || p.id, description: p.description || '' }))
   } catch {}
+
+  // 跟 TaskManager.js 的 runInsightsStep 一樣，先在觸發 skill 前讀出每個既有專案目前的
+  // Markdown 快照（只在後端本地比對用，不塞進 prompt），事後給 checkInsightsRegression 用。
+  const beforeSnapshots = {}
+  for (const p of knownProjects) {
+    const snap = readProjectMarkdownSnapshot(paths.workspace, p.slug)
+    if (snap) beforeSnapshots[p.slug] = snap
+  }
 
   const today = meetingDate && /^\d{4}-\d{2}-\d{2}$/.test(meetingDate)
     ? meetingDate
@@ -1106,15 +1155,9 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
   if (notesContainerPath) parts.push(`本次會議記錄路徑：${notesContainerPath}，`)
 
   // Convert FTP doc paths to container-visible paths and include in prompt
-  if (Array.isArray(docFtpPaths) && docFtpPaths.length > 0) {
-    const provisionPrefix = `/${provisionUserId}/workspace`
-    const validDocPaths = docFtpPaths.filter(p =>
-      typeof p === 'string' && p.startsWith(`${provisionPrefix}/ftp_data/doc/`)
-    )
-    if (validDocPaths.length > 0) {
-      const containerDocPaths = validDocPaths.map(p => `${CONTAINER_WORKSPACE}${p.slice(provisionPrefix.length)}`)
-      parts.push(`本次會議補充文件（請一併參考這些文件內容進行洞見整合）：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}，`)
-    }
+  const insightsDocPaths = ftpDocPathsToContainerPaths(provisionUserId, docFtpPaths)
+  if (insightsDocPaths.length > 0) {
+    parts.push(`本次會議補充文件（請一併參考這些文件內容進行洞見整合）：\n${insightsDocPaths.map(p => `- ${p}`).join('\n')}，`)
   }
 
   parts.push('', `專案知識庫目錄：${CONTAINER_INSIGHTS_DIR}/`, '，')
@@ -1122,13 +1165,17 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
   if (knownProjects.length > 0) {
     parts.push(
       '知識庫中已有以下專案（Markdown 文件已就緒），請優先將本次會議內容對應至這些專案進行增量整併：',
-      ...knownProjects.map(p => `- ${p.name}（${p.slug}.md）`),
+      ...knownProjects.map(p => `- ${p.name}（${p.slug}.md）${p.description ? `：${p.description}` : '（尚無 description，請依本次與既有內容補上）'}`),
       '',
       '請依照 skill 工作流程完整執行：',
-      '1. 讀取上方所列專案的 Markdown 文件，以增量合併方式更新各專案內容',
-      '2. 若本次會議出現上述清單以外的新主題，可自動新增對應 Markdown',
-      '3. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
-      '4. 完成後回報各專案更新情況、目前進度、對外發表成熟度與主要缺口',
+      '1. 用 Read 工具讀取上方所列專案的 Markdown 文件，取得目前版本作為比對與插入錨點的依據',
+      '2. 檔案已存在時，現狀型章節一律用 Edit 工具定點插入新 bullet（以章節標題作錨點），不要用 Write 整份覆寫；只有新建專案檔案時才用 Write',
+      '3. 嚴格遵守 references/markdown-schema.md 的「增量寫作鐵則」：逐筆累加、不可整節覆寫、不可刪除舊 bullet（只能加註取代標記）',
+      '4. 同步維護 reviewer/projects.json 裡每個專案的 description 欄位（1-3 句話描述範疇與關鍵字，供記錄分發/圖片分類等其他流程比對用）：沒有就補上，已經過時或不夠精確就直接覆寫成更準確的版本',
+      '5. 執行 Step 5.5 自查：確認每個 Edit 的錨點唯一且正確、新 bullet 都帶日期來源',
+      '6. 若本次會議出現上述清單以外的新主題，可自動新增對應 Markdown 與 description',
+      '7. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
+      '8. 完成後回報各專案更新情況、目前進度、對外發表成熟度、主要缺口，以及 Step 5.5 自查結果',
       '',
       '請直接執行，無需確認。',
       '最後檢查所有的Markdown檔案寫入時，\n 要取代成斷行。',
@@ -1139,7 +1186,7 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
       '1. 讀取現有 project-insights/ 目錄中的所有專案 Markdown（若存在）',
       '2. 偵測本次會議涉及哪些專案',
       '3. 以增量合併方式更新每個涉及的專案 Markdown',
-      '4. 若出現新專案主題，自動建立對應新 Markdown 檔',
+      '4. 若出現新專案主題，自動建立對應新 Markdown 檔，並在 reviewer/projects.json 寫上 description（1-3 句話描述範疇與關鍵字，供記錄分發/圖片分類等其他流程比對用）',
       '5. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
       '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
       '',
@@ -1159,7 +1206,10 @@ app.post('/api/workflow/prepare-insights', requireAuth, async (req, res) => {
 
   // Spawn backend monitor so the task DB is updated even when WorkflowView is not open
   if (taskId) {
-    monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMtime)
+    const client = getClientForUser(provisionUserId)
+    monitorInsightsCompletion(taskId, projectsJsonHostPath, beforeMtime, {
+      client, sessionKey, workspaceHostPath: paths.workspace, beforeSnapshots,
+    })
   }
 })
 
@@ -1283,7 +1333,7 @@ app.get('/api/project-insights/file', requireAuth, async (req, res) => {
 })
 
 app.post('/api/project-insights/create', requireAuth, async (req, res) => {
-  const { name } = req.body ?? {}
+  const { name, description } = req.body ?? {}
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: '專案名稱不可為空' })
   }
@@ -1330,6 +1380,7 @@ app.post('/api/project-insights/create', requireAuth, async (req, res) => {
       name: displayName,
       maturity: 'not ready',
       lastUpdated: new Date().toISOString().slice(0, 10),
+      description: typeof description === 'string' ? description.trim() : '',
     })
     fs.writeFileSync(projectsJsonPath, JSON.stringify(projectsData, null, 2), 'utf8')
   }
@@ -1347,6 +1398,74 @@ app.post('/api/project-insights/create', requireAuth, async (req, res) => {
   }
 
   res.json({ success: true, slug, name: displayName, isNew })
+})
+
+// description：1-3 句話描述專案範疇與關鍵字，供記錄分發、補充圖片分類建議等自動化流程比對用。
+app.patch('/api/project-insights/description', requireAuth, async (req, res) => {
+  const { slug, description } = req.body ?? {}
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (typeof description !== 'string') return res.status(400).json({ error: '無效的描述內容' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const projectsJsonPath = path.join(hostInsightsDir, 'reviewer', 'projects.json')
+
+  const projectsData = readJsonSafe(projectsJsonPath)
+  if (!projectsData || !Array.isArray(projectsData.projects)) {
+    return res.status(404).json({ error: '找不到專案清單' })
+  }
+
+  const project = projectsData.projects.find(p => (p.slug || p.id) === slug)
+  if (!project) return res.status(404).json({ error: '找不到對應的專案' })
+
+  project.description = description.trim()
+  try {
+    writeJsonSafe(projectsJsonPath, projectsData)
+    res.json({ success: true, slug, description: project.description })
+  } catch {
+    res.status(500).json({ error: '儲存失敗' })
+  }
+})
+
+// 用 AI 根據專案目前的 Markdown 內容草擬一段 description，回傳給前端讓使用者確認/編輯後再儲存
+// （不直接寫入 projects.json，維持「AI 建議、人工確認」的一致設計）。
+app.post('/api/project-insights/description/generate', requireAuth, async (req, res) => {
+  const { slug } = req.body ?? {}
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const mdPath = path.join(hostInsightsDir, `${slug}.md`)
+
+  let content = ''
+  try { content = fs.readFileSync(mdPath, 'utf8') } catch {}
+  if (!content.trim()) return res.status(404).json({ error: '找不到專案內容，無法生成描述' })
+
+  const projectsData = readJsonSafe(path.join(hostInsightsDir, 'reviewer', 'projects.json'))
+  const project = (projectsData?.projects || []).find(p => (p.slug || p.id) === slug)
+  const displayName = project?.name || slug
+
+  const prompt = [
+    `請根據以下專案 Markdown 內容，幫我寫一個 1-3 句話的「專案描述」。`,
+    `這段描述會被其他自動化流程（會議記錄分發、補充圖片分類建議）拿來判斷會議內容或圖片是否屬於這個專案，請盡量具體列出技術領域、核心關鍵字、產品／技術名詞，不要寫空泛的形容詞。`,
+    `只回覆描述本身的文字，不要加引號、不要加「好的」之類的開頭客套話、不要條列、不要任何額外說明。`,
+    ``,
+    `專案名稱：${displayName}`,
+    `專案內容：`,
+    content.slice(0, 20000),
+  ].join('\n')
+
+  try {
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('describe')
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
+    const description = (lastMsg.content || '').trim().replace(/^["「]|["」]$/g, '')
+    res.json({ success: true, description })
+  } catch (err) {
+    res.status(502).json({ error: err.message || 'AI 生成描述失敗' })
+  }
 })
 
 app.patch('/api/project-insights/file', requireAuth, async (req, res) => {
@@ -1480,6 +1599,58 @@ function recordFilePath(hostInsightsDir, slug, name) {
 
 function validDateFilename(s) {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
+}
+
+// 補充文件圖片的人工分類審核：agent 只負責萃取＋建議（寫進 suggestions-{date}.json），
+// 實際要分到哪個專案、最終文字說明，一律由使用者在前端確認後才透過下方 confirm 端點寫入。
+// 只在 manifest 是「最近產生的」時才視為這次會議的圖片，避免把舊會議留下的 manifest 誤判成這次的。
+const IMAGE_REVIEW_FRESHNESS_MS = 2 * 60 * 60 * 1000
+
+function assetsDirFor(hostInsightsDir) {
+  return path.join(hostInsightsDir, '_assets')
+}
+
+function readJsonSafe(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')) } catch { return null }
+}
+
+function writeJsonSafe(p, data) {
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8')
+}
+
+function suggestionsPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `suggestions-${meetingDate}.json`)
+}
+
+function assignmentsPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `assignments-${meetingDate}.json`)
+}
+
+// 在記錄檔案的「## 相關圖片」區段裡新增或更新某張圖片的 bullet（用圖片檔名當識別key）。
+function upsertImageBullet(content, file, bulletLine) {
+  const marker = `_assets/${file})`
+  const lines = content.split('\n')
+  const existingIdx = lines.findIndex(l => l.includes(marker))
+  if (existingIdx !== -1) {
+    lines[existingIdx] = bulletLine
+    return lines.join('\n')
+  }
+  const headingIdx = lines.findIndex(l => l.trim() === '## 相關圖片')
+  if (headingIdx === -1) {
+    return `${content.replace(/\s+$/, '')}\n\n## 相關圖片\n${bulletLine}\n`
+  }
+  let insertAt = lines.length
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) { insertAt = i; break }
+  }
+  lines.splice(insertAt, 0, bulletLine)
+  return lines.join('\n')
+}
+
+function removeImageBullet(content, file) {
+  const marker = `_assets/${file})`
+  return content.split('\n').filter(l => !l.includes(marker)).join('\n')
 }
 
 function validSlug(s) {
@@ -1957,7 +2128,7 @@ app.get('/api/tech/result', requireAuth, async (req, res) => {
 // ── Meeting Record Distribution ───────────────────────────────────────────────
 
 app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, res) => {
-  const { meetingDate, notesContainerPath, projects } = req.body ?? {}
+  const { meetingDate, notesContainerPath, projects, docFtpPaths } = req.body ?? {}
 
   if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的會議日期格式' })
   if (!notesContainerPath || typeof notesContainerPath !== 'string') return res.status(400).json({ error: '缺少會議記錄路徑' })
@@ -1971,12 +2142,14 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
     return res.status(400).json({ error: '無效的會議記錄路徑' })
   }
 
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+
   const sessionKey = makeScopedSessionKey('record-dist')
 
   const outputEntries = validProjects.map(p => {
     const folderPath = `${CONTAINER_INSIGHTS_DIR}/record-${p.slug}`
     const filePath = `${folderPath}/${meetingDate}.md`
-    return { slug: p.slug, name: p.name || p.slug, folderPath, filePath }
+    return { slug: p.slug, name: p.name || p.slug, description: p.description || '', folderPath, filePath }
   })
 
   const parts = [
@@ -1988,6 +2161,7 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
     `1. 該段落的標題、開頭句、或主語直接提及專案名稱`,
     `2. 整個段落的討論脈絡是針對該專案的功能、進度、問題或決議`,
     `3. 行動事項的執行對象或影響範圍明確屬於該專案`,
+    `4. 段落討論的技術領域、產品名詞或關鍵字，與下方「專案清單」裡某個專案的 description 高度吻合（即使沒有直接點名專案，但討論的就是該專案的核心範疇）`,
     ``,
     `**嚴格禁止的行為：**`,
     `- 不得將「通用討論」或「與多專案相關的背景說明」寫入某一個專案的記錄，除非該專案被明確點名`,
@@ -2007,7 +2181,9 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
     `會議日期：${meetingDate}`,
     ``,
     `請針對以下 ${outputEntries.length} 個專案，各自建立會議記錄（若某專案在本次會議中完全未被提及，請略過，不建立空檔案）：`,
-    ...outputEntries.map(e => `- 專案「${e.name}」→ 輸出至 ${e.filePath}（先建立資料夾 ${e.folderPath}/ 若尚未存在）`),
+    ...outputEntries.map(e =>
+      `- 專案「${e.name}」${e.description ? `（範疇：${e.description}）` : '（尚無描述）'} → 輸出至 ${e.filePath}（先建立資料夾 ${e.folderPath}/ 若尚未存在）`,
+    ),
     ``,
     `## 每個輸出檔案的格式`,
     ``,
@@ -2023,6 +2199,39 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
     `4. 寫入 Markdown 檔案時，\\n 必須取代成實際斷行字元`,
     `5. 完成後確認各檔案均已成功寫入`,
   ]
+
+  const imageSourcePaths = ftpDocPathsToContainerPaths(provisionUserId, docFtpPaths)
+    .filter(p => IMAGE_SOURCE_EXTS.has(path.extname(p).toLowerCase()))
+
+  if (imageSourcePaths.length > 0) {
+    const assetsDir = `${CONTAINER_INSIGHTS_DIR}/_assets`
+    const suggestionsPath = `${assetsDir}/suggestions-${meetingDate}.json`
+    parts.push(
+      ``,
+      `## 補充文件圖片萃取與「建議」分類（不要自己決定插入哪個專案，也不要修改任何 record-*.md）`,
+      ``,
+      `本次會議有以下補充文件，裡面可能含有與專案內容相關的圖片（圖表、架構圖、產品畫面等）：`,
+      ...imageSourcePaths.map(p => `- ${p}`),
+      ``,
+      `已知專案清單（共 ${outputEntries.length} 個，與步驟一的專案清單相同）：`,
+      ...outputEntries.map(e => `- ${e.name}（${e.slug}）${e.description ? `：${e.description}` : '（尚無描述）'}`),
+      ``,
+      `圖片最終要分到哪個專案，由使用者在前端介面手動確認，你只需要負責萃取與給建議，不要自己寫入任何專案的記錄檔案：`,
+      `1. 執行：python3 ${IMAGE_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir}`,
+      `2. 讀取產生的 ${assetsDir}/manifest.json，並用 Read 工具逐一實際開啟、親眼檢視每一張圖片本身的畫面內容，把圖片裡的關鍵文字、術語、表格欄位都看清楚（不要只看大概構圖，更不能只憑 manifest 裡的文字欄位猜測內容）`,
+      `3. 對 manifest 裡「每一張」圖片，先判斷這張圖片本身的類型（例如：數據折線圖／長條圖、UI 截圖、流程圖、架構圖、表格…），再依照圖片裡實際看到的內容給出建議（找不到合理對應時 suggestedSlug 給 null，不要硬猜）：`,
+      `   - 對照圖片中出現的具體名詞（工具名、程式庫名、API、模組名、版本號、品牌／產品名等）與上方「已知專案清單」`,
+      `   - manifest 裡的 sourceFile/location/captionHint 都只是文件結構上的輔助線索，不能當作判斷依據。captionHint 尤其要小心：它只是該投影片或該頁文件裡離圖片最近的一段文字（例如投影片標題、頁面第一行字），**不是圖片內容的描述**，常常跟圖片實際畫面完全無關，絕對不能直接拿來當 suggestedCaption 或用來判斷 suggestedSlug`,
+      `   - suggestedCaption 必須是你親眼看過這張圖片之後、針對這張圖片畫面裡實際出現的內容寫的一句話，且要先點出圖片類型（例如「折線圖，顯示…」「UI 截圖，顯示…」），不能套用 captionHint 或文件其他段落、其他圖片的內容`,
+      `   - 同一份補充文件裡，不同圖片很可能對應到不同專案，每張圖片要獨立判斷，不要因為前後幾張圖片判斷成某專案就順勢套用`,
+      `   - 純裝飾、背景、版頭版尾、公司 Logo、無資訊量的圖示，suggestedSlug 給 null 並在 reason 註明「裝飾性圖片」`,
+      `   - 若你用 Read 工具實際開啟圖片後，發現回傳結果只是「檔案存在」之類的訊息、沒有真正的可視畫面內容（無法看到圖片裡的文字與構圖），代表目前這個執行環境暫時無法判讀圖片，請把所有圖片的 suggestedSlug 給 null，並在 reason 中誠實註明此原因，不要編造或瞎猜內容`,
+      `4. 用 Write 工具把建議寫成 ${suggestionsPath}，格式為：`,
+      `   {"images": [{"file": "{manifest 中的 file 檔名}", "suggestedSlug": "{已知專案清單中的 slug 或 null}", "suggestedCaption": "{一句話說明這張圖在說什麼}", "reason": "{為什麼建議這個專案，或為什麼判斷不相關}"}, ...]}`,
+      `   陣列必須包含 manifest 裡的每一張圖片，數量要對得上，不可以省略`,
+      `5. 完成後告知使用者：補充文件已萃取出幾張圖片、建議寫好了，請到前端「圖片分類確認」面板逐一確認後才會真正寫入專案記錄`,
+    )
+  }
 
   res.json({
     success: true,
@@ -2067,6 +2276,147 @@ app.get('/api/meeting-record/distribution-result', requireAuth, async (req, res)
   }
 
   res.json({ ready: pending.length === 0, completed, pending, total: slugList.length })
+})
+
+app.get('/api/meeting-record/image-review', requireAuth, async (req, res) => {
+  const { meetingDate } = req.query
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+
+  const manifest = readJsonSafe(manifestPath)
+  const generatedAt = manifest?.generatedAt ? new Date(manifest.generatedAt).getTime() : 0
+  const fresh = !!generatedAt && (Date.now() - generatedAt <= IMAGE_REVIEW_FRESHNESS_MS)
+
+  if (!fresh || !manifest?.images?.length) {
+    return res.json({ fresh, images: [], allConfirmed: true })
+  }
+
+  const suggestions = readJsonSafe(suggestionsPathFor(hostInsightsDir, meetingDate))
+  const suggestionMap = new Map((suggestions?.images || []).map(s => [s.file, s]))
+  const assignments = readJsonSafe(assignmentsPathFor(hostInsightsDir, meetingDate)) || {}
+
+  const images = manifest.images.map(img => {
+    const suggestion = suggestionMap.get(img.file)
+    const assignment = assignments[img.file]
+    return {
+      file: img.file,
+      sourceFile: img.sourceFile,
+      location: img.location,
+      suggestedSlug: suggestion?.suggestedSlug ?? null,
+      suggestedCaption: suggestion?.suggestedCaption ?? '',
+      reason: suggestion?.reason ?? '',
+      currentSlug: assignment?.slug ?? null,
+      currentCaption: assignment?.caption ?? '',
+      skipped: !!assignment?.skipped,
+      confirmed: !!assignment,
+    }
+  })
+
+  res.json({ fresh, images, allConfirmed: images.every(i => i.confirmed) })
+})
+
+app.post('/api/meeting-record/image-review/confirm', requireAuth, async (req, res) => {
+  const { meetingDate, file, slug, caption, skip } = req.body ?? {}
+
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+  if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+  if (!skip && !validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifest = readJsonSafe(manifestPath)
+  const imgMeta = manifest?.images?.find(i => i.file === file)
+  if (!imgMeta) return res.status(404).json({ error: '找不到對應的圖片（manifest 已變更或過期）' })
+
+  const assignmentsPath = assignmentsPathFor(hostInsightsDir, meetingDate)
+  const assignments = readJsonSafe(assignmentsPath) || {}
+  const previous = assignments[file]
+
+  // 若先前已指派到別的專案，先把舊記錄檔裡的 bullet 移除，避免同一張圖片留在兩個專案裡
+  if (previous?.slug && previous.slug !== (skip ? null : slug)) {
+    const oldPath = recordFilePath(hostInsightsDir, previous.slug, meetingDate)
+    if (oldPath && fs.existsSync(oldPath)) {
+      try {
+        fs.writeFileSync(oldPath, removeImageBullet(fs.readFileSync(oldPath, 'utf8'), file), 'utf8')
+      } catch {}
+    }
+  }
+
+  if (skip) {
+    assignments[file] = { slug: null, caption: null, skipped: true, confirmedAt: new Date().toISOString() }
+    writeJsonSafe(assignmentsPath, assignments)
+    return res.json({ success: true, file, slug: null, skipped: true })
+  }
+
+  if (!caption || typeof caption !== 'string' || !caption.trim()) {
+    return res.status(400).json({ error: '請填寫圖片說明' })
+  }
+
+  const projectsData = readJsonSafe(path.join(hostInsightsDir, 'reviewer', 'projects.json'))
+  const project = (projectsData?.projects || []).find(p => (p.slug || p.id) === slug)
+  const projectName = project?.name || slug
+
+  const recordPath = recordFilePath(hostInsightsDir, slug, meetingDate)
+  if (!recordPath) return res.status(403).json({ error: '無權限' })
+
+  let content
+  if (fs.existsSync(recordPath)) {
+    content = fs.readFileSync(recordPath, 'utf8')
+  } else {
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true })
+    content = `# 會議記錄 — ${meetingDate}\n> 專案：${projectName}\n`
+  }
+
+  const bulletLine = `- ${caption.trim()}（來源：${imgMeta.sourceFile}，${imgMeta.location}） ![](../_assets/${file})`
+  fs.writeFileSync(recordPath, upsertImageBullet(content, file, bulletLine), 'utf8')
+
+  assignments[file] = { slug, caption: caption.trim(), skipped: false, confirmedAt: new Date().toISOString() }
+  writeJsonSafe(assignmentsPath, assignments)
+
+  res.json({ success: true, file, slug, skipped: false })
+})
+
+// 給使用者在前端快速測試：對單一一張圖片，直接請 agent 用 Read 工具親眼檢視並回報一句話描述，
+// 不寫入任何 suggestions/assignments 檔案，純粹用來驗證目前這個環境的模型是否真的能讀到圖片畫面內容。
+app.post('/api/meeting-record/image-review/test-caption', requireAuth, async (req, res) => {
+  const { file } = req.body ?? {}
+  if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifest = readJsonSafe(manifestPath)
+  const imgMeta = manifest?.images?.find(i => i.file === file)
+  if (!imgMeta) return res.status(404).json({ error: '找不到對應的圖片（manifest 已變更或過期）' })
+
+  const containerImagePath = `${CONTAINER_INSIGHTS_DIR}/_assets/${file}`
+  const prompt = [
+    `請用 Read 工具開啟並親眼檢視這張圖片：${containerImagePath}`,
+    `用一句話老實描述你實際在畫面裡看到的內容（圖表類型、UI 截圖、流程圖等，以及裡面出現的關鍵文字或術語）。`,
+    `若 Read 工具回傳的內容只是「檔案存在」之類的訊息、你其實看不到真正的可視畫面，就照實回答「目前讀不到這張圖片的真實畫面內容」，不要瞎猜或編造。`,
+    `只回覆這一句話本身，不要加引號、不要寫步驟說明、不要有其他文字。`,
+  ].join('\n')
+
+  try {
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('img-test')
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
+    const caption = (lastMsg.content || '').trim().replace(/^["「]|["」]$/g, '')
+    res.json({ success: true, caption })
+  } catch (err) {
+    res.status(502).json({ error: err.message || 'AI 測試判讀失敗' })
+  }
 })
 
 app.get('/api/meeting-record/list', requireAuth, async (req, res) => {
@@ -2155,6 +2505,54 @@ app.delete('/api/meeting-record/file', requireAuth, async (req, res) => {
     res.json({ success: true, name })
   } catch {
     res.status(500).json({ error: '刪除檔案失敗' })
+  }
+})
+
+// ── Project Insights Image Assets ─────────────────────────────────────────────
+// Images extracted from meeting supplementary docs (see extract_supplementary_images.py),
+// referenced from record-{slug}/{date}.md via `![](../_assets/<file>)`. <img> tags can't
+// send an Authorization header, so this also accepts a `?token=` query param (same pattern
+// as the reviewer iframe route below).
+
+app.get('/api/project-insights/asset', async (req, res) => {
+  const { file, token } = req.query
+
+  if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
+    console.warn('[asset] rejected: invalid file param', file)
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+
+  let user
+  try {
+    const auth = req.headers.authorization ?? ''
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null
+    user = verifyToken(bearer || token)
+  } catch (err) {
+    console.warn('[asset] rejected: token verify failed:', err.message)
+    return res.status(401).json({ error: '未授權' })
+  }
+
+  const provisionUserId = await getProvisionUserId(user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const assetsDir = path.join(paths.workspace, 'project-insights', '_assets')
+  const hostPath = path.join(assetsDir, file)
+
+  if (!hostPath.startsWith(assetsDir + path.sep) || !fs.existsSync(hostPath)) {
+    console.warn('[asset] 404 not found:', hostPath)
+    return res.status(404).json({ error: '檔案不存在' })
+  }
+
+  // Avoid res.sendFile(): Express runs encodeURI() on the path internally, which mangles
+  // Windows backslash separators (\ -> %5C) and breaks the lookup in the `send` module.
+  const mimeByExt = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' }
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', mimeByExt[path.extname(hostPath).toLowerCase()] || 'application/octet-stream')
+    res.setHeader('Cache-Control', 'private, max-age=86400')
+    res.send(data)
+  } catch (err) {
+    console.error('[asset] read error:', err.message)
+    res.status(500).json({ error: '讀取檔案失敗' })
   }
 })
 
@@ -2580,7 +2978,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
       plugins: {
         entries: {
           google: { enabled: true },
-          tokenjuice: { enabled: true },
+          tokenjuice: { enabled: false },
           searxng: {
             "enabled": true,
             "config": {
@@ -2598,7 +2996,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     }
   }
 
-  const { baseUrl, apiKey, modelId } = llmConfig
+  const { baseUrl, apiKey, modelId, isReasoningModel } = llmConfig
   const modelRef = `custom/${modelId}`
   return {
     agents: {
@@ -2619,17 +3017,27 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
           // Replaces the legacy agents.defaults.llm.idleTimeoutSeconds (removed in 2026.6.8).
           // Without this the gateway falls back to a 120s idle timeout, which slower
           // custom/Azure-hosted models can exceed.
-          timeoutSeconds: 600,
+          timeoutSeconds: 1200,
           models: [
             {
               id: modelId,
               name: modelId,
-              reasoning: false,
-              input: ['text'],
+              reasoning: !!isReasoningModel,
+              // 'image' 讓 OpenClaw 把圖片真正的可視內容（而非僅檔名/metadata）附加到送給這個
+              // custom 模型的請求裡；漏掉這個會讓 Read 工具對圖片只回傳「檔案存在」之類的訊息。
+              input: ['text', 'image'],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
               contextWindow: 131072,
-              maxTokens: 16384,
-              compat: { supportsUsageInStreaming: true },
+              // 16384 在多步驟、需逐筆 Edit 多個 markdown 的任務（如 project-insight-synthesizer）
+              // 容易在最後一輪生成被截斷，OpenClaw runtime 會判定該 turn 為
+              // non_deliverable_terminal_turn 並整個 run 標記成 error（並非 timeout）。
+              maxTokens: 32768,
+              // 推理模型（gpt-5/o1/o3 系列等）不接受舊式 max_tokens，Azure/OpenAI 會直接 400
+              // 拒絕請求（"Unsupported parameter: 'max_tokens'... Use 'max_completion_tokens'"），
+              // 導致 LLM 完全沒有回應。maxTokensField 讓 OpenClaw 改送正確的參數名稱。
+              compat: isReasoningModel
+                ? { supportsUsageInStreaming: true, maxTokensField: 'max_completion_tokens' }
+                : { supportsUsageInStreaming: true },
             },
           ],
         },
@@ -2652,7 +3060,7 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
     },
     plugins: {
       entries: {
-        tokenjuice: { enabled: true },
+        tokenjuice: { enabled: false },
         searxng: {
           "enabled": true,
           "config": {
@@ -2710,7 +3118,7 @@ app.get('/api/provision/check-userid/:userId', requireAuth, requireAdmin, async 
 })
 
 app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
-  const { userId, provider, geminiApiKey, baseUrl, apiKey, modelId, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = req.body ?? {}
+  const { userId, provider, geminiApiKey, baseUrl, apiKey, modelId, isReasoningModel, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = req.body ?? {}
 
   if (!userId || !/^[\w-]+$/.test(userId)) {
     return res.status(400).json({ error: '無效的 userId' })
@@ -2759,7 +3167,7 @@ app.post('/api/provision', requireAuth, requireAdmin, async (req, res) => {
           apiKey: 'dummy-key',
           modelId: azureDeploymentName,
         }
-      : { provider: 'custom', baseUrl, apiKey, modelId }
+      : { provider: 'custom', baseUrl, apiKey, modelId, isReasoningModel: !!isReasoningModel }
 
   try {
     // 1. Allocate ports
@@ -2933,7 +3341,7 @@ app.get('/api/container/config', requireAuth, async (req, res) => {
 // Update LLM config in openclaw.json and restart the container to apply it.
 app.post('/api/container/update-llm', requireAuth, requireAdmin, async (req, res) => {
   const userId = await getProvisionUserId(req.user.userId)
-  const { provider, geminiApiKey, baseUrl, apiKey, modelId, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = req.body ?? {}
+  const { provider, geminiApiKey, baseUrl, apiKey, modelId, isReasoningModel, azureEndpoint, azureApiKey, azureDeploymentName, azureReasoningEffort } = req.body ?? {}
 
   if (!provider || !['gemini', 'custom', 'azure'].includes(provider)) {
     return res.status(400).json({ error: '無效的 provider' })
@@ -2975,7 +3383,7 @@ app.post('/api/container/update-llm', requireAuth, requireAdmin, async (req, res
           apiKey: 'dummy-key',
           modelId: azureDeploymentName,
         }
-      : { provider: 'custom', baseUrl, apiKey, modelId }
+      : { provider: 'custom', baseUrl, apiKey, modelId, isReasoningModel: !!isReasoningModel }
 
   try {
     const cfg = buildOpenClawConfig(gatewayToken, llmConfig, { hostPort })

@@ -192,6 +192,13 @@
                   <input v-model="newModelId" type="text" placeholder="gpt-4o"
                     class="w-full px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
+                <label class="flex items-start gap-2 cursor-pointer">
+                  <input v-model="newIsReasoningModel" type="checkbox" class="mt-0.5 w-4 h-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-blue-500" />
+                  <span class="text-sm">
+                    這是推理模型（gpt-5 / o1 / o3 系列等）
+                    <span class="block text-xs text-slate-400 mt-0.5">這類模型不接受舊式 max_tokens 參數，勾選後會改用 max_completion_tokens，否則呼叫會被直接拒絕、完全沒有回應</span>
+                  </span>
+                </label>
               </div>
 
               <p v-if="llmUpdateError" class="text-sm text-red-500">{{ llmUpdateError }}</p>
@@ -338,6 +345,7 @@ const reasoningEffortOptions = [
 ]
 const newApiKey = ref('')
 const newModelId = ref('')
+const newIsReasoningModel = ref(false)
 const showNewKey = ref(false)
 const isUpdatingLlm = ref(false)
 const llmUpdateError = ref('')
@@ -367,6 +375,7 @@ async function applyLlmUpdate() {
     body.baseUrl = newBaseUrl.value.trim()
     body.apiKey = newApiKey.value.trim()
     body.modelId = newModelId.value.trim()
+    body.isReasoningModel = newIsReasoningModel.value
   } else {
     llmUpdateError.value = '請選擇 Provider'; return
   }
