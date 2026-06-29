@@ -25,49 +25,66 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
-  clawpm-backend:
+  # # ── ClawPM Backend (Node.js API) ───────────────────────────────────────────
+  # clawpm-backend:
+  #   build:
+  #     context: .
+  #     dockerfile: backend/Dockerfile
+  #   image: clawpm-backend:latest
+  #   container_name: clawpm-backend
+  #   restart: unless-stopped
+  #   depends_on:
+  #     clawpm-db:
+  #       condition: service_healthy
+  #   env_file:
+  #     - ./backend/.env
+  #   environment:
+  #     # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
+  #     OPENCLAW_GATEWAY_HOST: host.docker.internal
+  #     # FTP server 與 backend 同在 compose 網路內，直接用 service name
+  #     FTP_HOST: openclaw-ftp-server
+  #     FTP_USER: ${FTP_USER}
+  #     FTP_PASS: ${FTP_PASS}
+  #     # # SearXNG 暫時走 host machine（host 上需有 SearXNG 跑在 SEARXNG_PORT）
+  #     # SEARXNG_BASE_URL: http://host.docker.internal:${SEARXNG_PORT:-8080}
+  #     # SearXNG 同在 compose 網路內，用 service name 連線（不能用 localhost）
+  #     SEARXNG_BASE_URL: http://searxng-core:${SEARXNG_PORT:-8080}
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   ports:
+  #     - "${API_PORT:-3002}:${API_PORT:-3002}"
+  #   volumes:
+  #     - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "wget -qO- http://localhost:${API_PORT:-3002}/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 15s
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "50m"
+  #       max-file: "5"
+
+  # ── Unoserver（LibreOffice 轉檔 sidecar，給 PPTX 整頁截圖用） ───────────────
+  clawpm-unoserver:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
-    image: clawpm-backend:latest
-    container_name: clawpm-backend
+      context: ./docker/converter
+    image: clawpm-unoserver:latest
+    container_name: clawpm-unoserver
     restart: unless-stopped
-    depends_on:
-      clawpm-db:
-        condition: service_healthy
-    env_file:
-      - ./backend/.env
-    environment:
-      # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
-      OPENCLAW_GATEWAY_HOST: host.docker.internal
-      # FTP server 與 backend 同在 compose 網路內，直接用 service name
-      FTP_HOST: openclaw-ftp-server
-      FTP_USER: ${FTP_USER}
-      FTP_PASS: ${FTP_PASS}
-      # # SearXNG 暫時走 host machine（host 上需有 SearXNG 跑在 SEARXNG_PORT）
-      # SEARXNG_BASE_URL: http://host.docker.internal:${SEARXNG_PORT:-8080}
-      # SearXNG 同在 compose 網路內，用 service name 連線（不能用 localhost）
-      SEARXNG_BASE_URL: http://searxng-core:${SEARXNG_PORT:-8080}
-      DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
-      - "${API_PORT:-3002}:${API_PORT:-3002}"
-    volumes:
-      - ${CLAWPM_WORKSPACE_BASE}:${CLAWPM_WORKSPACE_BASE}
-      - /var/run/docker.sock:/var/run/docker.sock
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:${API_PORT:-3002}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
+      # 發布到 host，讓動態建立的 per-user OpenClaw 容器透過
+      # host.docker.internal 連線過來（它們不在這個 compose network 裡）
+      - "${UNOSERVER_PORT:-2003}:2003"
     logging:
       driver: "json-file"
       options:
-        max-size: "50m"
-        max-file: "5"
+        max-size: "20m"
+        max-file: "3"
 
   # ── FTP Server ─────────────────────────────────────────────────────────────
   openclaw-ftp-server:

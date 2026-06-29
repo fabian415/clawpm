@@ -9,6 +9,7 @@ import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import multer from 'multer'
+import archiver from 'archiver'
 import { Client as FtpClient } from 'basic-ftp'
 import nodemailer from 'nodemailer'
 import { runMigrations } from './src/migrate.js'
@@ -1022,6 +1023,183 @@ app.get('/api/workflow/meeting-notes-result', requireAuth, async (req, res) => {
   }
 })
 
+// 共用：把補充文件的 FTP 路徑轉成 container 內路徑（與 prepare-meeting-notes 相同邏輯）
+function resolveDocContainerPaths(docFtpPaths, provisionUserId) {
+  if (!Array.isArray(docFtpPaths) || docFtpPaths.length === 0) return []
+  const provisionPrefix = `/${provisionUserId}/workspace`
+  const validDocPaths = docFtpPaths.filter(p =>
+    typeof p === 'string' && p.startsWith(`${provisionPrefix}/ftp_data/doc/`)
+  )
+  return validDocPaths.map(p => `${CONTAINER_WORKSPACE}${p.slice(provisionPrefix.length)}`)
+}
+
+// 把 AI 回覆裡可能夾帶的 ```json ... ``` 包裝拆掉，回傳乾淨的字串
+function stripCodeFence(text) {
+  return String(text || '').trim().replace(/^```(?:json|markdown|md)?\n?/, '').replace(/\n?```$/, '').trim()
+}
+
+// Step 4「AI 反思校正」第一步：請 AI 比對逐字稿/補充文件與目前的會議記錄，
+// 回覆一份結構化問題清單（JSON），讓前端以「一題一題、GUI 選項」的方式呈現給使用者作答。
+app.post('/api/workflow/review-meeting-notes', requireAuth, async (req, res) => {
+  const { transcriptContainerPath, meetingNotesContent, meetingDate, docFtpPaths } = req.body ?? {}
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!transcriptContainerPath || !transcriptContainerPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的逐字稿路徑' })
+  }
+  if (typeof meetingNotesContent !== 'string' || !meetingNotesContent.trim()) {
+    return res.status(400).json({ error: '沒有可供校正的會議記錄內容' })
+  }
+
+  const resolvedDate = meetingDate && /^\d{4}-\d{2}-\d{2}$/.test(meetingDate)
+    ? meetingDate
+    : new Date().toISOString().slice(0, 10)
+
+  const promptParts = [
+    '請扮演一位嚴謹的會議記錄審稿人，對以下會議記錄進行「反思校正」（reflective review）：找出記錄中可能與逐字稿或補充文件矛盾、不確定、或遺漏的地方。',
+    '',
+    `本次會議日期：${resolvedDate}`,
+    `逐字稿路徑：${transcriptContainerPath}`,
+  ]
+
+  const containerDocPaths = resolveDocContainerPaths(docFtpPaths, provisionUserId)
+  if (containerDocPaths.length > 0) {
+    promptParts.push(`本次會議補充文件：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}`)
+  }
+
+  promptParts.push(
+    '',
+    '目前畫面上的會議記錄內容（使用者可能已手動編輯過，請以此版本為校對基準）：',
+    '```',
+    meetingNotesContent,
+    '```',
+    '',
+    '請完整讀取逐字稿原文（若有補充文件也一併讀取），逐項比對上方會議記錄，找出其中最多 7 點可能矛盾、不確定或遺漏之處，優先檢查：決議事項是否真有共識、行動項目的負責人與期限是否能從逐字稿明確得出（而非泛稱）、金額/日期/數字是否抄錯、人名職稱與專有名詞是否可能聽錯或誤植。',
+    '',
+    '不要在這次回覆中修改任何檔案，也不要輸出任何說明文字、前言或客套話。請直接回覆一個 JSON 陣列字串（不要用 ```包住），格式如下：',
+    '[{"question": "問題文字", "type": "choice", "options": ["選項一", "選項二", "其他／我自己填寫"]}, {"question": "問題文字", "type": "text"}]',
+    '',
+    '規則：',
+    '- type 只能是 "choice" 或 "text"；能歸納出 2～4 個合理選項時用 "choice"（最後一項固定放「其他／我自己填寫」），無法歸納選項時用 "text"',
+    '- 若比對後完全找不到值得質疑的點，請直接回覆空陣列 []',
+    '- 只回覆 JSON 本身，不要有任何其他文字',
+  )
+
+  const prompt = promptParts.join('\n')
+
+  try {
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('meeting-notes-review-q')
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
+    const raw = stripCodeFence(lastMsg.content)
+
+    let questions
+    try {
+      questions = JSON.parse(raw)
+    } catch {
+      return res.status(502).json({ error: 'AI 回覆格式無法解析，請重試一次' })
+    }
+    if (!Array.isArray(questions)) {
+      return res.status(502).json({ error: 'AI 回覆格式不正確，請重試一次' })
+    }
+
+    const cleaned = questions
+      .filter(q => q && typeof q.question === 'string' && q.question.trim())
+      .slice(0, 8)
+      .map(q => {
+        const isChoice = q.type === 'choice' && Array.isArray(q.options) && q.options.filter(o => typeof o === 'string' && o.trim()).length >= 2
+        return isChoice
+          ? { question: q.question.trim(), type: 'choice', options: q.options.filter(o => typeof o === 'string' && o.trim()).slice(0, 5) }
+          : { question: q.question.trim(), type: 'text' }
+      })
+
+    res.json({ success: true, questions: cleaned })
+  } catch (err) {
+    res.status(502).json({ error: err.message || 'AI 反思校正失敗' })
+  }
+})
+
+// Step 4「AI 反思校正」第二步：使用者透過 GUI 一題一題回答後，送出全部問答，
+// 請 AI 依據回答修正會議記錄全文，並直接覆寫回原本的固定輸出路徑。
+app.post('/api/workflow/review-meeting-notes/apply', requireAuth, async (req, res) => {
+  const { transcriptContainerPath, meetingNotesOutputPath, meetingNotesContent, meetingDate, docFtpPaths, answers } = req.body ?? {}
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+
+  const containerPrefix = `${CONTAINER_WORKSPACE}/`
+  if (!transcriptContainerPath || !transcriptContainerPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的逐字稿路徑' })
+  }
+  if (!meetingNotesOutputPath || !meetingNotesOutputPath.startsWith(containerPrefix)) {
+    return res.status(400).json({ error: '無效的會議記錄路徑' })
+  }
+  if (typeof meetingNotesContent !== 'string' || !meetingNotesContent.trim()) {
+    return res.status(400).json({ error: '沒有可供校正的會議記錄內容' })
+  }
+  if (!Array.isArray(answers) || answers.length === 0) {
+    return res.status(400).json({ error: '沒有可套用的回答' })
+  }
+
+  const resolvedDate = meetingDate && /^\d{4}-\d{2}-\d{2}$/.test(meetingDate)
+    ? meetingDate
+    : new Date().toISOString().slice(0, 10)
+
+  const qaText = answers
+    .filter(a => a && typeof a.question === 'string')
+    .map((a, i) => `${i + 1}. ${a.question}\n   使用者回答：${(a.answer || '（使用者未提供答案，請維持原記錄該處內容）').toString().trim()}`)
+    .join('\n')
+
+  const promptParts = [
+    '使用者已針對「會議記錄反思校正」的提問逐一回覆，請依據以下回答修正會議記錄全文。',
+    '',
+    `本次會議日期：${resolvedDate}`,
+    `逐字稿路徑：${transcriptContainerPath}`,
+  ]
+
+  const containerDocPaths = resolveDocContainerPaths(docFtpPaths, provisionUserId)
+  if (containerDocPaths.length > 0) {
+    promptParts.push(`本次會議補充文件：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}`)
+  }
+
+  promptParts.push(
+    '',
+    '使用者的問答：',
+    qaText,
+    '',
+    '修正前的會議記錄全文：',
+    '```',
+    meetingNotesContent,
+    '```',
+    '',
+    '請直接回覆修正後的會議記錄**全文**（Markdown），維持原本依錄音類型的章節範本與格式，只更動使用者回答所對應、或因此而需要連動調整的內容，其餘原文不要省略或改寫。只回覆會議記錄全文本身，不要加任何前言、說明或 ``` 包裝。',
+  )
+
+  const prompt = promptParts.join('\n')
+
+  try {
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('meeting-notes-review-apply')
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
+    const corrected = stripCodeFence(lastMsg.content)
+
+    if (!corrected || corrected.length < meetingNotesContent.length * 0.3) {
+      return res.status(502).json({ error: 'AI 回覆內容異常（過短或為空），請重試一次，原記錄未被覆寫' })
+    }
+
+    const paths = getUserPaths(provisionUserId)
+    const relPath = meetingNotesOutputPath.slice(CONTAINER_WORKSPACE.length)
+    const hostPath = path.join(paths.workspace, relPath)
+    if (!hostPath.startsWith(paths.workspace)) {
+      return res.status(403).json({ error: '無權限' })
+    }
+
+    fs.writeFileSync(hostPath, corrected, 'utf8')
+    res.json({ success: true, content: corrected })
+  } catch (err) {
+    res.status(502).json({ error: err.message || 'AI 套用校正失敗' })
+  }
+})
+
 app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
   const { recipients, subject, content, transcriptContent } = req.body ?? {}
 
@@ -1301,6 +1479,72 @@ app.get('/api/project-insights/list', requireAuth, async (req, res) => {
   })
 
   res.json({ files, projects, hostPath: hostInsightsDir })
+})
+
+// Bundles a project's knowledge base file plus its SWOT/market/tech/record
+// archives and any _assets images referenced from those markdown files into
+// a single zip for the user to download.
+app.get('/api/project-insights/export', requireAuth, async (req, res) => {
+  const { slug } = req.query
+  if (!validSlug(slug)) {
+    return res.status(400).json({ error: '無效的專案識別碼' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const mdPath = path.join(hostInsightsDir, `${slug}.md`)
+
+  if (!mdPath.startsWith(hostInsightsDir + path.sep) || !fs.existsSync(mdPath)) {
+    return res.status(404).json({ error: '專案不存在' })
+  }
+
+  const referencedAssets = new Set()
+  const collectAssetRefs = (content) => {
+    for (const m of content.matchAll(/_assets\/([^)\s"']+)/g)) referencedAssets.add(m[1])
+  }
+
+  const archive = archiver('zip', { zlib: { level: 9 } })
+  archive.on('error', (err) => {
+    console.error('[export] archive error:', err.message)
+    if (!res.headersSent) res.status(500).json({ error: '匯出失敗' })
+    else res.end()
+  })
+
+  res.setHeader('Content-Type', 'application/zip')
+  res.setHeader('Content-Disposition', `attachment; filename="${slug}-export.zip"`)
+  archive.pipe(res)
+
+  const mdContent = fs.readFileSync(mdPath, 'utf8')
+  collectAssetRefs(mdContent)
+  archive.append(mdContent, { name: `${slug}.md` })
+
+  const subDirs = [
+    ['record', recordDir],
+    ['swot', swotDir],
+    ['market', marketDir],
+    ['tech', techDir],
+  ]
+  for (const [label, dirFn] of subDirs) {
+    const dir = dirFn(hostInsightsDir, slug)
+    if (!fs.existsSync(dir)) continue
+    for (const f of fs.readdirSync(dir)) {
+      if (f.endsWith('.md')) collectAssetRefs(fs.readFileSync(path.join(dir, f), 'utf8'))
+    }
+    archive.directory(dir, `${label}-${slug}`)
+  }
+
+  const assetsDir = assetsDirFor(hostInsightsDir)
+  if (fs.existsSync(assetsDir)) {
+    for (const file of referencedAssets) {
+      const assetPath = path.join(assetsDir, file)
+      if (assetPath.startsWith(assetsDir + path.sep) && fs.existsSync(assetPath)) {
+        archive.file(assetPath, { name: `_assets/${file}` })
+      }
+    }
+  }
+
+  archive.finalize()
 })
 
 app.get('/api/project-insights/file', requireAuth, async (req, res) => {
@@ -1671,6 +1915,7 @@ app.post('/api/swot/analyze', requireAuth, async (req, res) => {
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
 
   const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+  const recordFolderContainerPath = `${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}`
 
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -1687,6 +1932,7 @@ app.post('/api/swot/analyze', requireAuth, async (req, res) => {
     `專案名稱：${displayName}`,
     `分析日期：${today}`,
     `專案洞察來源檔案：${projectContainerPath}`,
+    `專案會議記錄資料夾（逐次會議的原始記錄全文，依日期分檔）：${recordFolderContainerPath}/（若存在，請列出並讀取其中所有 .md 檔案）`,
     '',
     '分析範疇：完整 SWOT（含初步競品掃描與產業趨勢）',
     '輸出目標：standalone',
@@ -1694,7 +1940,7 @@ app.post('/api/swot/analyze', requireAuth, async (req, res) => {
     `（請先建立資料夾 ${swotFolderContainer}/ 若尚未存在）`,
     '',
     '請依照 skill 工作流程完整執行：',
-    `1. 讀取 ${projectContainerPath}，從中提取已知事實作為內部事實基礎（標記來源日期）`,
+    `1. 讀取 ${projectContainerPath}，並列出 ${recordFolderContainerPath}/ 下所有檔案逐一讀取，從兩者中提取已知事實作為內部事實基礎（標記來源日期；專案 Markdown 為整理後事實，記錄資料夾為逐次會議原文，遇到不一致以記錄資料夾的逐次原文為準並標註待確認）`,
     '2. 執行外部研究（搜尋相關市場資料、競品資訊、產業趨勢）',
     '3. 合成 SWOT 矩陣（嚴格區分會議事實層與外部 insights 層）',
     '4. 整理競品分析（每個競品描述附官方來源 URL）',
@@ -1827,6 +2073,7 @@ app.post('/api/market/analyze', requireAuth, async (req, res) => {
   const paths = getUserPaths(provisionUserId)
 
   const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+  const recordFolderContainerPath = `${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}`
 
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -1843,6 +2090,7 @@ app.post('/api/market/analyze', requireAuth, async (req, res) => {
     `專案名稱：${displayName}`,
     `分析日期：${today}`,
     `專案洞察來源檔案：${projectContainerPath}`,
+    `專案會議記錄資料夾（逐次會議的原始記錄全文，依日期分檔）：${recordFolderContainerPath}/（若存在，請列出並讀取其中所有 .md 檔案）`,
     '',
     '行銷重點：痛點解決、ROI 佐證、競品比較、產業趨勢',
     '目標讀者：非技術決策者（IT 採購主管、中小企業主、部門主管）',
@@ -1851,7 +2099,7 @@ app.post('/api/market/analyze', requireAuth, async (req, res) => {
     `（請先建立資料夾 ${marketFolderContainer}/ 若尚未存在）`,
     '',
     '請依照 skill 工作流程完整執行：',
-    `1. 讀取 ${projectContainerPath}，提取產品功能、客戶案例、效益數字作為事實基礎（標記來源日期）`,
+    `1. 讀取 ${projectContainerPath}，並列出 ${recordFolderContainerPath}/ 下所有檔案逐一讀取，從兩者中提取產品功能、客戶案例、效益數字作為事實基礎（標記來源日期；專案 Markdown 為整理後事實，記錄資料夾為逐次會議原文，可從中挖出整理稿未收錄的具體案例與數字細節）`,
     '2. 執行外部市場研究（搜尋市場規模、客戶痛點現況、競品行銷說法、產業趨勢）',
     '3. 選定痛點導向敘事框架，以平易近人語言撰寫（把技術詞彙翻成業務語言）',
     '4. 整理市場佐證數字（每項附來源 URL 與日期）',
@@ -1981,6 +2229,7 @@ app.post('/api/tech/analyze', requireAuth, async (req, res) => {
   const paths = getUserPaths(provisionUserId)
 
   const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+  const recordFolderContainerPath = `${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}`
 
   const now = new Date()
   const pad = n => String(n).padStart(2, '0')
@@ -1997,6 +2246,7 @@ app.post('/api/tech/analyze', requireAuth, async (req, res) => {
     `專案名稱：${displayName}`,
     `分析日期：${today}`,
     `專案洞察來源檔案：${projectContainerPath}`,
+    `專案會議記錄資料夾（逐次會議的原始記錄全文，依日期分檔）：${recordFolderContainerPath}/（若存在，請列出並讀取其中所有 .md 檔案）`,
     '',
     '文章深度：deep-dive',
     '目標讀者：有技術背景的工程師與架構師',
@@ -2005,7 +2255,7 @@ app.post('/api/tech/analyze', requireAuth, async (req, res) => {
     `（請先建立資料夾 ${techFolderContainer}/ 若尚未存在）`,
     '',
     '請依照 skill 工作流程完整執行：',
-    `1. 讀取 ${projectContainerPath}，提取技術架構、設計決策、效能指標與技術突破點（標記來源日期）`,
+    `1. 讀取 ${projectContainerPath}，並列出 ${recordFolderContainerPath}/ 下所有檔案逐一讀取，從兩者中提取技術架構、設計決策、效能指標與技術突破點（標記來源日期；專案 Markdown 為整理後事實，記錄資料夾為逐次會議原文，可從中挖出整理稿未收錄的實作細節與數字）`,
     '2. 識別 1-3 個最有看點的核心技術突破作為文章主軸',
     '3. 執行外部技術研究（搜尋業界做法比較、相關技術規範、知名公司類似實踐）',
     '4. 以「問題解決型」結構撰寫：背景 → 挑戰 → 解法 → 實作 → 結果 → 延伸',

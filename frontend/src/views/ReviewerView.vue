@@ -259,9 +259,22 @@
                       </button>
                     </div>
                   </td>
+                  <td class="py-4 pl-2" @click.stop>
+                    <button
+                      @click="exportProjectBundle(p)"
+                      :disabled="exportingSlug === p.slug"
+                      class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap disabled:opacity-50"
+                      title="匯出此專案所有資料（zip）"
+                    >
+                      <Loader2 v-if="exportingSlug === p.slug" class="w-3.5 h-3.5 animate-spin" />
+                      <Download v-else class="w-3.5 h-3.5" />
+                      匯出
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
+            <p v-if="exportError" class="text-sm text-red-500 mt-3">{{ exportError }}</p>
           </template>
         </div>
 
@@ -515,6 +528,35 @@ function exportFile() {
   a.download = `${currentSlug.value}.md`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+const exportingSlug = ref('')
+const exportError = ref('')
+
+async function exportProjectBundle(p) {
+  if (exportingSlug.value) return
+  exportingSlug.value = p.slug
+  exportError.value = ''
+  try {
+    const res = await fetch(`/api/project-insights/export?slug=${encodeURIComponent(p.slug)}`, { headers: authHeaders() })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      throw new Error(d.error || '匯出失敗')
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${p.slug}-export.zip`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    exportError.value = `匯出失敗：${err.message}`
+  } finally {
+    exportingSlug.value = ''
+  }
 }
 
 async function copyContent() {

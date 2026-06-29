@@ -36,6 +36,10 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
   const env = [
     `HOME=/home/node`,
     `TERM=xterm-256color`,
+    // unoserver sidecar（clawpm-unoserver，見 docker-compose.yml）發布在 host 上的 port，
+    // 這個容器走預設 bridge network 連不到 compose network，所以走 host.docker.internal
+    `UNOSERVER_HOST=${process.env.UNOSERVER_HOST || 'host.docker.internal'}`,
+    `UNOSERVER_PORT=${process.env.UNOSERVER_PORT || '2003'}`,
   ]
   if (gatewayToken) env.push(`OPENCLAW_GATEWAY_TOKEN=${gatewayToken}`)
 

@@ -98,39 +98,74 @@ def _save_image(output_dir: Path, prefix: str, location_tag: str, seq: int, ext:
 
 
 def extract_pptx(path: Path, output_dir: Path, min_size: int, seen_hashes: set[str]) -> list[dict]:
+    """Render each slide as a full-page screenshot instead of pulling embedded
+    media objects, since the latter mostly surfaces decorative icons/logos
+    rather than the slide's actual visual content.
+
+    The PPTX->PDF conversion is delegated to a remote `unoserver` sidecar
+    (see docker/converter/Dockerfile) instead of a local LibreOffice install,
+    so this image only needs the lightweight `unoserver` pip client."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
     try:
         from pptx import Presentation
-        from pptx.enum.shapes import MSO_SHAPE_TYPE
     except ImportError as exc:
-        raise RuntimeError("python-pptx is required to read PPTX files (pip install python-pptx)") from exc
+        raise RuntimeError("python-pptx is required to read PPTX slide captions (pip install python-pptx)") from exc
+    try:
+        import fitz  # PyMuPDF
+    except ImportError as exc:
+        raise RuntimeError("pymupdf is required to render PPTX slides (pip install pymupdf)") from exc
+
+    unoconvert = shutil.which("unoconvert")
+    if not unoconvert:
+        raise RuntimeError("unoconvert is required to render PPTX slides (pip install unoserver)")
+
+    host = os.environ.get("UNOSERVER_HOST", "host.docker.internal")
+    port = os.environ.get("UNOSERVER_PORT", "2003")
 
     prefix = _unique_prefix(path)
-    prs = Presentation(path)
+    captions = [_pptx_slide_caption(slide) for slide in Presentation(path).slides]
     results = []
 
-    for slide_idx, slide in enumerate(prs.slides, start=1):
-        caption = _pptx_slide_caption(slide)
-        seq = 0
-        for shape in slide.shapes:
-            if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
-                continue
-            image = shape.image
-            width, height = image.size
-            if width < min_size or height < min_size:
-                continue
-            seq += 1
-            filename = _save_image(output_dir, prefix, f"slide{slide_idx}", seq, image.ext, image.blob, seen_hashes)
-            if not filename:
-                continue
-            results.append({
-                "file": filename,
-                "sourceFile": path.name,
-                "sourceType": "pptx",
-                "location": f"投影片 {slide_idx}",
-                "width": width,
-                "height": height,
-                "captionHint": caption,
-            })
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        pdf_path = tmp_dir / f"{path.stem}.pdf"
+        proc = subprocess.run(
+            [unoconvert, "--host", host, "--port", str(port), "--host-location", "remote",
+             "--convert-to", "pdf", str(path), str(pdf_path)],
+            capture_output=True, text=True, timeout=180,
+        )
+        if proc.returncode != 0 or not pdf_path.exists():
+            raise RuntimeError(
+                f"unoserver ({host}:{port}) 轉換 PPTX 失敗，請確認 clawpm-unoserver 容器是否在跑: "
+                f"{(proc.stderr or proc.stdout).strip()[:200]}"
+            )
+
+        doc = fitz.open(str(pdf_path))
+        try:
+            matrix = fitz.Matrix(2.0, 2.0)  # ~144 DPI，足夠辨識文字與圖表細節
+            for slide_idx in range(len(doc)):
+                pix = doc[slide_idx].get_pixmap(matrix=matrix)
+                if pix.width < min_size or pix.height < min_size:
+                    continue
+                filename = _save_image(output_dir, prefix, f"slide{slide_idx + 1}", 1, "png",
+                                        pix.tobytes("png"), seen_hashes)
+                if not filename:
+                    continue
+                results.append({
+                    "file": filename,
+                    "sourceFile": path.name,
+                    "sourceType": "pptx",
+                    "location": f"投影片 {slide_idx + 1}",
+                    "width": pix.width,
+                    "height": pix.height,
+                    "captionHint": captions[slide_idx] if slide_idx < len(captions) else "",
+                })
+        finally:
+            doc.close()
     return results
 
 

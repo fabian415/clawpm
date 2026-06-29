@@ -560,15 +560,29 @@
         <!-- Header -->
         <div class="flex items-center justify-between">
           <h3 class="text-xl font-bold">會議記錄</h3>
-          <select
-            v-model="meetingNotesType"
-            class="text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            <option>商務會議</option>
-            <option>訪談與使用者研究</option>
-            <option>知識學習與演講</option>
-            <option>專案評審</option>
-          </select>
+          <div class="flex items-center gap-2">
+            <button
+              @click="startMeetingNotesReview"
+              :disabled="!meetingNotesContent || reviewLoadingQuestions"
+              class="text-sm bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-1.5 font-medium flex items-center gap-1.5 hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Loader2 v-if="reviewLoadingQuestions" class="w-3.5 h-3.5 animate-spin" />
+              <Sparkles v-else class="w-3.5 h-3.5" /> AI 反思校正
+            </button>
+            <select
+              v-model="meetingNotesType"
+              class="text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option>商務會議</option>
+              <option>訪談與使用者研究</option>
+              <option>知識學習與演講</option>
+              <option>專案評審</option>
+            </select>
+          </div>
+        </div>
+
+        <div v-if="reviewError" class="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl text-sm text-red-600 dark:text-red-400">
+          {{ reviewError }}
         </div>
 
         <!-- Editable notes -->
@@ -873,6 +887,92 @@
     </button>
     <img :src="assetUrl(lightboxImage)" class="max-w-full max-h-full rounded-lg shadow-2xl" @click.stop />
   </div>
+
+  <!-- Meeting Notes Reflective Review (Grill Me) Modal -->
+  <div v-if="reviewPanelOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="!reviewLoadingQuestions && !reviewApplying && closeReviewPanel()">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-5">
+      <!-- Generating questions -->
+      <div v-if="reviewLoadingQuestions" class="text-center py-8">
+        <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
+        <p class="text-sm text-slate-500">AI 正在比對逐字稿與會議記錄...</p>
+      </div>
+
+      <!-- No issues found -->
+      <div v-else-if="reviewNoIssues" class="text-center py-6 space-y-3">
+        <Check class="w-10 h-10 text-emerald-500 mx-auto" />
+        <p class="font-medium">本記錄與逐字稿／補充文件高度一致</p>
+        <p class="text-sm text-slate-500">未發現需要校正的問題</p>
+        <button @click="closeReviewPanel" class="mt-2 bg-slate-100 dark:bg-slate-800 px-5 py-2 rounded-xl text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700">關閉</button>
+      </div>
+
+      <!-- Applying answers -->
+      <div v-else-if="reviewApplying" class="text-center py-8">
+        <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
+        <p class="text-sm text-slate-500">AI 正在依您的回答修正會議記錄...</p>
+      </div>
+
+      <!-- Question wizard -->
+      <div v-else-if="currentReviewQuestion" class="space-y-5">
+        <div class="flex items-center justify-between">
+          <h4 class="font-bold flex items-center gap-2"><Sparkles class="w-4 h-4 text-amber-500" /> AI 反思校正</h4>
+          <button @click="closeReviewPanel" class="text-slate-400 hover:text-slate-600">
+            <X class="w-5 h-5" />
+          </button>
+        </div>
+        <p class="text-xs text-slate-400">問題 {{ reviewQuestionIndex + 1 }} / {{ reviewQuestions.length }}</p>
+
+        <p class="text-sm font-medium leading-relaxed">{{ currentReviewQuestion.question }}</p>
+
+        <div v-if="currentReviewQuestion.type === 'choice'" class="space-y-2">
+          <button
+            v-for="opt in currentReviewQuestion.options"
+            :key="opt"
+            @click="selectReviewOption(opt)"
+            :class="currentReviewQuestion.answer === opt
+              ? 'bg-amber-500 text-white border-amber-500'
+              : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-amber-300'"
+            class="w-full text-left text-sm px-4 py-2.5 rounded-xl border transition-colors"
+          >
+            {{ opt }}
+          </button>
+          <input
+            v-if="isOtherSelected"
+            v-model="currentReviewQuestion.customAnswer"
+            type="text"
+            placeholder="請填寫您的答案..."
+            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+          />
+        </div>
+        <textarea
+          v-else
+          v-model="currentReviewQuestion.answer"
+          rows="3"
+          placeholder="請輸入您的答案..."
+          class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+        ></textarea>
+
+        <p v-if="reviewApplyError" class="text-xs text-red-500">{{ reviewApplyError }}</p>
+
+        <div class="flex items-center justify-between pt-2">
+          <button
+            @click="reviewQuestionIndex--"
+            :disabled="reviewQuestionIndex === 0"
+            class="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+          >上一題</button>
+          <button
+            v-if="reviewQuestionIndex < reviewQuestions.length - 1"
+            @click="reviewQuestionIndex++"
+            class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
+          >下一題</button>
+          <button
+            v-else
+            @click="submitMeetingNotesReview"
+            class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
+          >送出修正</button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -1153,6 +1253,14 @@ async function retryStep() {
 const meetingNotesOutputPath = ref(null)
 const meetingNotesContent = ref('')
 const meetingNotesType = ref('商務會議')
+const reviewPanelOpen = ref(false)
+const reviewLoadingQuestions = ref(false)
+const reviewQuestions = ref([])
+const reviewQuestionIndex = ref(0)
+const reviewNoIssues = ref(false)
+const reviewApplying = ref(false)
+const reviewApplyError = ref('')
+const reviewError = ref('')
 const emailTo = ref('')
 const emailSending = ref(false)
 const emailSent = ref(false)
@@ -1503,6 +1611,101 @@ function startMeetingNotesPolling() {
     meetingNotesPollTimer = setTimeout(poll, 10000)
   }
   meetingNotesPollTimer = setTimeout(poll, 10000)
+}
+
+const currentReviewQuestion = computed(() => reviewQuestions.value[reviewQuestionIndex.value] || null)
+const isOtherSelected = computed(() => {
+  const q = currentReviewQuestion.value
+  return !!q && q.type === 'choice' && typeof q.answer === 'string' && q.answer.includes('其他')
+})
+
+function selectReviewOption(opt) {
+  reviewQuestions.value[reviewQuestionIndex.value].answer = opt
+}
+
+function resolvedReviewAnswer(q) {
+  if (q.type === 'choice' && typeof q.answer === 'string' && q.answer.includes('其他')) {
+    return (q.customAnswer || '').trim() || q.answer
+  }
+  return (q.answer || '').trim()
+}
+
+async function startMeetingNotesReview() {
+  if (!transcriptContainerPath.value || !meetingNotesContent.value) return
+
+  reviewError.value = ''
+  reviewNoIssues.value = false
+  reviewQuestions.value = []
+  reviewQuestionIndex.value = 0
+  reviewLoadingQuestions.value = true
+  reviewPanelOpen.value = true
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/review-meeting-notes', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcriptContainerPath: transcriptContainerPath.value,
+        meetingNotesContent: meetingNotesContent.value,
+        meetingDate: meetingDate.value,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '啟動反思校正失敗')
+
+    if (!data.questions || data.questions.length === 0) {
+      reviewNoIssues.value = true
+    } else {
+      reviewQuestions.value = data.questions.map(q => ({ ...q, answer: '', customAnswer: '' }))
+    }
+  } catch (err) {
+    reviewError.value = err.message
+    reviewPanelOpen.value = false
+  } finally {
+    reviewLoadingQuestions.value = false
+  }
+}
+
+async function submitMeetingNotesReview() {
+  reviewApplying.value = true
+  reviewApplyError.value = ''
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const answers = reviewQuestions.value.map(q => ({ question: q.question, answer: resolvedReviewAnswer(q) }))
+    const res = await fetch('/api/workflow/review-meeting-notes/apply', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcriptContainerPath: transcriptContainerPath.value,
+        meetingNotesOutputPath: meetingNotesOutputPath.value,
+        meetingNotesContent: meetingNotesContent.value,
+        meetingDate: meetingDate.value,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
+        answers,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '套用校正失敗')
+
+    meetingNotesContent.value = data.content
+    closeReviewPanel()
+    emit('toast', '已完成 AI 反思校正並更新會議記錄')
+  } catch (err) {
+    reviewApplyError.value = err.message
+  } finally {
+    reviewApplying.value = false
+  }
+}
+
+function closeReviewPanel() {
+  reviewPanelOpen.value = false
+  reviewQuestions.value = []
+  reviewQuestionIndex.value = 0
+  reviewNoIssues.value = false
+  reviewApplyError.value = ''
 }
 
 function styleEmailHtml(html) {

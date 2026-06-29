@@ -452,13 +452,21 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
       finishTimer = setTimeout(() => { readNewContent(); finish() }, delayMs)
     }
 
-    // If no assistant content appears within FIRST_CONTENT_TIMEOUT_MS, give up.
-    firstContentTimer = setTimeout(() => {
-      if (!lastAssistantMsg && !finished) {
-        dbgWarn(`[streamFromFile] no content after ${FIRST_CONTENT_TIMEOUT_MS/1000}s, giving up. watchFile=${watchFile}`)
-        finish()
-      }
-    }, FIRST_CONTENT_TIMEOUT_MS)
+    // If no assistant content AND no tool/process activity appears within
+    // FIRST_CONTENT_TIMEOUT_MS, give up. Process entries (tool calls, file
+    // operations) restart this timer since they prove the agent is still
+    // alive — long multi-step tasks can spend well over 90s on tool calls
+    // before producing their first text reply.
+    const armFirstContentTimer = () => {
+      clearTimeout(firstContentTimer)
+      firstContentTimer = setTimeout(() => {
+        if (!lastAssistantMsg && !finished) {
+          dbgWarn(`[streamFromFile] no content/activity after ${FIRST_CONTENT_TIMEOUT_MS/1000}s, giving up. watchFile=${watchFile}`)
+          finish()
+        }
+      }, FIRST_CONTENT_TIMEOUT_MS)
+    }
+    armFirstContentTimer()
 
     const readNewContent = () => {
       if (finished || !fs.existsSync(watchFile)) return
@@ -504,6 +512,8 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
           } else if (msg.isProcess) {
             dbg(`[streamFromFile] process entry: role=${msg.role} name=${msg.name} contentLen=${msg.content?.length ?? 0}`)
             processEntries = [...processEntries, msg]
+            // Tool/system activity is a liveness signal — extend the no-response window.
+            if (!lastAssistantMsg) armFirstContentTimer()
             onUpdate({ lastAssistantMsg, processEntries, done: false })
           }
         }
