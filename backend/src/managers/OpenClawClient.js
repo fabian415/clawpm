@@ -29,7 +29,7 @@ const POLL_INTERVAL_MS = 300
 const POLL_STABLE_COUNT = 2          // consecutive unchanged polls before declaring done
 const POLL_TIMEOUT_MS = 120_000      // chat.send RPC call timeout
 const FILE_WATCH_TIMEOUT_MS = 30 * 60 * 1000  // 30-min hard ceiling for JSONL watching
-const FIRST_CONTENT_TIMEOUT_MS = 90_000       // give up if no assistant content after 90s
+const FIRST_CONTENT_TIMEOUT_MS = 600_000      // give up if no assistant content/activity after 10min
 
 const dbg = (...a) => { if (process.env.DEBUG_LOGS) console.log(...a) }
 const dbgErr = (...a) => { if (process.env.DEBUG_LOGS) console.error(...a) }

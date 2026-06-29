@@ -438,7 +438,6 @@ async function runInsightsStep(task, paths) {
       '7. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
       '8. 完成後回報各專案更新情況、目前進度、對外發表成熟度、主要缺口，以及 Step 5.5 自查結果',
       '',
-      '請直接執行，無需確認。',
     )
   } else {
     parts.push(
@@ -450,7 +449,6 @@ async function runInsightsStep(task, paths) {
       '5. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
       '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
       '',
-      '請直接執行，無需確認。',
     )
   }
 
