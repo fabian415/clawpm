@@ -612,6 +612,7 @@ function assetUrl(src) {
 
 function inlineMd(t) {
   return escapeHtml(t)
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br>')
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
