@@ -218,10 +218,25 @@
                   <td class="py-4 pr-6">
                     <span class="text-slate-600 dark:text-slate-400">{{ p.stage || '—' }}</span>
                   </td>
-                  <td class="py-4 pr-6">
-                    <span v-if="p.maturity" :class="maturityClass(p.maturity)" class="text-xs font-bold px-2.5 py-1 rounded-full">
-                      {{ p.maturity }}
-                    </span>
+                  <td class="py-4 pr-6 min-w-[160px]">
+                    <div v-if="p.maturity || p.maturityScore != null" class="flex flex-col gap-1">
+                      <div class="flex items-center justify-between gap-2">
+                        <span :class="maturityClass(p.maturity)" class="text-xs font-bold px-2 py-0.5 rounded-full shrink-0">
+                          {{ p.maturity || '—' }}
+                        </span>
+                        <span v-if="p.maturityScore != null" class="text-xs font-mono text-slate-500 dark:text-slate-400 shrink-0">
+                          {{ p.maturityScore }}%
+                        </span>
+                      </div>
+                      <div v-if="p.maturityScore != null" class="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          class="h-full rounded-full transition-all duration-300"
+                          :class="maturityBarClass(p.maturity)"
+                          :style="{ width: `${Math.min(100, Math.max(0, p.maturityScore))}%` }"
+                        ></div>
+                      </div>
+                      <span v-if="p.maturityLevel" class="text-[10px] text-slate-400 dark:text-slate-500">{{ p.maturityLevel }}</span>
+                    </div>
                     <span v-else class="text-slate-300">—</span>
                   </td>
                   <td class="py-4 pr-6">
@@ -723,6 +738,16 @@ function maturityClass(m) {
   if (v.includes('soft launch ready')) return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
   if (v.includes('public launch candidate')) return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
   return 'bg-slate-100 dark:bg-slate-800 text-slate-400'
+}
+
+function maturityBarClass(m) {
+  if (!m) return 'bg-slate-300 dark:bg-slate-600'
+  const v = String(m).toLowerCase()
+  if (v.includes('not ready')) return 'bg-slate-400 dark:bg-slate-500'
+  if (v.includes('internal only')) return 'bg-amber-400 dark:bg-amber-500'
+  if (v.includes('soft launch ready')) return 'bg-blue-400 dark:bg-blue-500'
+  if (v.includes('public launch candidate')) return 'bg-green-400 dark:bg-green-500'
+  return 'bg-slate-300 dark:bg-slate-600'
 }
 
 function maturityShort(m) {

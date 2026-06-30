@@ -1,4 +1,4 @@
-import express from 'express'
+﻿import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import fs from 'node:fs'
@@ -1038,6 +1038,21 @@ function stripCodeFence(text) {
   return String(text || '').trim().replace(/^```(?:json|markdown|md)?\n?/, '').replace(/\n?```$/, '').trim()
 }
 
+// 行號定位替換：AI 指定 start_line/end_line，以 splice 方式替換，不做文字比對
+function applyLinePatches(original, patches) {
+  const norm = s => String(s || '').replace(new RegExp('\r\n', 'g'), '\n').replace(new RegExp('\r', 'g'), '\n')
+  const lines = norm(original).split('\n')
+  const sorted = [...patches].sort((a, b) => Number(b.start_line) - Number(a.start_line))
+  for (const patch of sorted) {
+    const start = parseInt(patch.start_line, 10)
+    const end = parseInt(patch.end_line, 10)
+    if (isNaN(start) || isNaN(end) || start < 1) continue
+    const newLines = norm(String(patch.new_content ?? '')).split('\n')
+    lines.splice(start - 1, end - start + 1, ...newLines)
+  }
+  return lines.join('\n')
+}
+
 // Step 4「AI 反思校正」第一步：請 AI 比對逐字稿/補充文件與目前的會議記錄，
 // 回覆一份結構化問題清單（JSON），讓前端以「一題一題、GUI 選項」的方式呈現給使用者作答。
 app.post('/api/workflow/review-meeting-notes', requireAuth, async (req, res) => {
@@ -1057,7 +1072,7 @@ app.post('/api/workflow/review-meeting-notes', requireAuth, async (req, res) => 
     : new Date().toISOString().slice(0, 10)
 
   const promptParts = [
-    '請扮演一位嚴謹的會議記錄審稿人，對以下會議記錄進行「反思校正」（reflective review）：找出記錄中可能與逐字稿或補充文件矛盾、不確定、或遺漏的地方。',
+    '你是一位熟悉這份會議內容的討論夥伴。請先完整讀取以下逐字稿原文，再閱讀目前的會議記錄，依照記錄中實際討論到的議題，向「當時在場的與會者」提出 10 個開放性的內容問題。',
     '',
     `本次會議日期：${resolvedDate}`,
     `逐字稿路徑：${transcriptContainerPath}`,
@@ -1070,22 +1085,34 @@ app.post('/api/workflow/review-meeting-notes', requireAuth, async (req, res) => 
 
   promptParts.push(
     '',
-    '目前畫面上的會議記錄內容（使用者可能已手動編輯過，請以此版本為校對基準）：',
+    '目前的會議記錄（使用者可能已手動編輯，請以此為基準）：',
     '```',
     meetingNotesContent,
     '```',
     '',
-    '請完整讀取逐字稿原文（若有補充文件也一併讀取），逐項比對上方會議記錄，找出其中最多 7 點可能矛盾、不確定或遺漏之處，優先檢查：決議事項是否真有共識、行動項目的負責人與期限是否能從逐字稿明確得出（而非泛稱）、金額/日期/數字是否抄錯、人名職稱與專有名詞是否可能聽錯或誤植。',
+    '【你的任務】',
+    '請就會議記錄中的各個討論主題，逐一提問——目的是讓與會者「回想並說出他們對這個議題的真實看法或補充」，而不是驗證記錄是否正確。',
+    '',
+    '問題風格指引（以下是方向，不是固定格式）：',
+    '- 針對某個具體的議題或決定，問：當時大家的想法是什麼？有沒有什麼考量是記錄裡沒有寫到的？',
+    '- 針對某個行動項目，問：這件事有沒有前提條件、或你覺得最大的挑戰是什麼？',
+    '- 針對某段討論，問：當時有沒有其他的方向被提出來，或被否決的選項？',
+    '- 針對某個結論，問：這個結論是大家的共識，還是你個人覺得後來還有討論空間的？',
+    '- 問與會者有沒有覺得記錄中哪件事重要程度被低估了，或哪件事其實沒那麼確定？',
+    '',
+    '問題應該具體、直接，每題都要讓人感覺是在討論這場會議本身發生的事，而不是在做技術審查。',
     '',
     '不要在這次回覆中修改任何檔案，也不要輸出任何說明文字、前言或客套話。請直接回覆一個 JSON 陣列字串（不要用 ```包住），格式如下：',
-    '[{"question": "問題文字", "type": "choice", "options": ["選項一", "選項二", "其他／我自己填寫"]}, {"question": "問題文字", "type": "text"}]',
+    '[{"question": "問題文字", "type": "text"}, {"question": "問題文字", "type": "choice", "options": ["選項一", "選項二", "其他／我自己填寫"]}]',
     '',
     '規則：',
-    '- type 只能是 "choice" 或 "text"；能歸納出 2～4 個合理選項時用 "choice"（最後一項固定放「其他／我自己填寫」），無法歸納選項時用 "text"',
-    '- 若比對後完全找不到值得質疑的點，請直接回覆空陣列 []',
+    '- 總題數 10 題，若逐字稿或記錄內容真的太少，可以少於 10 題',
+    '- 每一題都必須是 "choice" 類型，並根據逐字稿與會議記錄的實際內容，提供 2～3 個具體的可能答案作為選項',
+    '- 選項不是隨便列幾個方向，而是根據逐字稿中真實出現過的觀點、說法或決定來歸納，讓與會者看到選項就能馬上對照自己的記憶',
+    '- 每一題的選項中必須包含一個代表「目前會議記錄中的既有論點或表述」的選項，在文字前加上「(原意) 」標記（例如：「(原意) 目前記錄標示的結論是…」），讓使用者可以直接表示「原本的記錄已經正確」',
+    '- 最後一個選項固定是「其他／我自己填寫」',
     '- 只回覆 JSON 本身，不要有任何其他文字',
   )
-
   const prompt = promptParts.join('\n')
 
   try {
@@ -1106,7 +1133,7 @@ app.post('/api/workflow/review-meeting-notes', requireAuth, async (req, res) => 
 
     const cleaned = questions
       .filter(q => q && typeof q.question === 'string' && q.question.trim())
-      .slice(0, 8)
+      .slice(0, 10)
       .map(q => {
         const isChoice = q.type === 'choice' && Array.isArray(q.options) && q.options.filter(o => typeof o === 'string' && o.trim()).length >= 2
         return isChoice
@@ -1144,46 +1171,104 @@ app.post('/api/workflow/review-meeting-notes/apply', requireAuth, async (req, re
     ? meetingDate
     : new Date().toISOString().slice(0, 10)
 
-  const qaText = answers
-    .filter(a => a && typeof a.question === 'string')
-    .map((a, i) => `${i + 1}. ${a.question}\n   使用者回答：${(a.answer || '（使用者未提供答案，請維持原記錄該處內容）').toString().trim()}`)
-    .join('\n')
+  // 在後端就把「原意」與「補充」分類，只把真正需要納入的補充項丟給 AI。
+  // 注意：前端送來的是結構化陣列（choice 帶 options 陣列、text 帶 text），
+  // 不再是用「、」串接的字串，避免選項內容本身含「、」造成無法拆分。
+  const isOriginalIntent = s => typeof s === 'string' && s.trimStart().startsWith('(原意)')
+  const supplements = []
+  for (const a of answers) {
+    if (!a || typeof a.question !== 'string') continue
+    if (a.type === 'text') {
+      const t = (a.text || '').toString().trim()
+      if (t) supplements.push({ question: a.question.trim(), additions: [t] })
+      continue
+    }
+    const opts = Array.isArray(a.options) ? a.options : []
+    const additions = opts
+      .filter(o => typeof o === 'string' && o.trim() && !isOriginalIntent(o))
+      .map(o => o.trim())
+    if (additions.length > 0) supplements.push({ question: a.question.trim(), additions })
+  }
+
+  // 全部都是「(原意)」或未作答 → 沒有任何補充，直接回原文，不呼叫 AI。
+  if (supplements.length === 0) {
+    // console.log('[review-apply] no supplements (all 原意) → return unchanged')
+    return res.json({ success: true, content: meetingNotesContent, unchanged: true })
+  }
+
+  const supplementText = supplements
+    .map((s, i) => `${i + 1}. 主題：${s.question}\n   使用者補充（必須納入記錄）：\n${s.additions.map(t => `   - ${t}`).join('\n')}`)
+    .join('\n\n')
+
+  const normalizedNotes = meetingNotesContent.replace(new RegExp('\r\n', 'g'), '\n').replace(new RegExp('\r', 'g'), '\n')
+  const numberedContent = normalizedNotes.split('\n').map((line, i) => (i + 1) + ': ' + line).join('\n')
 
   const promptParts = [
-    '使用者已針對「會議記錄反思校正」的提問逐一回覆，請依據以下回答修正會議記錄全文。',
+    '你是一位會議記錄編輯。使用者針對會議記錄提出了以下「補充看法」，這些看法目前可能未完整反映在記錄中。',
+    '你的任務是把每一則補充看法，整合進會議記錄中最相關的段落，產出修改清單。',
     '',
     `本次會議日期：${resolvedDate}`,
-    `逐字稿路徑：${transcriptContainerPath}`,
   ]
 
   const containerDocPaths = resolveDocContainerPaths(docFtpPaths, provisionUserId)
   if (containerDocPaths.length > 0) {
-    promptParts.push(`本次會議補充文件：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}`)
+    promptParts.push(`逐字稿路徑：${transcriptContainerPath}`)
+    promptParts.push(`補充文件：\n${containerDocPaths.map(p => `- ${p}`).join('\n')}`)
   }
 
   promptParts.push(
     '',
-    '使用者的問答：',
-    qaText,
+    '【使用者補充看法】（每一則都「必須」反映到記錄中，不可忽略）',
+    supplementText,
     '',
-    '修正前的會議記錄全文：',
+    '原始會議記錄（每行前面標有行號）：',
     '```',
-    meetingNotesContent,
+    numberedContent,
     '```',
     '',
-    '請直接回覆修正後的會議記錄**全文**（Markdown），維持原本依錄音類型的章節範本與格式，只更動使用者回答所對應、或因此而需要連動調整的內容，其餘原文不要省略或改寫。只回覆會議記錄全文本身，不要加任何前言、說明或 ``` 包裝。',
+    '【你的任務】針對上方每一則補充看法，找出會議記錄中最相關的行範圍，將補充內容自然地整合進去（保留原有內容、在其後補述或調整措辭），輸出以下格式的 JSON（只輸出 JSON，不要前言或 ``` 包裝）：',
+    '',
+    '{"patches":[{"start_line":42,"end_line":44,"new_content":"整合補充後的完整內容（不含行號、可包含換行）"}]}',
+    '',
+    '欄位說明：',
+    '- start_line：要替換的起始行號（對應上方行號欄位，整數）',
+    '- end_line：要替換的結束行號（含該行，整數）',
+    '- new_content：替換後的完整文字（不含行號前綴，可多行用 \\n 分隔）',
+    '',
+    '【硬性規則】',
+    `- 上方共有 ${supplements.length} 則補充看法，你至少要產出 ${supplements.length} 個對應的 patch（除非某則確實已完整存在於記錄中）`,
+    '- 整合時保留原有敘述，把補充看法併入，不要刪除原本資訊',
+    '- 日期（標題、頁首、文內所有日期）絕對不得修改',
+    '- new_content 必須是整合後該行範圍的完整內容，不可只寫新增片段',
   )
 
   const prompt = promptParts.join('\n')
+  // console.log('[review-apply] supplements:', supplements.length, JSON.stringify(supplements).slice(0, 400))
+  // console.log('[review-apply] === FULL PROMPT START ===\n' + prompt + '\n=== FULL PROMPT END ===')
 
   try {
     const client = getClientForUser(provisionUserId)
-    const sessionKey = makeScopedSessionKey('meeting-notes-review-apply')
+    const sessionKey = makeScopedSessionKey('meeting-notes-review-apply-' + Date.now())
     const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
-    const corrected = stripCodeFence(lastMsg.content)
+    const rawJson = stripCodeFence(lastMsg.content)
+    // console.log('[review-apply] AI raw response:', rawJson.slice(0, 500))
 
-    if (!corrected || corrected.length < meetingNotesContent.length * 0.3) {
-      return res.status(502).json({ error: 'AI 回覆內容異常（過短或為空），請重試一次，原記錄未被覆寫' })
+    let parsed
+    try { parsed = JSON.parse(rawJson) } catch {
+      console.error('[review-apply] JSON parse error, raw:', rawJson.slice(0, 300))
+      return res.status(502).json({ error: 'AI 回覆格式異常（非 JSON），請重試' })
+    }
+    if (!Array.isArray(parsed?.patches)) {
+      console.error('[review-apply] missing patches array, parsed:', JSON.stringify(parsed).slice(0, 300))
+      return res.status(502).json({ error: 'AI 回覆格式異常（缺少 patches 陣列），請重試' })
+    }
+    // console.log('[review-apply] patches count:', parsed.patches.length, JSON.stringify(parsed.patches).slice(0, 500))
+
+    const corrected = applyLinePatches(meetingNotesContent, parsed.patches)
+    // console.log('[review-apply] original length:', meetingNotesContent.length, 'corrected length:', corrected.length, 'same:', corrected === meetingNotesContent)
+
+    if (!corrected || corrected.trim().length < 20) {
+      return res.status(502).json({ error: 'AI 回覆內容為空，請重試一次，原記錄未被覆寫' })
     }
 
     const paths = getUserPaths(provisionUserId)
@@ -3275,11 +3360,10 @@ function buildOpenClawConfig(gatewayToken, llmConfig, { hostPort } = {}) {
               // custom 模型的請求裡；漏掉這個會讓 Read 工具對圖片只回傳「檔案存在」之類的訊息。
               input: ['text', 'image'],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 131072,
-              // 16384 在多步驟、需逐筆 Edit 多個 markdown 的任務（如 project-insight-synthesizer）
-              // 容易在最後一輪生成被截斷，OpenClaw runtime 會判定該 turn 為
-              // non_deliverable_terminal_turn 並整個 run 標記成 error（並非 timeout）。
-              maxTokens: 32768,
+              contextWindow: 524288,
+              // gpt-5.4 最大輸出 128K tokens；32768 僅約 1/4 上限。
+              // 調高以避免長文件（如大型會議記錄校正）在輸出中途被硬截斷。
+              maxTokens: 64000,
               // 推理模型（gpt-5/o1/o3 系列等）不接受舊式 max_tokens，Azure/OpenAI 會直接 400
               // 拒絕請求（"Unsupported parameter: 'max_tokens'... Use 'max_completion_tokens'"），
               // 導致 LLM 完全沒有回應。maxTokensField 讓 OpenClaw 改送正確的參數名稱。

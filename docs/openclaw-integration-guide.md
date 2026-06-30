@@ -120,8 +120,8 @@ Gateway 啟動時讀取 `/home/node/.openclaw/openclaw.json`（即 Host 上的 `
           "reasoning": false,
           "input": ["text", "image"],
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 131072,
-          "maxTokens": 8192
+          "contextWindow": 1048576,
+          "maxTokens": 131072
         }]
       }
     }

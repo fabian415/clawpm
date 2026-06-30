@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <!-- Preview Modal -->
   <div v-if="previewModal.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="previewModal.show = false">
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
@@ -888,87 +888,213 @@
     <img :src="assetUrl(lightboxImage)" class="max-w-full max-h-full rounded-lg shadow-2xl" @click.stop />
   </div>
 
+  <!-- Review Diff Preview Modal -->
+  <div v-if="reviewDiffOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col" style="max-height: 92vh;">
+      <!-- Header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+        <div class="flex items-center gap-3">
+          <h4 class="font-bold flex items-center gap-2">
+            <Eye class="w-4 h-4 text-blue-500" /> 校正結果預覽
+          </h4>
+          <span v-if="reviewDiffChangedCount > 0" class="text-xs font-medium px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded-full">
+            {{ reviewDiffChangedCount }} 處變更
+          </span>
+          <span v-else class="text-xs font-medium px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-full">無差異</span>
+        </div>
+        <button @click="closeReviewDiff" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="flex-1 overflow-y-auto p-5 space-y-4 min-h-0">
+        <!-- Side-by-side diff panels -->
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Original -->
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-red-400 shrink-0"></span>
+              <span class="text-xs font-semibold text-slate-600 dark:text-slate-400">原始版本</span>
+              <span class="text-[10px] text-slate-400">（紅底 = 被刪除/修改的字詞）</span>
+            </div>
+            <div ref="diffLeftPanel" @scroll="syncScrollLeft" class="border border-slate-200 dark:border-slate-700 rounded-xl overflow-y-auto h-52 font-mono text-[11px] leading-5 bg-slate-50 dark:bg-slate-800/40">
+              <div
+                v-for="(line, idx) in reviewDiffLines" :key="'orig-' + idx"
+                :class="line.type === 'delete' || line.type === 'changed'
+                  ? 'bg-red-50 dark:bg-red-900/20'
+                  : line.type === 'insert'
+                    ? 'bg-slate-100/60 dark:bg-slate-700/20'
+                    : 'text-slate-500 dark:text-slate-400'"
+                class="px-3 py-px flex gap-2 whitespace-pre-wrap"
+              >
+                <span class="shrink-0 select-none w-3 text-center opacity-60">{{ line.type === 'delete' || line.type === 'changed' ? '-' : ' ' }}</span>
+                <span class="flex-1" v-html="line.type !== 'insert' ? (line.leftHtml ?? '&nbsp;') : '&nbsp;'"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Corrected (read-only diff) -->
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0"></span>
+              <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">校正版本</span>
+              <span class="text-[10px] text-slate-400">（綠底 = 新增/修改後的字詞）</span>
+            </div>
+            <div ref="diffRightPanel" @scroll="syncScrollRight" class="border border-emerald-200 dark:border-emerald-900/50 rounded-xl overflow-y-auto h-52 font-mono text-[11px] leading-5 bg-emerald-50/40 dark:bg-emerald-900/10">
+              <div
+                v-for="(line, idx) in reviewDiffLines" :key="'corr-' + idx"
+                :class="line.type === 'insert' || line.type === 'changed'
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20'
+                  : line.type === 'delete'
+                    ? 'bg-slate-100/60 dark:bg-slate-700/20'
+                    : 'text-slate-500 dark:text-slate-400'"
+                class="px-3 py-px flex gap-2 whitespace-pre-wrap"
+              >
+                <span class="shrink-0 select-none w-3 text-center opacity-60">{{ line.type === 'insert' || line.type === 'changed' ? '+' : ' ' }}</span>
+                <span class="flex-1" v-html="line.type !== 'delete' ? (line.rightHtml ?? '&nbsp;') : '&nbsp;'"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Editable corrected version -->
+        <div class="space-y-1.5">
+          <p class="text-xs font-semibold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
+            <Pencil class="w-3 h-3" /> 可在此直接編輯校正版本，確認後才會更新會議記錄
+          </p>
+          <textarea
+            ref="diffEditPanel"
+            v-model="reviewCorrectedEditing"
+            rows="10"
+            @scroll="syncScrollEdit"
+            class="w-full font-mono text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-4 resize-none outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed"
+          ></textarea>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
+        <p class="text-xs text-slate-400">確認後會覆蓋目前的會議記錄，此操作可在步驟四的文字框中撤銷</p>
+        <div class="flex items-center gap-3">
+          <button @click="closeReviewDiff" class="px-5 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            取消
+          </button>
+          <button @click="applyReviewDiff" class="flex items-center gap-2 px-5 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-colors shadow-lg shadow-blue-500/20">
+            <Check class="w-4 h-4" /> 確認更新會議記錄
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Meeting Notes Reflective Review (Grill Me) Modal -->
-  <div v-if="reviewPanelOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="!reviewLoadingQuestions && !reviewApplying && closeReviewPanel()">
-    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-lg w-full p-6 space-y-5">
-      <!-- Generating questions -->
-      <div v-if="reviewLoadingQuestions" class="text-center py-8">
-        <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
-        <p class="text-sm text-slate-500">AI 正在比對逐字稿與會議記錄...</p>
+  <div v-if="reviewPanelOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col" style="max-height: 88vh;">
+      <!-- Modal header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+        <h4 class="font-bold flex items-center gap-2"><Sparkles class="w-4 h-4 text-amber-500" /> AI 反思校正</h4>
+        <button @click="!reviewLoadingQuestions && !reviewApplying && closeReviewPanel()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+          <X class="w-5 h-5" />
+        </button>
       </div>
 
-      <!-- No issues found -->
-      <div v-else-if="reviewNoIssues" class="text-center py-6 space-y-3">
-        <Check class="w-10 h-10 text-emerald-500 mx-auto" />
-        <p class="font-medium">本記錄與逐字稿／補充文件高度一致</p>
-        <p class="text-sm text-slate-500">未發現需要校正的問題</p>
-        <button @click="closeReviewPanel" class="mt-2 bg-slate-100 dark:bg-slate-800 px-5 py-2 rounded-xl text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700">關閉</button>
-      </div>
-
-      <!-- Applying answers -->
-      <div v-else-if="reviewApplying" class="text-center py-8">
-        <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
-        <p class="text-sm text-slate-500">AI 正在依您的回答修正會議記錄...</p>
-      </div>
-
-      <!-- Question wizard -->
-      <div v-else-if="currentReviewQuestion" class="space-y-5">
-        <div class="flex items-center justify-between">
-          <h4 class="font-bold flex items-center gap-2"><Sparkles class="w-4 h-4 text-amber-500" /> AI 反思校正</h4>
-          <button @click="closeReviewPanel" class="text-slate-400 hover:text-slate-600">
-            <X class="w-5 h-5" />
-          </button>
+      <!-- Body: split layout -->
+      <div class="flex flex-1 min-h-0">
+        <!-- Left: meeting notes read-only view -->
+        <div class="w-1/2 border-r border-slate-100 dark:border-slate-800 flex flex-col">
+          <div class="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 shrink-0">
+            <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">目前會議記錄（供參考）</p>
+          </div>
+          <div class="flex-1 overflow-y-auto px-5 py-4">
+            <div class="md-preview text-sm text-slate-700 dark:text-slate-300 leading-relaxed" v-html="renderMarkdown(meetingNotesContent)"></div>
+          </div>
         </div>
-        <p class="text-xs text-slate-400">問題 {{ reviewQuestionIndex + 1 }} / {{ reviewQuestions.length }}</p>
 
-        <p class="text-sm font-medium leading-relaxed">{{ currentReviewQuestion.question }}</p>
+        <!-- Right: question wizard / states -->
+        <div class="w-1/2 flex flex-col">
+          <!-- Generating questions -->
+          <div v-if="reviewLoadingQuestions" class="flex-1 flex flex-col items-center justify-center text-center p-8">
+            <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
+            <p class="text-sm text-slate-500">AI 正在比對逐字稿與會議記錄...</p>
+          </div>
 
-        <div v-if="currentReviewQuestion.type === 'choice'" class="space-y-2">
-          <button
-            v-for="opt in currentReviewQuestion.options"
-            :key="opt"
-            @click="selectReviewOption(opt)"
-            :class="currentReviewQuestion.answer === opt
-              ? 'bg-amber-500 text-white border-amber-500'
-              : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-amber-300'"
-            class="w-full text-left text-sm px-4 py-2.5 rounded-xl border transition-colors"
-          >
-            {{ opt }}
-          </button>
-          <input
-            v-if="isOtherSelected"
-            v-model="currentReviewQuestion.customAnswer"
-            type="text"
-            placeholder="請填寫您的答案..."
-            class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
-          />
-        </div>
-        <textarea
-          v-else
-          v-model="currentReviewQuestion.answer"
-          rows="3"
-          placeholder="請輸入您的答案..."
-          class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
-        ></textarea>
+          <!-- No issues found -->
+          <div v-else-if="reviewNoIssues" class="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-3">
+            <Check class="w-10 h-10 text-emerald-500 mx-auto" />
+            <p class="font-medium">本記錄與逐字稿／補充文件高度一致</p>
+            <p class="text-sm text-slate-500">未發現需要校正的問題</p>
+            <button @click="closeReviewPanel" class="mt-2 bg-slate-100 dark:bg-slate-800 px-5 py-2 rounded-xl text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700">關閉</button>
+          </div>
 
-        <p v-if="reviewApplyError" class="text-xs text-red-500">{{ reviewApplyError }}</p>
+          <!-- Applying answers -->
+          <div v-else-if="reviewApplying" class="flex-1 flex flex-col items-center justify-center text-center p-8">
+            <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
+            <p class="text-sm text-slate-500">AI 正在依您的回答修正會議記錄...</p>
+          </div>
 
-        <div class="flex items-center justify-between pt-2">
-          <button
-            @click="reviewQuestionIndex--"
-            :disabled="reviewQuestionIndex === 0"
-            class="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
-          >上一題</button>
-          <button
-            v-if="reviewQuestionIndex < reviewQuestions.length - 1"
-            @click="reviewQuestionIndex++"
-            class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
-          >下一題</button>
-          <button
-            v-else
-            @click="submitMeetingNotesReview"
-            class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
-          >送出修正</button>
+          <!-- Question wizard -->
+          <div v-else-if="currentReviewQuestion" class="flex-1 flex flex-col p-6 space-y-5 overflow-y-auto">
+            <p class="text-xs text-slate-400">問題 {{ reviewQuestionIndex + 1 }} / {{ reviewQuestions.length }}</p>
+
+            <p class="text-sm font-medium leading-relaxed">{{ currentReviewQuestion.question }}</p>
+
+            <div v-if="currentReviewQuestion.type === 'choice'" class="space-y-2">
+              <label
+                v-for="opt in currentReviewQuestion.options"
+                :key="opt"
+                :class="[
+                  currentReviewQuestion.answer.includes(opt)
+                    ? opt.startsWith('(原意)')
+                      ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-400 dark:border-amber-600 text-amber-800 dark:text-amber-200'
+                      : 'bg-amber-500 text-white border-amber-500'
+                    : opt.startsWith('(原意)')
+                      ? 'bg-amber-50/50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800 hover:border-amber-400'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-amber-300'
+                ]"
+                class="w-full flex items-start gap-3 text-sm px-4 py-2.5 rounded-xl border transition-colors cursor-pointer select-none"
+              >
+                <input type="checkbox" :value="opt" v-model="currentReviewQuestion.answer" class="mt-0.5 shrink-0 accent-amber-500" />
+                <span class="flex-1 leading-snug">
+                  <span v-if="opt.startsWith('(原意)')" class="inline-block text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 rounded mr-1.5">原意</span>{{ opt.startsWith('(原意)') ? opt.substring(4).trimStart() : opt }}
+                </span>
+              </label>
+              <input
+                v-if="isOtherSelected"
+                v-model="currentReviewQuestion.customAnswer"
+                type="text"
+                placeholder="請填寫您的答案..."
+                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+            <textarea
+              v-else
+              v-model="currentReviewQuestion.answer"
+              rows="3"
+              placeholder="請輸入您的答案..."
+              class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+            ></textarea>
+
+            <p v-if="reviewApplyError" class="text-xs text-red-500">{{ reviewApplyError }}</p>
+
+            <div class="flex items-center justify-between pt-2 mt-auto">
+              <button
+                @click="reviewQuestionIndex--"
+                :disabled="reviewQuestionIndex === 0"
+                class="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+              >上一題</button>
+              <button
+                v-if="reviewQuestionIndex < reviewQuestions.length - 1"
+                @click="reviewQuestionIndex++"
+                class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
+              >下一題</button>
+              <button
+                v-else
+                @click="submitMeetingNotesReview"
+                class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
+              >送出修正</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1261,6 +1387,9 @@ const reviewNoIssues = ref(false)
 const reviewApplying = ref(false)
 const reviewApplyError = ref('')
 const reviewError = ref('')
+const reviewDiffOpen = ref(false)
+const reviewOriginalSnapshot = ref('')
+const reviewCorrectedEditing = ref('')
 const emailTo = ref('')
 const emailSending = ref(false)
 const emailSent = ref(false)
@@ -1616,16 +1745,20 @@ function startMeetingNotesPolling() {
 const currentReviewQuestion = computed(() => reviewQuestions.value[reviewQuestionIndex.value] || null)
 const isOtherSelected = computed(() => {
   const q = currentReviewQuestion.value
-  return !!q && q.type === 'choice' && typeof q.answer === 'string' && q.answer.includes('其他')
+  if (!q || q.type !== 'choice') return false
+  const selected = Array.isArray(q.answer) ? q.answer : []
+  return selected.some(a => typeof a === 'string' && a.includes('其他'))
 })
-
-function selectReviewOption(opt) {
-  reviewQuestions.value[reviewQuestionIndex.value].answer = opt
-}
-
 function resolvedReviewAnswer(q) {
-  if (q.type === 'choice' && typeof q.answer === 'string' && q.answer.includes('其他')) {
-    return (q.customAnswer || '').trim() || q.answer
+  if (q.type === 'choice') {
+    const selected = Array.isArray(q.answer) ? q.answer : (q.answer ? [q.answer] : [])
+    if (selected.length === 0) return '（使用者未作答，請維持原記錄該處內容）'
+    const resolved = selected.map(a =>
+      typeof a === 'string' && a.includes('其他') && (q.customAnswer || '').trim()
+        ? (q.customAnswer || '').trim()
+        : a
+    )
+    return resolved.join('、')
   }
   return (q.answer || '').trim()
 }
@@ -1658,7 +1791,7 @@ async function startMeetingNotesReview() {
     if (!data.questions || data.questions.length === 0) {
       reviewNoIssues.value = true
     } else {
-      reviewQuestions.value = data.questions.map(q => ({ ...q, answer: '', customAnswer: '' }))
+      reviewQuestions.value = data.questions.map(q => ({ ...q, answer: q.type === 'choice' ? [] : '', customAnswer: '' }))
     }
   } catch (err) {
     reviewError.value = err.message
@@ -1674,7 +1807,18 @@ async function submitMeetingNotesReview() {
 
   const token = localStorage.getItem('clawpm_token')
   try {
-    const answers = reviewQuestions.value.map(q => ({ question: q.question, answer: resolvedReviewAnswer(q) }))
+    const answers = reviewQuestions.value.map(q => {
+      if (q.type === 'choice') {
+        const selected = Array.isArray(q.answer) ? q.answer : (q.answer ? [q.answer] : [])
+        const options = selected.map(a =>
+          typeof a === 'string' && a.includes('其他') && (q.customAnswer || '').trim()
+            ? (q.customAnswer || '').trim()
+            : a
+        )
+        return { question: q.question, type: 'choice', options }
+      }
+      return { question: q.question, type: 'text', text: (q.answer || '').trim() }
+    })
     const res = await fetch('/api/workflow/review-meeting-notes/apply', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1690,9 +1834,10 @@ async function submitMeetingNotesReview() {
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || '套用校正失敗')
 
-    meetingNotesContent.value = data.content
+    reviewOriginalSnapshot.value = meetingNotesContent.value
+    reviewCorrectedEditing.value = data.content
     closeReviewPanel()
-    emit('toast', '已完成 AI 反思校正並更新會議記錄')
+    reviewDiffOpen.value = true
   } catch (err) {
     reviewApplyError.value = err.message
   } finally {
@@ -1706,6 +1851,156 @@ function closeReviewPanel() {
   reviewQuestionIndex.value = 0
   reviewNoIssues.value = false
   reviewApplyError.value = ''
+}
+
+// ── Diff helpers ─────────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+
+function tokenizeForDiff(text) {
+  return text.match(/[一-龥　-〿！-￮]|[a-zA-Z0-9À-ɏ]+|[ \t]+|[^\s\w一-龥　-〿！-￮]/g) || [text || '']
+}
+
+function buildInlineHtml(a, b) {
+  const at = tokenizeForDiff(a)
+  const bt = tokenizeForDiff(b)
+  const m = at.length, n = bt.length
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const eq = at[i - 1] === bt[j - 1]
+      dp[i][j] = eq ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+  const ops = []
+  let i = m, j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && at[i - 1] === bt[j - 1])
+    { ops.unshift({ t: '=', a: at[i - 1], b: bt[j - 1] }); i--; j-- }
+    else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { ops.unshift({ t: '+', b: bt[j - 1] }); j-- }
+    else { ops.unshift({ t: '-', a: at[i - 1] }); i-- }
+  }
+  let L = '', R = ''
+  for (const op of ops) {
+    if (op.t === '=') { const e = escapeHtml(op.b); L += e; R += e }
+    else if (op.t === '-') L += `<mark style="background:#fee2e2;color:#991b1b;border-radius:2px;padding:0 1px;">${escapeHtml(op.a)}</mark>`
+    else R += `<mark style="background:#d1fae5;color:#065f46;border-radius:2px;padding:0 1px;">${escapeHtml(op.b)}</mark>`
+  }
+  return { leftHtml: L, rightHtml: R }
+}
+
+function computeLineDiff(a, b) {
+  const aLines = (a || '').split('\n')
+  const bLines = (b || '').split('\n')
+  const m = aLines.length, n = bLines.length
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = aLines[i - 1] === bLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+  const raw = []
+  let i = m, j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && aLines[i - 1] === bLines[j - 1]) {
+      raw.unshift({ type: 'equal', aText: aLines[i - 1], bText: aLines[i - 1] }); i--; j--
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      raw.unshift({ type: 'insert', bText: bLines[j - 1] }); j--
+    } else {
+      raw.unshift({ type: 'delete', aText: aLines[i - 1] }); i--
+    }
+  }
+
+  const result = []
+  let k = 0
+  while (k < raw.length) {
+    if (raw[k].type === 'equal') {
+      const html = escapeHtml(raw[k].aText)
+      result.push({ type: 'equal', leftHtml: html, rightHtml: html })
+      k++
+    } else {
+      const dels = [], ins = []
+      while (k < raw.length && raw[k].type !== 'equal') {
+        if (raw[k].type === 'delete') dels.push(raw[k].aText)
+        else ins.push(raw[k].bText)
+        k++
+      }
+      const maxLen = Math.max(dels.length, ins.length)
+      for (let p = 0; p < maxLen; p++) {
+        const d = p < dels.length ? dels[p] : null
+        const s = p < ins.length ? ins[p] : null
+        if (d !== null && s !== null) {
+          const { leftHtml, rightHtml } = buildInlineHtml(d, s)
+          const hasChanges = leftHtml.includes('<mark') || rightHtml.includes('<mark')
+          result.push(hasChanges
+            ? { type: 'changed', leftHtml, rightHtml }
+            : { type: 'equal', leftHtml: escapeHtml(d), rightHtml: escapeHtml(s) })
+        } else if (d !== null) {
+          result.push({ type: 'delete', leftHtml: escapeHtml(d), rightHtml: null })
+        } else {
+          result.push({ type: 'insert', leftHtml: null, rightHtml: escapeHtml(s) })
+        }
+      }
+    }
+  }
+  return result
+}
+
+const reviewDiffLines = computed(() => {
+  if (!reviewDiffOpen.value) return []
+  return computeLineDiff(reviewOriginalSnapshot.value, reviewCorrectedEditing.value)
+})
+
+const reviewOriginalDiffLines = computed(() =>
+  reviewDiffLines.value.filter(l => l.type !== 'insert')
+)
+
+const reviewCorrectedDiffLines = computed(() =>
+  reviewDiffLines.value.filter(l => l.type !== 'delete')
+)
+
+const reviewDiffChangedCount = computed(() =>
+  reviewDiffLines.value.filter(l => l.type !== 'equal').length
+)
+
+// Sync scroll across all three diff/edit panels by scroll ratio
+const diffLeftPanel = ref(null)
+const diffRightPanel = ref(null)
+const diffEditPanel = ref(null)
+let _syncingScroll = false
+function _applyRatio(el, ratio) {
+  if (!el) return
+  const max = el.scrollHeight - el.clientHeight
+  if (max > 0) el.scrollTop = ratio * max
+}
+function _syncAll(source) {
+  if (_syncingScroll) return
+  _syncingScroll = true
+  const max = source.scrollHeight - source.clientHeight
+  const ratio = max > 0 ? source.scrollTop / max : 0
+  if (source !== diffLeftPanel.value)  _applyRatio(diffLeftPanel.value, ratio)
+  if (source !== diffRightPanel.value) _applyRatio(diffRightPanel.value, ratio)
+  if (source !== diffEditPanel.value)  _applyRatio(diffEditPanel.value, ratio)
+  _syncingScroll = false
+}
+function syncScrollLeft(e)  { _syncAll(e.target) }
+function syncScrollRight(e) { _syncAll(e.target) }
+function syncScrollEdit(e)  { _syncAll(e.target) }
+
+function applyReviewDiff() {
+  meetingNotesContent.value = reviewCorrectedEditing.value
+  closeReviewDiff()
+  emit('toast', '已完成 AI 反思校正並更新會議記錄')
+}
+
+function closeReviewDiff() {
+  reviewDiffOpen.value = false
+  reviewOriginalSnapshot.value = ''
+  reviewCorrectedEditing.value = ''
 }
 
 function styleEmailHtml(html) {

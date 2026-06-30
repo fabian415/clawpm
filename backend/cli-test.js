@@ -181,8 +181,8 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
               reasoning: !!isReasoningModel,
               input: ['text', 'image'],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 131072,
-              maxTokens: 32768,
+              contextWindow: 524288,
+              maxTokens: 64000,
               compat: isReasoningModel
                 ? { supportsUsageInStreaming: true, maxTokensField: 'max_completion_tokens' }
                 : { supportsUsageInStreaming: true },
