@@ -41,6 +41,10 @@ services:
     environment:
       # 容器內無法用 localhost 到達 host 上的 OpenClaw port，改用 host.docker.internal
       OPENCLAW_GATEWAY_HOST: host.docker.internal
+      # per-user 容器的 relay port 要發布在 backend（走 host.docker.internal→172.17.0.1）
+      # 打得到的位址。綁 docker 橋接閘道即可，不會曝露到對外網卡。
+      # 若你的 docker 預設橋接子網不是 172.17.0.0/16，改成對應的 .1 位址或設 0.0.0.0。
+      CLAWPM_RELAY_BIND_HOST: ${CLAWPM_RELAY_BIND_HOST:-172.17.0.1}
       # FTP server 與 backend 同在 compose 網路內，直接用 service name
       FTP_HOST: openclaw-ftp-server
       FTP_USER: ${FTP_USER}
