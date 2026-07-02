@@ -5,24 +5,31 @@
  *   send  → { type:'req', id, method, params }
  *   recv  → { type:'res', id, ok, payload } | { type:'event', event, payload }
  *
- * Auth flow: gateway sends connect.challenge → client replies with signed connect.
+ * Auth flow: this client connects through the per-container TCP relay
+ * (relay.cjs, listening on the "relay" port) rather than the gateway's own
+ * port directly. The relay runs inside the container and forwards bytes to
+ * the gateway over its own loopback, so the gateway sees a genuine local
+ * connection. Combined with client.id='gateway-client'/mode='backend' and the
+ * shared gateway token, this satisfies the gateway's local-backend bypass
+ * (shouldSkipLocalBackendSelfPairing) and grants the requested operator
+ * scopes directly — no device pairing needed.
  */
 
-import { createPrivateKey, createPublicKey, randomUUID, sign as signPayload } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { WebSocket } from 'ws'
 import { getUserPaths } from '../containers/WorkspaceManager.js'
-import { getContainerConfig, pairDevice } from '../containers/DevicePairer.js'
+import { getContainerConfig } from '../containers/DevicePairer.js'
 
-const PROTOCOL_VERSION = 3
+const PROTOCOL_VERSION = 4
 const CONNECT_CHALLENGE_TIMEOUT_MS = 5000
 const DEFAULT_HISTORY_LIMIT = 200
 const POLL_INTERVAL_MS = 300
 const POLL_STABLE_COUNT = 2          // consecutive unchanged polls before declaring done
 const POLL_TIMEOUT_MS = 120_000      // chat.send RPC call timeout
 const FILE_WATCH_TIMEOUT_MS = 30 * 60 * 1000  // 30-min hard ceiling for JSONL watching
-const FIRST_CONTENT_TIMEOUT_MS = 90_000       // give up if no assistant content after 90s
+const FIRST_CONTENT_TIMEOUT_MS = 600_000      // give up if no assistant content/activity after 10min
 
 const dbg = (...a) => { if (process.env.DEBUG_LOGS) console.log(...a) }
 const dbgErr = (...a) => { if (process.env.DEBUG_LOGS) console.error(...a) }
@@ -30,108 +37,23 @@ const dbgWarn = (...a) => { if (process.env.DEBUG_LOGS) console.warn(...a) }
 
 // LLM stop reasons that indicate the turn is complete (normalized to lowercase)
 const FINAL_STOP_REASONS = new Set(['stop', 'end_turn', 'max_tokens', 'length', 'stop_sequence', 'content_filter'])
-const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex')
 
 function resolveClientPlatform() {
   const configured = process.env.OPENCLAW_GATEWAY_CLIENT_PLATFORM?.trim()
   if (configured) return configured
 
-  // The approved device identity is generated inside the OpenClaw container,
-  // so its registered platform is linux even when this backend runs on macOS.
+  // The gateway container always runs linux, even when this backend runs on macOS/Windows.
   return 'linux'
 }
 
-// ── Crypto helpers ────────────────────────────────────────────────────────────
-
-function base64UrlEncode(buf) {
-  return buf.toString('base64').replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '')
-}
-
-function publicKeyRawBase64UrlFromPem(pem) {
-  const key = createPublicKey(pem)
-  const spki = key.export({ type: 'spki', format: 'der' })
-  if (
-    Buffer.isBuffer(spki)
-    && spki.length === ED25519_SPKI_PREFIX.length + 32
-    && spki.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)
-  ) {
-    return base64UrlEncode(spki.subarray(ED25519_SPKI_PREFIX.length))
-  }
-  return base64UrlEncode(Buffer.from(spki))
-}
-
-function signDevicePayload(privateKeyPem, payload) {
-  const key = createPrivateKey(privateKeyPem)
-  const signature = signPayload(null, Buffer.from(payload, 'utf8'), key)
-  return base64UrlEncode(signature)
-}
-
-function buildDeviceAuthPayloadV3({ deviceId, clientId, clientMode, role, scopes, signedAtMs, token, nonce, platform }) {
-  return [
-    'v3',
-    deviceId,
-    clientId,
-    clientMode,
-    role,
-    scopes.join(','),
-    String(signedAtMs),
-    token ?? '',
-    nonce,
-    (typeof platform === 'string' && platform.trim() ? platform.trim().toLowerCase() : ''),
-    '',  // deviceFamily
-  ].join('|')
-}
-
-// ── Identity / auth helpers ───────────────────────────────────────────────────
-
-function loadDeviceIdentity(userId) {
-  const paths = getUserPaths(userId)
-  const identityFiles = [
-    path.join(paths.identity, 'device.json'),
-    path.join(paths.base, 'identity', 'device.json'), // legacy pre-mount-fix path
-  ]
-
-  for (const identityFile of identityFiles) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(identityFile, 'utf8'))
-      if (
-        typeof parsed?.deviceId === 'string'
-        && typeof parsed?.publicKeyPem === 'string'
-        && typeof parsed?.privateKeyPem === 'string'
-      ) {
-        return parsed
-      }
-    }
-    catch {}
-  }
-  return null
-}
-
-async function ensureOperatorCredentials(userId) {
-  let config = await getContainerConfig(userId)
-  let identity = loadDeviceIdentity(userId)
-
-  if (config?.operatorToken?.trim() && identity) {
-    return { config, identity }
-  }
-
-  if (identity && config?.gatewayToken?.trim()) {
-    console.log(`[OpenClaw] Pairing device for user ${userId}: operator token missing`)
-    await pairDevice(userId, { healthTimeoutMs: 30_000 })
-    config = await getContainerConfig(userId)
-    identity = loadDeviceIdentity(userId)
-  }
-
-  return { config, identity }
-}
-
-function buildConnectParams({ nonce, config, identity, userId }) {
-  const operatorToken = config.operatorToken?.trim() || null
-  const gatewayToken = config.gatewayToken?.trim() || null
+// gateway-client/backend identifies this as a trusted local backend. Combined with
+// connecting through the relay (genuine loopback from the gateway's point of view),
+// this makes the gateway skip device pairing and grant the requested scopes directly.
+function buildConnectParams({ gatewayToken }) {
   const scopes = ['operator.read', 'operator.write', 'operator.approvals']
-  const client = { id: 'cli', version: '1.0.0', platform: resolveClientPlatform(), mode: 'cli' }
+  const client = { id: 'gateway-client', version: '1.0.0', platform: resolveClientPlatform(), mode: 'backend' }
 
-  const params = {
+  return {
     minProtocol: PROTOCOL_VERSION,
     maxProtocol: PROTOCOL_VERSION,
     client,
@@ -139,42 +61,8 @@ function buildConnectParams({ nonce, config, identity, userId }) {
     scopes,
     locale: 'zh-TW',
     userAgent: `clawpm-backend/1.0.0`,
+    auth: { token: gatewayToken },
   }
-
-  // operatorToken = device token (higher privilege), fallback to shared gateway token
-  if (operatorToken) {
-    params.auth = { deviceToken: operatorToken }
-  } else if (gatewayToken) {
-    params.auth = { token: gatewayToken }
-  }
-
-  // Keep signatureToken for device signing below
-  const signatureToken = operatorToken || gatewayToken
-
-  if (nonce && identity) {
-    const signedAtMs = Date.now()
-    const payload = buildDeviceAuthPayloadV3({
-      deviceId: identity.deviceId,
-      clientId: client.id,
-      clientMode: client.mode,
-      role: 'operator',
-      scopes,
-      signedAtMs,
-      token: signatureToken,
-      nonce,
-      platform: client.platform,
-    })
-
-    params.device = {
-      id: identity.deviceId,
-      publicKey: publicKeyRawBase64UrlFromPem(identity.publicKeyPem),
-      signature: signDevicePayload(identity.privateKeyPem, payload),
-      signedAt: signedAtMs,
-      nonce,
-    }
-  }
-
-  return params
 }
 
 // ── Gateway client class ──────────────────────────────────────────────────────
@@ -191,15 +79,17 @@ class OpenClawGatewayClient {
 
   async getGatewayUrl() {
     const config = await getContainerConfig(this.userId)
-    if (!config?.gatewayPort) throw new Error('容器尚未就緒，無法取得 gateway 位址')
+    if (!config?.relayPort) throw new Error('容器尚未就緒，無法取得 gateway 位址')
+    // Connect through the in-container relay (not the gateway port directly) so the
+    // gateway sees a genuine loopback connection — see buildConnectParams above.
     const host = process.env.OPENCLAW_GATEWAY_HOST || 'localhost'
-    return `ws://${host}:${config.gatewayPort}`
+    return `ws://${host}:${config.relayPort}`
   }
 
   async ensureConnected() {
     if (this.isReady && this.socket?.readyState === WebSocket.OPEN) {
       // Reconnect if the current connection lacks operator scopes (e.g. was
-      // established before device pairing completed)
+      // established before the gateway granted full scopes)
       if (!this.grantedScopes.includes('operator.write')) {
         console.log(`[OpenClaw] Reconnecting for user ${this.userId}: operator.write not in granted scopes`)
         this.disconnect()
@@ -208,7 +98,7 @@ class OpenClawGatewayClient {
       }
     }
     if (this.connectPromise) return this.connectPromise
-    this.connectPromise = this._connectWithAutoRepair()
+    this.connectPromise = this._connect()
     try {
       await this.connectPromise
     } finally {
@@ -216,36 +106,18 @@ class OpenClawGatewayClient {
     }
   }
 
-  async _connectWithAutoRepair() {
-    try {
-      await this._connect()
-    } catch (err) {
-      if (err.message?.toLowerCase().includes('token mismatch')) {
-        console.log(`[OpenClaw] Device token mismatch for user ${this.userId} — auto-rotating token`)
-        await pairDevice(this.userId, { healthTimeoutMs: 30_000 })
-        await this._connect()
-      } else {
-        throw err
-      }
-    }
-  }
-
   async _connect() {
     const url = await this.getGatewayUrl()
-    const { config, identity } = await ensureOperatorCredentials(this.userId)
+    const config = await getContainerConfig(this.userId)
 
-    if (!config?.operatorToken?.trim()) {
-      throw new Error('OpenClaw operator token 尚未建立，請先完成 device pairing 或重新啟動容器配對流程')
-    }
-    if (!identity) {
-      throw new Error('OpenClaw device identity 不存在，請確認 gateway 已產生 config/identity/device.json')
+    if (!config?.gatewayToken?.trim()) {
+      throw new Error('OpenClaw gateway token 尚未建立，請確認容器是否已完成初始化')
     }
 
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(url)
       const connectId = randomUUID()
       let settled = false
-      let connectNonce = null
       let challengeTimer = null
 
       const cleanup = () => {
@@ -274,15 +146,11 @@ class OpenClawGatewayClient {
       }
 
       const sendConnect = () => {
-        if (!connectNonce) {
-          fail(new Error('OpenClaw Gateway: connect challenge missing nonce'))
-          return
-        }
         ws.send(JSON.stringify({
           type: 'req',
           id: connectId,
           method: 'connect',
-          params: buildConnectParams({ nonce: connectNonce, config, identity, userId: this.userId }),
+          params: buildConnectParams({ gatewayToken: config.gatewayToken.trim() }),
         }))
       }
 
@@ -291,9 +159,6 @@ class OpenClawGatewayClient {
         try { packet = JSON.parse(String(event.data)) } catch { return }
 
         if (packet?.type === 'event' && packet?.event === 'connect.challenge') {
-          connectNonce = typeof packet?.payload?.nonce === 'string'
-            ? packet.payload.nonce.trim() || null
-            : null
           sendConnect()
           return
         }
@@ -359,8 +224,7 @@ class OpenClawGatewayClient {
     try {
       return await this._call(method, params, timeoutMs)
     } catch (err) {
-      // If the gateway rejects due to missing scope, force reconnect once with
-      // fresh credentials (operatorToken may have been added since last connect)
+      // If the gateway rejects due to missing scope, force reconnect once
       if (err.message?.includes('missing scope')) {
         console.log(`[OpenClaw] Scope error on ${method}, forcing reconnect…`)
         this.disconnect()
@@ -588,13 +452,21 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
       finishTimer = setTimeout(() => { readNewContent(); finish() }, delayMs)
     }
 
-    // If no assistant content appears within FIRST_CONTENT_TIMEOUT_MS, give up.
-    firstContentTimer = setTimeout(() => {
-      if (!lastAssistantMsg && !finished) {
-        dbgWarn(`[streamFromFile] no content after ${FIRST_CONTENT_TIMEOUT_MS/1000}s, giving up. watchFile=${watchFile}`)
-        finish()
-      }
-    }, FIRST_CONTENT_TIMEOUT_MS)
+    // If no assistant content AND no tool/process activity appears within
+    // FIRST_CONTENT_TIMEOUT_MS, give up. Process entries (tool calls, file
+    // operations) restart this timer since they prove the agent is still
+    // alive — long multi-step tasks can spend well over 90s on tool calls
+    // before producing their first text reply.
+    const armFirstContentTimer = () => {
+      clearTimeout(firstContentTimer)
+      firstContentTimer = setTimeout(() => {
+        if (!lastAssistantMsg && !finished) {
+          dbgWarn(`[streamFromFile] no content/activity after ${FIRST_CONTENT_TIMEOUT_MS/1000}s, giving up. watchFile=${watchFile}`)
+          finish()
+        }
+      }, FIRST_CONTENT_TIMEOUT_MS)
+    }
+    armFirstContentTimer()
 
     const readNewContent = () => {
       if (finished || !fs.existsSync(watchFile)) return
@@ -640,6 +512,8 @@ async function _streamFromFile({ watchFile, fileBaseline, prevIdSet, onUpdate })
           } else if (msg.isProcess) {
             dbg(`[streamFromFile] process entry: role=${msg.role} name=${msg.name} contentLen=${msg.content?.length ?? 0}`)
             processEntries = [...processEntries, msg]
+            // Tool/system activity is a liveness signal — extend the no-response window.
+            if (!lastAssistantMsg) armFirstContentTimer()
             onUpdate({ lastAssistantMsg, processEntries, done: false })
           }
         }

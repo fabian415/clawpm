@@ -1,0 +1,1 @@
+ALTER TABLE port_allocations ADD COLUMN IF NOT EXISTS relay_port INTEGER UNIQUE;

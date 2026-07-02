@@ -4,7 +4,7 @@
 
 set -e
 
-IMAGE_TAG="clawpm-openclaw:2026.4.22-py"
+IMAGE_TAG="clawpm-openclaw:2026.6.8-py"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "Building $IMAGE_TAG ..."

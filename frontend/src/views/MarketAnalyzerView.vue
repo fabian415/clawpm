@@ -373,12 +373,22 @@ function escapeHtml(t) {
   return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+function assetUrl(src) {
+  if (/^(https?:|data:)/i.test(src)) return src
+  const filename = src.trim().split('/').pop()
+  const token = localStorage.getItem('clawpm_token') || ''
+  return `/api/project-insights/asset?file=${encodeURIComponent(filename)}&token=${encodeURIComponent(token)}`
+}
+
 function inlineMd(t) {
   return escapeHtml(t)
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br>')
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code class="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-xs font-mono text-blue-600 dark:text-blue-400">$1</code>')
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) =>
+      `<img src="${assetUrl(src)}" alt="${alt.replace(/"/g, '&quot;')}" class="max-w-full rounded-lg border border-slate-200 dark:border-slate-700 my-2" loading="lazy">`)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="text-blue-500 hover:underline">$1</a>')
 }
 

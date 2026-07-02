@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <!-- Preview Modal -->
   <div v-if="previewModal.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="previewModal.show = false">
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col">
@@ -233,11 +233,12 @@
       <!-- Ready state -->
       <div v-else class="space-y-4 text-left">
         <!-- Error -->
-        <div v-if="extractionError" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+        <div v-if="extractionError || stepError.step === 2" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
           <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
-          <div>
+          <div class="flex-1">
             <p class="font-medium text-red-700 dark:text-red-400 text-sm">萃取失敗</p>
-            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ extractionError }}</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ extractionError || stepError.message }}</p>
+            <button v-if="stepError.step === 2" @click="retryStep" class="mt-2 text-xs font-medium text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-100 dark:hover:bg-red-900/30">重試</button>
           </div>
         </div>
 
@@ -546,18 +547,42 @@
 
       <!-- Ready -->
       <div v-else class="space-y-5">
+        <!-- Error -->
+        <div v-if="stepError.step === 4" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div class="flex-1">
+            <p class="font-medium text-red-700 dark:text-red-400 text-sm">會議記錄生成失敗</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ stepError.message }}</p>
+            <button @click="retryStep" class="mt-2 text-xs font-medium text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-100 dark:hover:bg-red-900/30">重試</button>
+          </div>
+        </div>
+
         <!-- Header -->
         <div class="flex items-center justify-between">
           <h3 class="text-xl font-bold">會議記錄</h3>
-          <select
-            v-model="meetingNotesType"
-            class="text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            <option>商務會議</option>
-            <option>訪談與使用者研究</option>
-            <option>知識學習與演講</option>
-            <option>專案評審</option>
-          </select>
+          <div class="flex items-center gap-2">
+            <button
+              @click="startMeetingNotesReview"
+              :disabled="!meetingNotesContent || reviewLoadingQuestions"
+              class="text-sm bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-xl px-3 py-1.5 font-medium flex items-center gap-1.5 hover:bg-amber-100 dark:hover:bg-amber-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Loader2 v-if="reviewLoadingQuestions" class="w-3.5 h-3.5 animate-spin" />
+              <Sparkles v-else class="w-3.5 h-3.5" /> AI 反思校正
+            </button>
+            <select
+              v-model="meetingNotesType"
+              class="text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option>商務會議</option>
+              <option>訪談與使用者研究</option>
+              <option>知識學習與演講</option>
+              <option>專案評審</option>
+            </select>
+          </div>
+        </div>
+
+        <div v-if="reviewError" class="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl text-sm text-red-600 dark:text-red-400">
+          {{ reviewError }}
         </div>
 
         <!-- Editable notes -->
@@ -621,6 +646,17 @@
 
       <!-- Done -->
       <div v-else class="space-y-5">
+        <!-- Error -->
+        <div v-if="stepError.step === 5" class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-900/30 rounded-xl flex items-start gap-3">
+          <AlertCircle class="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+          <div class="flex-1">
+            <p class="font-medium text-red-700 dark:text-red-400 text-sm">洞見生成失敗</p>
+            <p class="text-xs text-red-600 dark:text-red-500 mt-0.5">{{ stepError.message }}</p>
+            <button @click="retryStep" class="mt-2 text-xs font-medium text-red-700 dark:text-red-400 border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 hover:bg-red-100 dark:hover:bg-red-900/30">重試</button>
+          </div>
+        </div>
+
+        <template v-else>
         <!-- Success banner -->
         <div class="p-5 bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-900/30 rounded-2xl flex items-start gap-4">
           <div class="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center shrink-0">
@@ -668,6 +704,7 @@
         <button @click="$emit('navigate', 'reviewerOverview')" class="w-full border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium py-3 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-all flex items-center justify-center gap-2">
           開啟專案列表 <ExternalLink class="w-4 h-4" />
         </button>
+        </template>
       </div>
     </div>
 
@@ -714,6 +751,77 @@
           </div>
         </div>
 
+        <!-- Image classification review (mandatory when supplementary docs had images) -->
+        <div v-if="imageReviewImages.length > 0" class="bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/40 rounded-2xl overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2">
+            <h4 class="font-bold flex items-center gap-2">
+              <ImageIcon class="w-4 h-4 text-amber-500" />
+              圖片分類確認 ({{ imageReviewImages.length - unconfirmedImageCount }} / {{ imageReviewImages.length }})
+            </h4>
+            <div class="flex items-center gap-3">
+              <span v-if="unconfirmedImageCount > 0" class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                還有 {{ unconfirmedImageCount }} 張待確認，請手動選擇分類
+              </span>
+              <span v-else class="text-xs font-medium text-emerald-600 dark:text-emerald-400">全部已確認</span>
+              <button @click="loadImageReview({ poll: true, manual: true })" :disabled="imageReviewRefreshing"
+                title="AI 建議仍在生成中？點此重新檢查"
+                class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 flex items-center gap-1">
+                <RefreshCw :class="['w-3.5 h-3.5', imageReviewRefreshing && 'animate-spin']" />
+                重新整理建議
+              </button>
+            </div>
+          </div>
+          <div class="divide-y divide-slate-100 dark:divide-slate-800">
+            <div v-for="img in imageReviewImages" :key="img.file" class="px-6 py-4 flex gap-4">
+              <button type="button" @click="lightboxImage = img.file" class="relative shrink-0 group" title="點擊放大">
+                <img :src="assetUrl(img.file)" class="w-28 h-20 object-cover rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800" />
+                <span class="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                  <ZoomIn class="w-5 h-5 text-white opacity-0 group-hover:opacity-100" />
+                </span>
+              </button>
+              <div class="flex-1 min-w-0">
+                <template v-if="img.confirmed">
+                  <p class="text-sm">
+                    <span v-if="img.skipped" class="text-slate-500">已標記為不相關</span>
+                    <span v-else class="text-emerald-600 dark:text-emerald-400 font-medium">已分類至「{{ projectName(img.currentSlug) }}」</span>
+                  </p>
+                  <p v-if="!img.skipped" class="text-xs text-slate-500 mt-0.5">{{ img.captionDraft }}</p>
+                  <button @click="img.confirmed = false" class="text-xs text-blue-600 hover:underline mt-1">重新指派</button>
+                </template>
+                <template v-else>
+                  <p v-if="img.suggestedSlug || img.reason" class="text-xs text-slate-400 mb-1.5">
+                    AI 建議：{{ img.suggestedSlug ? projectName(img.suggestedSlug) : '無對應專案' }}<span v-if="img.reason">（{{ img.reason }}）</span>
+                  </p>
+                  <div class="flex flex-wrap gap-2 items-start">
+                    <select v-model="img.selectedSlug" @change="img.touched = true" class="text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-lg px-2 py-1.5">
+                      <option value="" disabled>選擇專案...</option>
+                      <option v-for="p in insightsProjects" :key="p.slug || p.id" :value="p.slug || p.id">{{ p.name || p.title || p.slug || p.id }}</option>
+                      <option value="__new__">＋ 建立新專案...</option>
+                    </select>
+                    <input v-if="img.selectedSlug === '__new__'" v-model="img.newProjectName" @input="img.touched = true" type="text" placeholder="新專案名稱"
+                      class="text-sm border border-blue-300 dark:border-blue-700 dark:bg-slate-800 rounded-lg px-2 py-1.5" />
+                    <input v-model="img.captionDraft" @input="img.touched = true" type="text" placeholder="一句話說明這張圖在說什麼"
+                      class="flex-1 min-w-[180px] text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-lg px-2 py-1.5" />
+                    <button @click="testImageCaption(img)" :disabled="img.testing" title="請 AI 直接看這張圖、測試目前環境是否真的讀得到畫面內容"
+                      class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 whitespace-nowrap">
+                      {{ img.testing ? '判讀中…' : '產生標題' }}
+                    </button>
+                  </div>
+                  <p v-if="img.selectedSlug === '__new__'" class="text-xs text-blue-500 mt-1">
+                    確認後會先建立這個新專案（成熟度預設「Not Ready」），再把這張圖分類進去，之後可以到專案列表補完其他資訊。
+                  </p>
+                  <div class="flex gap-2 mt-2">
+                    <button @click="confirmImageAssignment(img)" :disabled="img.saving"
+                      class="text-xs font-medium bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-50">確認</button>
+                    <button @click="confirmImageAssignment(img, { skip: true })" :disabled="img.saving"
+                      class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50">不相關</button>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Distributed list -->
         <div v-if="distributedRecords.length > 0" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
           <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
@@ -738,8 +846,15 @@
           </p>
         </div>
 
+        <p v-if="unconfirmedImageCount > 0" class="text-xs text-center text-amber-600 dark:text-amber-400">
+          請先完成上方圖片分類確認，再開啟專案列表
+        </p>
+
         <!-- Open project list -->
-        <button @click="$emit('navigate', 'reviewerOverview')" class="w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2">
+        <button @click="$emit('navigate', 'reviewerOverview')" :disabled="unconfirmedImageCount > 0"
+          :class="unconfirmedImageCount > 0
+            ? 'w-full bg-slate-300 dark:bg-slate-700 text-white font-bold py-3 rounded-xl cursor-not-allowed flex items-center justify-center gap-2'
+            : 'w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2'">
           開啟專案列表 <ExternalLink class="w-4 h-4" />
         </button>
       </div>
@@ -764,6 +879,226 @@
     </div>
     </div><!-- end main workflow content -->
   </div><!-- end flex container -->
+
+  <!-- Image Lightbox -->
+  <div v-if="lightboxImage" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" @click.self="lightboxImage = null">
+    <button @click="lightboxImage = null" class="absolute top-4 right-4 text-white/80 hover:text-white">
+      <X class="w-7 h-7" />
+    </button>
+    <img :src="assetUrl(lightboxImage)" class="max-w-full max-h-full rounded-lg shadow-2xl" @click.stop />
+  </div>
+
+  <!-- Review Diff Preview Modal -->
+  <div v-if="reviewDiffOpen" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col" style="max-height: 92vh;">
+      <!-- Header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+        <div class="flex items-center gap-3">
+          <h4 class="font-bold flex items-center gap-2">
+            <Eye class="w-4 h-4 text-blue-500" /> 校正結果預覽
+          </h4>
+          <span v-if="reviewDiffChangedCount > 0" class="text-xs font-medium px-2 py-0.5 bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 rounded-full">
+            {{ reviewDiffChangedCount }} 處變更
+          </span>
+          <span v-else class="text-xs font-medium px-2 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-500 rounded-full">無差異</span>
+        </div>
+        <button @click="closeReviewDiff" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+
+      <!-- Body -->
+      <div class="flex-1 overflow-y-auto p-5 space-y-4 min-h-0">
+        <!-- Side-by-side diff panels -->
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Original -->
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-red-400 shrink-0"></span>
+              <span class="text-xs font-semibold text-slate-600 dark:text-slate-400">原始版本</span>
+              <span class="text-[10px] text-slate-400">（紅底 = 被刪除/修改的字詞）</span>
+            </div>
+            <div ref="diffLeftPanel" @scroll="syncScrollLeft" class="border border-slate-200 dark:border-slate-700 rounded-xl overflow-y-auto h-52 font-mono text-[11px] leading-5 bg-slate-50 dark:bg-slate-800/40">
+              <div
+                v-for="(line, idx) in reviewDiffLines" :key="'orig-' + idx"
+                :class="line.type === 'delete' || line.type === 'changed'
+                  ? 'bg-red-50 dark:bg-red-900/20'
+                  : line.type === 'insert'
+                    ? 'bg-slate-100/60 dark:bg-slate-700/20'
+                    : 'text-slate-500 dark:text-slate-400'"
+                class="px-3 py-px flex gap-2 whitespace-pre-wrap"
+              >
+                <span class="shrink-0 select-none w-3 text-center opacity-60">{{ line.type === 'delete' || line.type === 'changed' ? '-' : ' ' }}</span>
+                <span class="flex-1" v-html="line.type !== 'insert' ? (line.leftHtml ?? '&nbsp;') : '&nbsp;'"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Corrected (read-only diff) -->
+          <div class="space-y-1.5">
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 shrink-0"></span>
+              <span class="text-xs font-semibold text-emerald-600 dark:text-emerald-400">校正版本</span>
+              <span class="text-[10px] text-slate-400">（綠底 = 新增/修改後的字詞）</span>
+            </div>
+            <div ref="diffRightPanel" @scroll="syncScrollRight" class="border border-emerald-200 dark:border-emerald-900/50 rounded-xl overflow-y-auto h-52 font-mono text-[11px] leading-5 bg-emerald-50/40 dark:bg-emerald-900/10">
+              <div
+                v-for="(line, idx) in reviewDiffLines" :key="'corr-' + idx"
+                :class="line.type === 'insert' || line.type === 'changed'
+                  ? 'bg-emerald-50 dark:bg-emerald-900/20'
+                  : line.type === 'delete'
+                    ? 'bg-slate-100/60 dark:bg-slate-700/20'
+                    : 'text-slate-500 dark:text-slate-400'"
+                class="px-3 py-px flex gap-2 whitespace-pre-wrap"
+              >
+                <span class="shrink-0 select-none w-3 text-center opacity-60">{{ line.type === 'insert' || line.type === 'changed' ? '+' : ' ' }}</span>
+                <span class="flex-1" v-html="line.type !== 'delete' ? (line.rightHtml ?? '&nbsp;') : '&nbsp;'"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Editable corrected version -->
+        <div class="space-y-1.5">
+          <p class="text-xs font-semibold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
+            <Pencil class="w-3 h-3" /> 可在此直接編輯校正版本，確認後才會更新會議記錄
+          </p>
+          <textarea
+            ref="diffEditPanel"
+            v-model="reviewCorrectedEditing"
+            rows="10"
+            @scroll="syncScrollEdit"
+            class="w-full font-mono text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl p-4 resize-none outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed"
+          ></textarea>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
+        <p class="text-xs text-slate-400">確認後會覆蓋目前的會議記錄，此操作可在步驟四的文字框中撤銷</p>
+        <div class="flex items-center gap-3">
+          <button @click="closeReviewDiff" class="px-5 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+            取消
+          </button>
+          <button @click="applyReviewDiff" class="flex items-center gap-2 px-5 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold transition-colors shadow-lg shadow-blue-500/20">
+            <Check class="w-4 h-4" /> 確認更新會議記錄
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Meeting Notes Reflective Review (Grill Me) Modal -->
+  <div v-if="reviewPanelOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col" style="max-height: 88vh;">
+      <!-- Modal header -->
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+        <h4 class="font-bold flex items-center gap-2"><Sparkles class="w-4 h-4 text-amber-500" /> AI 反思校正</h4>
+        <button @click="!reviewLoadingQuestions && !reviewApplying && closeReviewPanel()" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+
+      <!-- Body: split layout -->
+      <div class="flex flex-1 min-h-0">
+        <!-- Left: meeting notes read-only view -->
+        <div class="w-1/2 border-r border-slate-100 dark:border-slate-800 flex flex-col">
+          <div class="px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 shrink-0">
+            <p class="text-xs font-semibold text-slate-500 uppercase tracking-wide">目前會議記錄（供參考）</p>
+          </div>
+          <div class="flex-1 overflow-y-auto px-5 py-4">
+            <div class="md-preview text-sm text-slate-700 dark:text-slate-300 leading-relaxed" v-html="renderMarkdown(meetingNotesContent)"></div>
+          </div>
+        </div>
+
+        <!-- Right: question wizard / states -->
+        <div class="w-1/2 flex flex-col">
+          <!-- Generating questions -->
+          <div v-if="reviewLoadingQuestions" class="flex-1 flex flex-col items-center justify-center text-center p-8">
+            <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
+            <p class="text-sm text-slate-500">AI 正在比對逐字稿與會議記錄...</p>
+          </div>
+
+          <!-- No issues found -->
+          <div v-else-if="reviewNoIssues" class="flex-1 flex flex-col items-center justify-center text-center p-8 space-y-3">
+            <Check class="w-10 h-10 text-emerald-500 mx-auto" />
+            <p class="font-medium">本記錄與逐字稿／補充文件高度一致</p>
+            <p class="text-sm text-slate-500">未發現需要校正的問題</p>
+            <button @click="closeReviewPanel" class="mt-2 bg-slate-100 dark:bg-slate-800 px-5 py-2 rounded-xl text-sm font-medium hover:bg-slate-200 dark:hover:bg-slate-700">關閉</button>
+          </div>
+
+          <!-- Applying answers -->
+          <div v-else-if="reviewApplying" class="flex-1 flex flex-col items-center justify-center text-center p-8">
+            <Loader2 class="w-8 h-8 text-amber-500 animate-spin mx-auto mb-3" />
+            <p class="text-sm text-slate-500">AI 正在依您的回答修正會議記錄...</p>
+          </div>
+
+          <!-- Question wizard -->
+          <div v-else-if="currentReviewQuestion" class="flex-1 flex flex-col p-6 space-y-5 overflow-y-auto">
+            <p class="text-xs text-slate-400">問題 {{ reviewQuestionIndex + 1 }} / {{ reviewQuestions.length }}</p>
+
+            <p class="text-sm font-medium leading-relaxed">{{ currentReviewQuestion.question }}</p>
+
+            <div v-if="currentReviewQuestion.type === 'choice'" class="space-y-2">
+              <label
+                v-for="opt in currentReviewQuestion.options"
+                :key="opt"
+                :class="[
+                  currentReviewQuestion.answer.includes(opt)
+                    ? opt.startsWith('(原意)')
+                      ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-400 dark:border-amber-600 text-amber-800 dark:text-amber-200'
+                      : 'bg-amber-500 text-white border-amber-500'
+                    : opt.startsWith('(原意)')
+                      ? 'bg-amber-50/50 dark:bg-amber-900/10 border-amber-200 dark:border-amber-800 hover:border-amber-400'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-amber-300'
+                ]"
+                class="w-full flex items-start gap-3 text-sm px-4 py-2.5 rounded-xl border transition-colors cursor-pointer select-none"
+              >
+                <input type="checkbox" :value="opt" v-model="currentReviewQuestion.answer" class="mt-0.5 shrink-0 accent-amber-500" />
+                <span class="flex-1 leading-snug">
+                  <span v-if="opt.startsWith('(原意)')" class="inline-block text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 rounded mr-1.5">原意</span>{{ opt.startsWith('(原意)') ? opt.substring(4).trimStart() : opt }}
+                </span>
+              </label>
+              <input
+                v-if="isOtherSelected"
+                v-model="currentReviewQuestion.customAnswer"
+                type="text"
+                placeholder="請填寫您的答案..."
+                class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-amber-400"
+              />
+            </div>
+            <textarea
+              v-else
+              v-model="currentReviewQuestion.answer"
+              rows="3"
+              placeholder="請輸入您的答案..."
+              class="w-full bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+            ></textarea>
+
+            <p v-if="reviewApplyError" class="text-xs text-red-500">{{ reviewApplyError }}</p>
+
+            <div class="flex items-center justify-between pt-2 mt-auto">
+              <button
+                @click="reviewQuestionIndex--"
+                :disabled="reviewQuestionIndex === 0"
+                class="text-sm font-medium text-slate-500 hover:text-slate-700 disabled:opacity-30 disabled:cursor-not-allowed"
+              >上一題</button>
+              <button
+                v-if="reviewQuestionIndex < reviewQuestions.length - 1"
+                @click="reviewQuestionIndex++"
+                class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
+              >下一題</button>
+              <button
+                v-else
+                @click="submitMeetingNotesReview"
+                class="bg-amber-600 hover:bg-amber-700 text-white px-5 py-2 rounded-xl text-sm font-bold"
+              >送出修正</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
@@ -772,7 +1107,7 @@ import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar,
-  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy
+  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy, Image as ImageIcon, ZoomIn, RefreshCw
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, initialTask: Object, team: String })
@@ -997,14 +1332,64 @@ function dismissRepair() {
 const meetingDate = ref(new Date().toISOString().slice(0, 10))
 
 const taskId = ref(null)
+const stepError = ref({ step: null, message: '' })
 
 watch(meetingDate, (val) => {
   if (taskId.value) syncTask({ meetingDate: val })
 })
 
+// 檢查任務是否已經在後端被標記為失敗（例如 LLM 沒有回應、逾時），
+// 避免前端 polling 在這種情況下永遠停在 loading 畫面。
+async function checkTaskFailed(step) {
+  if (!taskId.value) return false
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/tasks/${taskId.value}`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) return false
+    const t = await res.json()
+    if (t.status === 'error' && t.errorStep === step) {
+      stepError.value = { step, message: t.errorMessage || '處理失敗，請重試' }
+      isProcessing.value = false
+      return true
+    }
+  } catch {}
+  return false
+}
+
+async function retryStep() {
+  const step = stepError.value.step
+  if (!step || !taskId.value) return
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/tasks/${taskId.value}/retry`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return
+  } catch {
+    return
+  }
+  stepError.value = { step: null, message: '' }
+  isProcessing.value = true
+  if (step === 2) startExtractionPolling()
+  else if (step === 4) startMeetingNotesPolling()
+  else if (step === 5) startInsightsPolling()
+}
+
 const meetingNotesOutputPath = ref(null)
 const meetingNotesContent = ref('')
 const meetingNotesType = ref('商務會議')
+const reviewPanelOpen = ref(false)
+const reviewLoadingQuestions = ref(false)
+const reviewQuestions = ref([])
+const reviewQuestionIndex = ref(0)
+const reviewNoIssues = ref(false)
+const reviewApplying = ref(false)
+const reviewApplyError = ref('')
+const reviewError = ref('')
+const reviewDiffOpen = ref(false)
+const reviewOriginalSnapshot = ref('')
+const reviewCorrectedEditing = ref('')
 const emailTo = ref('')
 const emailSending = ref(false)
 const emailSent = ref(false)
@@ -1022,6 +1407,15 @@ const distributedRecords = ref([])
 const recordError = ref('')
 const recordExpectedSlugs = ref([])
 let recordDistPollTimer = null
+
+const imageReviewImages = ref([])
+const imageReviewRefreshing = ref(false)
+const lightboxImage = ref(null)
+let imageReviewPollTimer = null
+let imageReviewPollCount = 0
+// reasoning 模型逐張用 Read 工具看圖再分類，10 張圖片合計常超過 1-2 分鐘；
+// 40 次 ×5 秒 ≈ 3.3 分鐘，給足時間讓建議自動補上，避免面板卡在「還沒有建議」的空白狀態。
+const IMAGE_REVIEW_MAX_POLLS = 40
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -1342,9 +1736,271 @@ function startMeetingNotesPolling() {
         return
       }
     } catch {}
+    if (await checkTaskFailed(4)) return
     meetingNotesPollTimer = setTimeout(poll, 10000)
   }
   meetingNotesPollTimer = setTimeout(poll, 10000)
+}
+
+const currentReviewQuestion = computed(() => reviewQuestions.value[reviewQuestionIndex.value] || null)
+const isOtherSelected = computed(() => {
+  const q = currentReviewQuestion.value
+  if (!q || q.type !== 'choice') return false
+  const selected = Array.isArray(q.answer) ? q.answer : []
+  return selected.some(a => typeof a === 'string' && a.includes('其他'))
+})
+function resolvedReviewAnswer(q) {
+  if (q.type === 'choice') {
+    const selected = Array.isArray(q.answer) ? q.answer : (q.answer ? [q.answer] : [])
+    if (selected.length === 0) return '（使用者未作答，請維持原記錄該處內容）'
+    const resolved = selected.map(a =>
+      typeof a === 'string' && a.includes('其他') && (q.customAnswer || '').trim()
+        ? (q.customAnswer || '').trim()
+        : a
+    )
+    return resolved.join('、')
+  }
+  return (q.answer || '').trim()
+}
+
+async function startMeetingNotesReview() {
+  if (!transcriptContainerPath.value || !meetingNotesContent.value) return
+
+  reviewError.value = ''
+  reviewNoIssues.value = false
+  reviewQuestions.value = []
+  reviewQuestionIndex.value = 0
+  reviewLoadingQuestions.value = true
+  reviewPanelOpen.value = true
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/workflow/review-meeting-notes', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcriptContainerPath: transcriptContainerPath.value,
+        meetingNotesContent: meetingNotesContent.value,
+        meetingDate: meetingDate.value,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '啟動反思校正失敗')
+
+    if (!data.questions || data.questions.length === 0) {
+      reviewNoIssues.value = true
+    } else {
+      reviewQuestions.value = data.questions.map(q => ({ ...q, answer: q.type === 'choice' ? [] : '', customAnswer: '' }))
+    }
+  } catch (err) {
+    reviewError.value = err.message
+    reviewPanelOpen.value = false
+  } finally {
+    reviewLoadingQuestions.value = false
+  }
+}
+
+async function submitMeetingNotesReview() {
+  reviewApplying.value = true
+  reviewApplyError.value = ''
+
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const answers = reviewQuestions.value.map(q => {
+      if (q.type === 'choice') {
+        const selected = Array.isArray(q.answer) ? q.answer : (q.answer ? [q.answer] : [])
+        const options = selected.map(a =>
+          typeof a === 'string' && a.includes('其他') && (q.customAnswer || '').trim()
+            ? (q.customAnswer || '').trim()
+            : a
+        )
+        return { question: q.question, type: 'choice', options }
+      }
+      return { question: q.question, type: 'text', text: (q.answer || '').trim() }
+    })
+    const res = await fetch('/api/workflow/review-meeting-notes/apply', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcriptContainerPath: transcriptContainerPath.value,
+        meetingNotesOutputPath: meetingNotesOutputPath.value,
+        meetingNotesContent: meetingNotesContent.value,
+        meetingDate: meetingDate.value,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
+        answers,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '套用校正失敗')
+
+    reviewOriginalSnapshot.value = meetingNotesContent.value
+    reviewCorrectedEditing.value = data.content
+    closeReviewPanel()
+    reviewDiffOpen.value = true
+  } catch (err) {
+    reviewApplyError.value = err.message
+  } finally {
+    reviewApplying.value = false
+  }
+}
+
+function closeReviewPanel() {
+  reviewPanelOpen.value = false
+  reviewQuestions.value = []
+  reviewQuestionIndex.value = 0
+  reviewNoIssues.value = false
+  reviewApplyError.value = ''
+}
+
+// ── Diff helpers ─────────────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+
+function tokenizeForDiff(text) {
+  return text.match(/[一-龥　-〿！-￮]|[a-zA-Z0-9À-ɏ]+|[ \t]+|[^\s\w一-龥　-〿！-￮]/g) || [text || '']
+}
+
+function buildInlineHtml(a, b) {
+  const at = tokenizeForDiff(a)
+  const bt = tokenizeForDiff(b)
+  const m = at.length, n = bt.length
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const eq = at[i - 1] === bt[j - 1]
+      dp[i][j] = eq ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+  const ops = []
+  let i = m, j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && at[i - 1] === bt[j - 1])
+    { ops.unshift({ t: '=', a: at[i - 1], b: bt[j - 1] }); i--; j-- }
+    else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) { ops.unshift({ t: '+', b: bt[j - 1] }); j-- }
+    else { ops.unshift({ t: '-', a: at[i - 1] }); i-- }
+  }
+  let L = '', R = ''
+  for (const op of ops) {
+    if (op.t === '=') { const e = escapeHtml(op.b); L += e; R += e }
+    else if (op.t === '-') L += `<mark style="background:#fee2e2;color:#991b1b;border-radius:2px;padding:0 1px;">${escapeHtml(op.a)}</mark>`
+    else R += `<mark style="background:#d1fae5;color:#065f46;border-radius:2px;padding:0 1px;">${escapeHtml(op.b)}</mark>`
+  }
+  return { leftHtml: L, rightHtml: R }
+}
+
+function computeLineDiff(a, b) {
+  const aLines = (a || '').split('\n')
+  const bLines = (b || '').split('\n')
+  const m = aLines.length, n = bLines.length
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = aLines[i - 1] === bLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+  const raw = []
+  let i = m, j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && aLines[i - 1] === bLines[j - 1]) {
+      raw.unshift({ type: 'equal', aText: aLines[i - 1], bText: aLines[i - 1] }); i--; j--
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      raw.unshift({ type: 'insert', bText: bLines[j - 1] }); j--
+    } else {
+      raw.unshift({ type: 'delete', aText: aLines[i - 1] }); i--
+    }
+  }
+
+  const result = []
+  let k = 0
+  while (k < raw.length) {
+    if (raw[k].type === 'equal') {
+      const html = escapeHtml(raw[k].aText)
+      result.push({ type: 'equal', leftHtml: html, rightHtml: html })
+      k++
+    } else {
+      const dels = [], ins = []
+      while (k < raw.length && raw[k].type !== 'equal') {
+        if (raw[k].type === 'delete') dels.push(raw[k].aText)
+        else ins.push(raw[k].bText)
+        k++
+      }
+      const maxLen = Math.max(dels.length, ins.length)
+      for (let p = 0; p < maxLen; p++) {
+        const d = p < dels.length ? dels[p] : null
+        const s = p < ins.length ? ins[p] : null
+        if (d !== null && s !== null) {
+          const { leftHtml, rightHtml } = buildInlineHtml(d, s)
+          const hasChanges = leftHtml.includes('<mark') || rightHtml.includes('<mark')
+          result.push(hasChanges
+            ? { type: 'changed', leftHtml, rightHtml }
+            : { type: 'equal', leftHtml: escapeHtml(d), rightHtml: escapeHtml(s) })
+        } else if (d !== null) {
+          result.push({ type: 'delete', leftHtml: escapeHtml(d), rightHtml: null })
+        } else {
+          result.push({ type: 'insert', leftHtml: null, rightHtml: escapeHtml(s) })
+        }
+      }
+    }
+  }
+  return result
+}
+
+const reviewDiffLines = computed(() => {
+  if (!reviewDiffOpen.value) return []
+  return computeLineDiff(reviewOriginalSnapshot.value, reviewCorrectedEditing.value)
+})
+
+const reviewOriginalDiffLines = computed(() =>
+  reviewDiffLines.value.filter(l => l.type !== 'insert')
+)
+
+const reviewCorrectedDiffLines = computed(() =>
+  reviewDiffLines.value.filter(l => l.type !== 'delete')
+)
+
+const reviewDiffChangedCount = computed(() =>
+  reviewDiffLines.value.filter(l => l.type !== 'equal').length
+)
+
+// Sync scroll across all three diff/edit panels by scroll ratio
+const diffLeftPanel = ref(null)
+const diffRightPanel = ref(null)
+const diffEditPanel = ref(null)
+let _syncingScroll = false
+function _applyRatio(el, ratio) {
+  if (!el) return
+  const max = el.scrollHeight - el.clientHeight
+  if (max > 0) el.scrollTop = ratio * max
+}
+function _syncAll(source) {
+  if (_syncingScroll) return
+  _syncingScroll = true
+  const max = source.scrollHeight - source.clientHeight
+  const ratio = max > 0 ? source.scrollTop / max : 0
+  if (source !== diffLeftPanel.value)  _applyRatio(diffLeftPanel.value, ratio)
+  if (source !== diffRightPanel.value) _applyRatio(diffRightPanel.value, ratio)
+  if (source !== diffEditPanel.value)  _applyRatio(diffEditPanel.value, ratio)
+  _syncingScroll = false
+}
+function syncScrollLeft(e)  { _syncAll(e.target) }
+function syncScrollRight(e) { _syncAll(e.target) }
+function syncScrollEdit(e)  { _syncAll(e.target) }
+
+function applyReviewDiff() {
+  meetingNotesContent.value = reviewCorrectedEditing.value
+  closeReviewDiff()
+  emit('toast', '已完成 AI 反思校正並更新會議記錄')
+}
+
+function closeReviewDiff() {
+  reviewDiffOpen.value = false
+  reviewOriginalSnapshot.value = ''
+  reviewCorrectedEditing.value = ''
 }
 
 function styleEmailHtml(html) {
@@ -1438,6 +2094,7 @@ function startExtractionPolling() {
         return
       }
     } catch {}
+    if (await checkTaskFailed(2)) return
     extractionPollTimer = setTimeout(poll, 3000)
   }
   extractionPollTimer = setTimeout(poll, 3000)
@@ -1584,6 +2241,7 @@ function startInsightsPolling() {
         return
       }
     } catch {}
+    if (await checkTaskFailed(5)) return
     insightsPollTimer = setTimeout(poll, 10000)
   }
   insightsPollTimer = setTimeout(poll, 10000)
@@ -1597,7 +2255,7 @@ async function startRecordDistribution() {
   clearTimeout(recordDistPollTimer)
 
   let projects = insightsProjects.value
-    .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id }))
+    .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id, description: p.description || '' }))
     .filter(p => p.slug)
 
   if (projects.length === 0) {
@@ -1610,7 +2268,7 @@ async function startRecordDistribution() {
       if (res.ok && Array.isArray(data.projects) && data.projects.length > 0) {
         insightsProjects.value = data.projects
         projects = data.projects
-          .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id }))
+          .map(p => ({ slug: p.slug || p.id, name: p.name || p.title || p.slug || p.id, description: p.description || '' }))
           .filter(p => p.slug)
       }
     } catch {}
@@ -1637,6 +2295,7 @@ async function startRecordDistribution() {
         meetingDate: meetingDate.value,
         notesContainerPath: meetingNotesOutputPath.value,
         projects,
+        docFtpPaths: successDocs.value.map(d => d.remotePath),
       }),
     })
     const data = await res.json()
@@ -1667,6 +2326,7 @@ function startRecordDistPoll() {
     distributedRecords.value = (completed || []).map(s => ({ slug: s, date: meetingDate.value }))
     recordDistributing.value = false
     syncTask({ currentStep: 6, status: 'completed', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done', 6: 'done' }, data: { distributedRecords: distributedRecords.value } })
+    loadImageReview({ poll: true })
   }
 
   const poll = async () => {
@@ -1707,6 +2367,143 @@ function startRecordDistPoll() {
     recordDistPollTimer = setTimeout(poll, 8000)
   }
   recordDistPollTimer = setTimeout(poll, 8000)
+}
+
+async function loadImageReview({ poll = false, manual = false } = {}) {
+  if (!meetingDate.value) return
+  clearTimeout(imageReviewPollTimer)
+  if (manual) imageReviewPollCount = 0
+  if (manual) imageReviewRefreshing.value = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/meeting-record/image-review?meetingDate=${encodeURIComponent(meetingDate.value)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await res.json()
+    if (!res.ok) return
+
+    const existingByFile = new Map(imageReviewImages.value.map(img => [img.file, img]))
+    imageReviewImages.value = (data.images || []).map(img => {
+      const prior = existingByFile.get(img.file)
+      // 不要覆蓋使用者已經手動編輯過、但還沒送出確認的內容
+      if (prior?.touched && !img.confirmed) return prior
+      return {
+        ...img,
+        selectedSlug: img.currentSlug || img.suggestedSlug || '',
+        captionDraft: img.currentCaption || img.suggestedCaption || '',
+        newProjectName: '',
+        touched: false,
+        saving: false,
+      }
+    })
+
+    // suggestions 可能還在生成中（reasoning 模型逐張用 Read 工具看圖，10 張常超過 1 分鐘），
+    // 短時間內重試讓建議自動補上
+    if (poll && imageReviewPollCount < IMAGE_REVIEW_MAX_POLLS &&
+        (!data.fresh || imageReviewImages.value.some(i => !i.confirmed && !i.suggestedSlug && !i.reason))) {
+      imageReviewPollCount++
+      imageReviewPollTimer = setTimeout(() => loadImageReview({ poll: true }), 5000)
+    } else {
+      imageReviewPollCount = 0
+    }
+  } catch {
+  } finally {
+    imageReviewRefreshing.value = false
+  }
+}
+
+async function confirmImageAssignment(img, { skip = false } = {}) {
+  if (img.saving) return
+  if (!skip && !img.selectedSlug) {
+    emit('toast', '請先選擇要分類到哪個專案', 'error')
+    return
+  }
+  if (!skip && img.selectedSlug === '__new__' && !img.newProjectName?.trim()) {
+    emit('toast', '請填寫新專案名稱', 'error')
+    return
+  }
+  if (!skip && !img.captionDraft?.trim()) {
+    emit('toast', '請填寫圖片說明', 'error')
+    return
+  }
+  img.saving = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    let targetSlug = img.selectedSlug
+
+    // 圖片不屬於任何既有專案：先建立新專案，再把圖片分類過去
+    if (!skip && targetSlug === '__new__') {
+      const createRes = await fetch('/api/project-insights/create', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: img.newProjectName.trim() }),
+      })
+      const createData = await createRes.json()
+      if (!createRes.ok || !createData.success) throw new Error(createData.error || '建立新專案失敗')
+      targetSlug = createData.slug
+      if (!insightsProjects.value.some(p => (p.slug || p.id) === targetSlug)) {
+        insightsProjects.value = [...insightsProjects.value, { slug: targetSlug, id: targetSlug, name: createData.name }]
+      }
+      img.selectedSlug = targetSlug
+    }
+
+    const res = await fetch('/api/meeting-record/image-review/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meetingDate: meetingDate.value,
+        file: img.file,
+        slug: skip ? null : targetSlug,
+        caption: skip ? null : img.captionDraft,
+        skip,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '確認失敗')
+    img.confirmed = true
+    img.skipped = skip
+    img.currentSlug = data.slug
+    img.touched = false
+    emit('toast', skip ? '已標記為不相關' : '圖片已分類並寫入記錄')
+  } catch (err) {
+    emit('toast', err.message || '確認失敗', 'error')
+  } finally {
+    img.saving = false
+  }
+}
+
+async function testImageCaption(img) {
+  if (img.testing) return
+  img.testing = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/meeting-record/image-review/test-caption', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: img.file }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || 'AI 測試判讀失敗')
+    img.captionDraft = data.caption
+    img.touched = true
+    emit('toast', 'AI 已重新看圖，請確認下方文字是否真的符合圖片內容')
+  } catch (err) {
+    emit('toast', err.message || 'AI 測試判讀失敗', 'error')
+  } finally {
+    img.testing = false
+  }
+}
+
+const unconfirmedImageCount = computed(() => imageReviewImages.value.filter(i => !i.confirmed).length)
+
+function projectName(slug) {
+  const p = insightsProjects.value.find(p => (p.slug || p.id) === slug)
+  return p?.name || p?.title || slug
+}
+
+function assetUrl(file) {
+  const token = localStorage.getItem('clawpm_token')
+  return `/api/project-insights/asset?file=${encodeURIComponent(file)}&token=${encodeURIComponent(token || '')}`
 }
 
 function isNewInsightProject(p) {
@@ -1771,6 +2568,7 @@ function restoreFromTask(task) {
   // Step 6 state
   distributedRecords.value = (task.data.distributedRecords || [])
   recordExpectedSlugs.value = (task.data.recordExpectedSlugs || [])
+  if (distributedRecords.value.length > 0) loadImageReview()
 
   // Set current step
   step.value = task.currentStep || 1
@@ -1799,6 +2597,9 @@ function restoreFromTask(task) {
       startRecordDistPoll()
     }
     // else: insufficient data to resume — leave isProcessing false so UI isn't stuck
+  } else if (task.status === 'error' && task.errorStep) {
+    step.value = task.errorStep
+    stepError.value = { step: task.errorStep, message: task.errorMessage || '處理失敗，請重試' }
   }
 }
 

@@ -183,6 +183,22 @@ async function completeStep(taskId, completedStep, dataUpdates = {}) {
 
 // ── Step runners ──────────────────────────────────────────────────────────────
 
+// sendAndStream() resolves even when the LLM never produced a response (e.g. gateway
+// timeout, bad API key/model config) — it just calls onUpdate({ lastAssistantMsg: null, done: true })
+// so callers can detect the failure themselves. The step runners below all passed a no-op
+// callback and ignored that signal, so a non-responding LLM looked identical to success:
+// the step would "complete" with no actual output. This wrapper makes that failure explicit.
+export async function sendAndStreamOrThrow(client, sessionKey, message) {
+  let lastMsg = null
+  await sendAndStream(client, sessionKey, message, (update) => {
+    if (update?.lastAssistantMsg) lastMsg = update.lastAssistantMsg
+  })
+  if (!lastMsg) {
+    throw new Error('LLM 未回應（逾時或連線失敗），請確認 LLM API 金鑰與模型設定是否正確')
+  }
+  return lastMsg
+}
+
 async function runStep(task) {
   const { id, currentStep, provisionUserId } = task
   inProgressTasks.add(id)
@@ -244,7 +260,7 @@ async function runExtractionStep(task, paths) {
   await updateTask(id, { data: { extractionOutputPath: outputPath } })
 
   const client = getClientForUser(task.provisionUserId)
-  await sendAndStream(client, sessionKey, prompt, () => {})
+  await sendAndStreamOrThrow(client, sessionKey, prompt)
 
   const relPath = outputPath.slice(CONTAINER_WORKSPACE.length)
   const hostPath = path.join(paths.workspace, relPath)
@@ -342,13 +358,34 @@ async function runMeetingNotesStep(task, paths) {
   await updateTask(id, { data: { meetingNotesOutputPath: notesOutputContainerPath } })
 
   const client = getClientForUser(task.provisionUserId)
-  await sendAndStream(client, sessionKey, prompt, () => {})
+  await sendAndStreamOrThrow(client, sessionKey, prompt)
 
   const relPath = notesOutputContainerPath.slice(CONTAINER_WORKSPACE.length)
   const hostPath = path.join(paths.workspace, relPath)
   const content = await pollForFile(hostPath, 120_000, 5_000)
 
   await completeStep(id, 4, { meetingNotesOutputPath: notesOutputContainerPath, meetingNotesContent: content })
+}
+
+const INSIGHTS_SHRINK_WARN_RATIO = 0.15
+const INSIGHTS_SHRINK_MIN_CHARS = 500
+
+function projectMarkdownHostPath(workspaceHostPath, slug) {
+  return path.join(workspaceHostPath, 'project-insights', `${slug}.md`)
+}
+
+function countBullets(content) {
+  return (content.match(/^[ \t]*[-*]\s+/gm) || []).length
+}
+
+export function readProjectMarkdownSnapshot(workspaceHostPath, slug) {
+  const hostPath = projectMarkdownHostPath(workspaceHostPath, slug)
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    return { hostPath, content, length: content.length, bulletCount: countBullets(content) }
+  } catch {
+    return null
+  }
 }
 
 async function runInsightsStep(task, paths) {
@@ -363,8 +400,16 @@ async function runInsightsStep(task, paths) {
     const existing = JSON.parse(fs.readFileSync(projectsJsonHostPath, 'utf8'))
     existingProjectIds = (existing.projects || []).map(p => p.id || p.slug || p.name).filter(Boolean)
     knownProjects = (existing.projects || []).filter(p => p.name && (p.slug || p.id))
-      .map(p => ({ name: p.name, slug: p.slug || p.id }))
+      .map(p => ({ name: p.name, slug: p.slug || p.id, description: p.description || '' }))
   } catch {}
+
+  // 在觸發 skill 前先讀出每個既有專案目前的 Markdown 快照（只在後端本地比對用，不塞進 prompt，
+  // 避免把整份舊內容重複攤進輸入 token），事後用來偵測內容是否被誤刪而非增量合併。
+  const beforeSnapshots = {}
+  for (const p of knownProjects) {
+    const snap = readProjectMarkdownSnapshot(paths.workspace, p.slug)
+    if (snap) beforeSnapshots[p.slug] = snap
+  }
 
   const today = task.meetingDate || new Date().toISOString().slice(0, 10)
   const sessionKey = makeScopedSessionKey('insights')
@@ -381,15 +426,18 @@ async function runInsightsStep(task, paths) {
   if (knownProjects.length > 0) {
     parts.push(
       '知識庫中已有以下專案（Markdown 文件已就緒），請優先將本次會議內容對應至這些專案進行增量整併：',
-      ...knownProjects.map(p => `- ${p.name}（${p.slug}.md）`),
+      ...knownProjects.map(p => `- ${p.name}（${p.slug}.md）${p.description ? `：${p.description}` : '（尚無 description，請依本次與既有內容補上）'}`),
       '',
       '請依照 skill 工作流程完整執行：',
-      '1. 讀取上方所列專案的 Markdown 文件，以增量合併方式更新各專案內容',
-      '2. 若本次會議出現上述清單以外的新主題，可自動新增對應 Markdown',
-      '3. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
-      '4. 完成後回報各專案更新情況、目前進度、對外發表成熟度與主要缺口',
+      '1. 用 Read 工具讀取上方所列專案的 Markdown 文件，取得目前版本作為比對與插入錨點的依據',
+      '2. 檔案已存在時，現狀型章節一律用 Edit 工具定點插入新 bullet（以章節標題作錨點），不要用 Write 整份覆寫；只有新建專案檔案時才用 Write',
+      '3. 嚴格遵守 references/markdown-schema.md 的「增量寫作鐵則」：逐筆累加、不可整節覆寫、不可刪除舊 bullet（只能加註取代標記）',
+      '4. 同步維護 reviewer/projects.json 裡每個專案的 description 欄位（1-3 句話描述範疇與關鍵字，供記錄分發/圖片分類等其他流程比對用）：沒有就補上，已經過時或不夠精確就直接覆寫成更準確的版本',
+      '5. 執行 Step 5.5 自查：確認每個 Edit 的錨點唯一且正確、新 bullet 都帶日期來源',
+      '6. 若本次會議出現上述清單以外的新主題，可自動新增對應 Markdown 與 description',
+      '7. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
+      '8. 完成後回報各專案更新情況、目前進度、對外發表成熟度、主要缺口，以及 Step 5.5 自查結果',
       '',
-      '請直接執行，無需確認。',
     )
   } else {
     parts.push(
@@ -397,22 +445,124 @@ async function runInsightsStep(task, paths) {
       '1. 讀取現有 project-insights/ 目錄中的所有專案 Markdown（若存在）',
       '2. 偵測本次會議涉及哪些專案',
       '3. 以增量合併方式更新每個涉及的專案 Markdown',
-      '4. 若出現新專案主題，自動建立對應新 Markdown 檔',
+      '4. 若出現新專案主題，自動建立對應新 Markdown 檔，並在 reviewer/projects.json 寫上 description（1-3 句話描述範疇與關鍵字，供記錄分發/圖片分類等其他流程比對用）',
       '5. 同步更新 index.md、reviewer/projects.json 與相關 HTML 檔',
       '6. 完成後回報已更新哪些專案、目前進度、對外發表成熟度與主要缺口',
       '',
-      '請直接執行，無需確認。',
     )
   }
 
   await updateTask(id, { data: { insightsOutputDir: CONTAINER_INSIGHTS_DIR, insightsBeforeMtime: beforeMtime, existingProjectIds } })
 
   const client = getClientForUser(task.provisionUserId)
-  await sendAndStream(client, sessionKey, parts.join('\n'), () => {})
+  await sendAndStreamOrThrow(client, sessionKey, parts.join('\n'))
 
   await pollForProjectsUpdate(projectsJsonHostPath, beforeMtime, 120_000, 10_000)
 
-  await completeStep(id, 5)
+  const sizeChecks = await checkInsightsRegression(client, sessionKey, paths.workspace, beforeSnapshots)
+  await ensureProjectDescriptions(client, sessionKey, paths.workspace)
+
+  await completeStep(id, 5, { insightsSizeChecks: sizeChecks })
+}
+
+// SKILL.md 已經要求 agent 自己維護 projects.json 的 description 欄位，但這是埋在一長串指示裡的一條，
+// 容易被忽略。這裡做最後一道保險：跑完主要工作後，檢查有沒有專案的 description 還是空的，
+// 有的話在同一個 session 裡（agent 已經讀過相關 markdown，不需要重新給內容）追加一輪明確要求。
+export async function ensureProjectDescriptions(client, sessionKey, workspaceHostPath) {
+  const projectsJsonPath = path.join(workspaceHostPath, 'project-insights', 'reviewer', 'projects.json')
+
+  const readProjects = () => {
+    try { return JSON.parse(fs.readFileSync(projectsJsonPath, 'utf8')).projects || [] } catch { return [] }
+  }
+
+  const missing = readProjects().filter(p => !p.description || !String(p.description).trim())
+  if (missing.length === 0) return
+
+  const followUp = [
+    '以下專案目前在 reviewer/projects.json 裡沒有 description（或是空字串）：',
+    ...missing.map(p => `- ${p.name || p.slug}（${(p.slug || p.id)}.md）`),
+    '',
+    '請讀取每個專案對應的 Markdown 內容，幫忙寫一個 1-3 句話的描述（範疇、核心技術領域、關鍵字），' +
+      '寫回 projects.json 對應的 description 欄位。這個欄位會被記錄分發、補充圖片分類建議拿來判斷內容歸屬，請盡量具體。',
+  ].join('\n')
+
+  try {
+    await sendAndStreamOrThrow(client, sessionKey, followUp)
+  } catch (err) {
+    console.warn('[insights] description backfill follow-up failed, leaving as-is:', err.message)
+    return
+  }
+
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    await sleep(5_000)
+    if (readProjects().every(p => p.description && String(p.description).trim())) return
+  }
+}
+
+// 比較更新前後每個既有專案 Markdown 的長度／bullet 數，
+// 若大幅縮水（疑似誤刪舊內容而非增量合併），在同一個 session 裡追加一輪要求修正，
+// 不直接判定整個 task 失敗，避免擋住自動化流程。
+export async function checkInsightsRegression(client, sessionKey, workspaceHostPath, beforeSnapshots) {
+  const shrunk = []
+  const results = []
+
+  for (const [slug, before] of Object.entries(beforeSnapshots)) {
+    const after = readProjectMarkdownSnapshot(workspaceHostPath, slug)
+    if (!after) continue
+    const shrinkRatio = before.length > 0 ? (before.length - after.length) / before.length : 0
+    const isShrunk = before.length >= INSIGHTS_SHRINK_MIN_CHARS && shrinkRatio >= INSIGHTS_SHRINK_WARN_RATIO
+    results.push({
+      slug,
+      beforeLength: before.length, afterLength: after.length,
+      beforeBullets: before.bulletCount, afterBullets: after.bulletCount,
+      flaggedShrink: isShrunk,
+    })
+    if (isShrunk) shrunk.push({ slug, before, after })
+  }
+
+  if (shrunk.length === 0) return results
+
+  const followUp = [
+    '偵測到以下專案 Markdown 在這次更新後內容明顯變短，違反「增量寫作鐵則」（現狀型章節不可整節覆寫或刪除舊 bullet，只能加註取代標記）：',
+    '',
+    ...shrunk.map(s =>
+      `- ${s.slug}.md：${s.before.length} → ${s.after.length} 字（bullet 數 ${s.before.bulletCount} → ${s.after.bulletCount}）`,
+    ),
+    '',
+    '請重新檢查這些檔案：比對更新前版本（你剛才讀過／附在前一則訊息裡的內容），找出消失的 bullet，' +
+      '若該事實仍然有效或只是被新事實延伸，請補回原文字並依規則加註取代標記，不要整段刪除。確認後再次完成 Step 5.5 自查並重新寫檔。',
+  ].join('\n')
+
+  // 這是針對已經大致成功的更新做的補救動作，不應該讓它的失敗（例如 LLM 沒回應）
+  // 反過來讓整個本來已經成功的 insights step 被標記成失敗。
+  try {
+    await sendAndStreamOrThrow(client, sessionKey, followUp)
+  } catch (err) {
+    console.warn('[insights regression] follow-up correction failed, leaving as-is:', err.message)
+    return results
+  }
+
+  const deadline = Date.now() + 90_000
+  while (Date.now() < deadline) {
+    await sleep(5_000)
+    let stillShrunk = false
+    for (const r of results) {
+      if (!r.flaggedShrink) continue
+      const after = readProjectMarkdownSnapshot(workspaceHostPath, r.slug)
+      if (!after) continue
+      r.afterLength = after.length
+      r.afterBullets = after.bulletCount
+      const ratio = beforeSnapshots[r.slug].length > 0
+        ? (beforeSnapshots[r.slug].length - after.length) / beforeSnapshots[r.slug].length
+        : 0
+      r.flaggedShrink = ratio >= INSIGHTS_SHRINK_WARN_RATIO
+      if (r.flaggedShrink) stillShrunk = true
+    }
+    if (!stillShrunk) break
+  }
+
+  return results
 }
 
 // ── Polling helpers ───────────────────────────────────────────────────────────
@@ -477,6 +627,7 @@ async function pollForProjectsUpdate(projectsJsonPath, beforeMtime, timeoutMs, i
       if (fs.existsSync(projectsJsonPath) && fs.statSync(projectsJsonPath).mtimeMs > beforeMtime) return
     } catch {}
   }
+  throw new Error('等待 projects.json 更新超時，LLM 可能已回應但未實際完成寫入')
 }
 
 // ── Background worker ─────────────────────────────────────────────────────────

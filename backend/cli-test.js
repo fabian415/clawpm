@@ -109,7 +109,9 @@ async function promptLlmConfig() {
     modelId = await askQuestion('請輸入 Model ID (例如 gpt-4o): ')
     if (!modelId) warn('Model ID 不能為空')
   }
-  return { provider: 'custom', baseUrl, apiKey, modelId }
+  const reasoningAnswer = await askQuestion('是否為推理模型 (gpt-5/o1/o3 系列等，需要 max_completion_tokens)？(y/N): ')
+  const isReasoningModel = /^y(es)?$/i.test(reasoningAnswer.trim())
+  return { provider: 'custom', baseUrl, apiKey, modelId, isReasoningModel }
 }
 
 function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = {}) {
@@ -154,7 +156,7 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
     }
   }
 
-  const { baseUrl, apiKey, modelId } = llmConfig
+  const { baseUrl, apiKey, modelId, isReasoningModel } = llmConfig
   const modelRef = `custom/${modelId}`
   return {
     agents: {
@@ -171,15 +173,19 @@ function buildOpenClawConfigForProvider(gatewayToken, llmConfig, { hostPort } = 
           baseUrl,
           apiKey,
           api: 'openai-completions',
+          timeoutSeconds: 1200,
           models: [
             {
               id: modelId,
               name: modelId,
-              reasoning: false,
-              input: ['text'],
+              reasoning: !!isReasoningModel,
+              input: ['text', 'image'],
               cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-              contextWindow: 131072,
-              maxTokens: 8192,
+              contextWindow: 524288,
+              maxTokens: 64000,
+              compat: isReasoningModel
+                ? { supportsUsageInStreaming: true, maxTokensField: 'max_completion_tokens' }
+                : { supportsUsageInStreaming: true },
             },
           ],
         },
@@ -230,8 +236,8 @@ async function cmdProvision(userId) {
 
   // 1. Allocate ports
   info('Allocating ports...')
-  const ports = allocatePorts(userId)
-  ok(`Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}`)
+  const ports = await allocatePorts(userId)
+  ok(`Ports allocated — gateway: ${ports.gatewayPort}, bridge: ${ports.bridgePort}, relay: ${ports.relayPort}`)
 
   // 2. Initialize workspace (pass hostPort so allowedOrigins is correct)
   info('Initializing workspace...')
@@ -285,6 +291,7 @@ async function cmdProvision(userId) {
     const containerId = await createAndStartContainer(userId, {
       gatewayPort: ports.gatewayPort,
       bridgePort: ports.bridgePort,
+      relayPort: ports.relayPort,
       workspaceDir: paths.workspace,
       configDir: paths.config,
       gatewayToken,
@@ -296,22 +303,11 @@ async function cmdProvision(userId) {
       containerId,
       gatewayPort: ports.gatewayPort,
       bridgePort: ports.bridgePort,
+      relayPort: ports.relayPort,
       gatewayToken,
       workspacePath: paths.workspace,
       provisionedAt: new Date().toISOString(),
     })
-  }
-
-  // 7. Device pairing (optional — skip on failure so provision still completes)
-  info('Starting device pairing (waiting for healthy gateway)...')
-  try {
-    const { deviceId, operatorToken } = await pairDevice(userId, { healthTimeoutMs: 90_000 })
-    ok(`Device paired — ID: ${deviceId}`)
-    ok(`Operator token: ${operatorToken.slice(0, 8)}...`)
-  }
-  catch (error) {
-    warn(`Device pairing failed (can retry with: node cli-test.js pair ${userId})`)
-    warn(`  Reason: ${error.message}`)
   }
 
   header('Provision complete.')

@@ -204,15 +204,39 @@
                   class="border-b border-slate-100 dark:border-slate-800/60 hover:bg-slate-50 dark:hover:bg-slate-900/60 cursor-pointer transition-colors group"
                 >
                   <td class="py-4 pr-6">
-                    <span class="font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{{ p.name }}</span>
+                    <span class="inline-flex items-center gap-1.5">
+                      <span class="font-semibold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">{{ p.name }}</span>
+                      <button
+                        @click.stop="openDescriptionModal(p)"
+                        :class="p.description ? 'text-blue-400 hover:text-blue-600' : 'text-slate-300 hover:text-slate-500'"
+                        title="查看／編輯專案描述"
+                      >
+                        <Info class="w-3.5 h-3.5" />
+                      </button>
+                    </span>
                   </td>
                   <td class="py-4 pr-6">
                     <span class="text-slate-600 dark:text-slate-400">{{ p.stage || '—' }}</span>
                   </td>
-                  <td class="py-4 pr-6">
-                    <span v-if="p.maturity" :class="maturityClass(p.maturity)" class="text-xs font-bold px-2.5 py-1 rounded-full">
-                      {{ p.maturity }}
-                    </span>
+                  <td class="py-4 pr-6 min-w-[160px]">
+                    <div v-if="p.maturity || p.maturityScore != null" class="flex flex-col gap-1">
+                      <div class="flex items-center justify-between gap-2">
+                        <span :class="maturityClass(p.maturity)" class="text-xs font-bold px-2 py-0.5 rounded-full shrink-0">
+                          {{ p.maturity || '—' }}
+                        </span>
+                        <span v-if="p.maturityScore != null" class="text-xs font-mono text-slate-500 dark:text-slate-400 shrink-0">
+                          {{ p.maturityScore }}%
+                        </span>
+                      </div>
+                      <div v-if="p.maturityScore != null" class="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          class="h-full rounded-full transition-all duration-300"
+                          :class="maturityBarClass(p.maturity)"
+                          :style="{ width: `${Math.min(100, Math.max(0, p.maturityScore))}%` }"
+                        ></div>
+                      </div>
+                      <span v-if="p.maturityLevel" class="text-[10px] text-slate-400 dark:text-slate-500">{{ p.maturityLevel }}</span>
+                    </div>
                     <span v-else class="text-slate-300">—</span>
                   </td>
                   <td class="py-4 pr-6">
@@ -250,9 +274,22 @@
                       </button>
                     </div>
                   </td>
+                  <td class="py-4 pl-2" @click.stop>
+                    <button
+                      @click="exportProjectBundle(p)"
+                      :disabled="exportingSlug === p.slug"
+                      class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md transition-colors whitespace-nowrap disabled:opacity-50"
+                      title="匯出此專案所有資料（zip）"
+                    >
+                      <Loader2 v-if="exportingSlug === p.slug" class="w-3.5 h-3.5 animate-spin" />
+                      <Download v-else class="w-3.5 h-3.5" />
+                      匯出
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
+            <p v-if="exportError" class="text-sm text-red-500 mt-3">{{ exportError }}</p>
           </template>
         </div>
 
@@ -289,13 +326,52 @@
     </div>
 
   </div>
+
+  <!-- Project Description Modal -->
+  <div v-if="descriptionModal.show" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" @click.self="descriptionModal.show = false">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+        <h3 class="font-bold text-base">{{ descriptionModal.name }} — 專案描述</h3>
+        <button @click="descriptionModal.show = false" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+      <div class="p-6 space-y-3">
+        <p class="text-xs text-slate-400">
+          1-3 句話描述這個專案的範疇與關鍵字（例如技術領域、產品名稱）。這段文字會被「會議記錄分發」與「補充圖片分類建議」拿來判斷內容是否屬於這個專案，請盡量具體。
+        </p>
+        <textarea
+          v-model="descriptionModal.draft"
+          rows="5"
+          class="w-full text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-xl px-3 py-2.5 resize-none outline-none focus:ring-2 focus:ring-blue-500/30"
+          placeholder="例如：與 Physical AI、Simulation、SO-101、GR00T 相關的機械手臂模擬訓練與控制平台。"
+        ></textarea>
+        <p v-if="descriptionModal.genError" class="text-xs text-red-500">{{ descriptionModal.genError }}</p>
+      </div>
+      <div class="flex justify-between gap-2 px-6 py-4 border-t border-slate-100 dark:border-slate-800">
+        <button @click="generateDescription" :disabled="descriptionModal.generating || descriptionModal.saving"
+          class="flex items-center gap-1.5 px-4 py-2 text-sm rounded-xl border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+          <Loader2 v-if="descriptionModal.generating" class="w-3.5 h-3.5 animate-spin" />
+          <Sparkles v-else class="w-3.5 h-3.5" />
+          {{ descriptionModal.generating ? 'AI 生成中...' : 'AI 自動生成' }}
+        </button>
+        <div class="flex gap-2">
+          <button @click="descriptionModal.show = false" class="px-4 py-2 text-sm rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800">取消</button>
+          <button @click="saveDescription" :disabled="descriptionModal.saving" class="px-4 py-2 text-sm rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+            {{ descriptionModal.saving ? '儲存中...' : '儲存' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
-  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen
+  PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen,
+  Info, X, Sparkles
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -355,6 +431,51 @@ async function fetchProjectList() {
     console.error('[reviewer] list error:', err.message)
   } finally {
     isLoadingList.value = false
+  }
+}
+
+const descriptionModal = ref({ show: false, slug: '', name: '', draft: '', saving: false, generating: false, genError: '' })
+
+function openDescriptionModal(p) {
+  descriptionModal.value = { show: true, slug: p.slug || p.id, name: p.name, draft: p.description || '', saving: false, generating: false, genError: '' }
+}
+
+async function generateDescription() {
+  descriptionModal.value.generating = true
+  descriptionModal.value.genError = ''
+  try {
+    const res = await fetch('/api/project-insights/description/generate', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: descriptionModal.value.slug }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || 'AI 生成失敗')
+    descriptionModal.value.draft = data.description
+  } catch (err) {
+    descriptionModal.value.genError = err.message
+  } finally {
+    descriptionModal.value.generating = false
+  }
+}
+
+async function saveDescription() {
+  descriptionModal.value.saving = true
+  try {
+    const res = await fetch('/api/project-insights/description', {
+      method: 'PATCH',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: descriptionModal.value.slug, description: descriptionModal.value.draft }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '儲存失敗')
+    const project = overviewProjects.value.find(p => (p.slug || p.id) === descriptionModal.value.slug)
+    if (project) project.description = data.description
+    descriptionModal.value.show = false
+  } catch (err) {
+    console.error('[reviewer] save description error:', err.message)
+  } finally {
+    descriptionModal.value.saving = false
   }
 }
 
@@ -424,6 +545,35 @@ function exportFile() {
   URL.revokeObjectURL(url)
 }
 
+const exportingSlug = ref('')
+const exportError = ref('')
+
+async function exportProjectBundle(p) {
+  if (exportingSlug.value) return
+  exportingSlug.value = p.slug
+  exportError.value = ''
+  try {
+    const res = await fetch(`/api/project-insights/export?slug=${encodeURIComponent(p.slug)}`, { headers: authHeaders() })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      throw new Error(d.error || '匯出失敗')
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${p.slug}-export.zip`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    exportError.value = `匯出失敗：${err.message}`
+  } finally {
+    exportingSlug.value = ''
+  }
+}
+
 async function copyContent() {
   if (!currentSlug.value) return
   try { await navigator.clipboard.writeText(fileContent.value) } catch {}
@@ -468,12 +618,22 @@ function escapeHtml(t) {
   return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+function assetUrl(src) {
+  if (/^(https?:|data:)/i.test(src)) return src
+  const filename = src.trim().split('/').pop()
+  const token = localStorage.getItem('clawpm_token') || ''
+  return `/api/project-insights/asset?file=${encodeURIComponent(filename)}&token=${encodeURIComponent(token)}`
+}
+
 function inlineMd(t) {
   return escapeHtml(t)
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br>')
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/`([^`]+)`/g, '<code class="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-xs font-mono text-blue-600 dark:text-blue-400">$1</code>')
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) =>
+      `<img src="${assetUrl(src)}" alt="${alt.replace(/"/g, '&quot;')}" class="max-w-full rounded-lg border border-slate-200 dark:border-slate-700 my-2" loading="lazy">`)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="text-blue-500 hover:underline">$1</a>')
 }
 
@@ -578,6 +738,16 @@ function maturityClass(m) {
   if (v.includes('soft launch ready')) return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
   if (v.includes('public launch candidate')) return 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
   return 'bg-slate-100 dark:bg-slate-800 text-slate-400'
+}
+
+function maturityBarClass(m) {
+  if (!m) return 'bg-slate-300 dark:bg-slate-600'
+  const v = String(m).toLowerCase()
+  if (v.includes('not ready')) return 'bg-slate-400 dark:bg-slate-500'
+  if (v.includes('internal only')) return 'bg-amber-400 dark:bg-amber-500'
+  if (v.includes('soft launch ready')) return 'bg-blue-400 dark:bg-blue-500'
+  if (v.includes('public launch candidate')) return 'bg-green-400 dark:bg-green-500'
+  return 'bg-slate-300 dark:bg-slate-600'
 }
 
 function maturityShort(m) {

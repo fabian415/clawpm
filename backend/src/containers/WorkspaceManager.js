@@ -40,6 +40,7 @@ export function getUserPaths(userId) {
     config: path.join(base, 'config'),
     openclawJson: path.join(base, 'config', 'openclaw.json'),
     workspace: path.join(base, 'workspace'),
+    relayScript: path.join(base, 'config', 'relay.cjs'),
     skills: path.join(base, 'workspace', 'skills'),
     ftpData: path.join(base, 'workspace', 'ftp_data'),
     properNounInput: path.join(base, 'workspace', 'ftp_data', 'proper-noun-imports', 'input'),
@@ -77,7 +78,6 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
         sandbox: { mode: 'off' },
         models: { 'google/gemini-2.5-flash': {} },
         model: { primary: 'google/gemini-2.5-flash' },
-        llm: { idleTimeoutSeconds: 0 },
       },
     },
     gateway: {
@@ -118,7 +118,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
     plugins: {
       entries: {
         google: { enabled: true },
-        tokenjuice: { enabled: true },
+        tokenjuice: { enabled: false },
         searxng: {
           "enabled": true,
           "config": {
@@ -193,6 +193,12 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
     fs.writeFileSync(paths.openclawJson, JSON.stringify(config, null, 2), 'utf8')
     fs.chmodSync(paths.openclawJson, 0o666)
   }
+
+  // Copy the TCP relay script (always overwrite to stay current — infrastructure, not user content).
+  // It runs inside the container and connects to the gateway over its own loopback, so clawpm-backend's
+  // WS connection (relayed through it) is seen by the gateway as a genuine local-backend connection.
+  fs.copyFileSync(path.join(__dirname, 'relay.cjs'), paths.relayScript)
+  fs.chmodSync(paths.relayScript, 0o666)
 
   // Copy skills from source
   for (const skill of SKILL_NAMES) {
