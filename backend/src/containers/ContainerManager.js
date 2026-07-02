@@ -57,10 +57,20 @@ export async function createAndStartContainer(userId, { gatewayPort, bridgePort,
       PortBindings: {
         '18789/tcp': [{ HostPort: String(gatewayPort) }],
         '18790/tcp': [{ HostPort: String(bridgePort) }],
-        // Loopback-only: this port only carries clawpm-backend's own gateway connection,
-        // relayed through a same-container TCP forwarder so the gateway sees it as a
-        // genuine local-backend connection (see relay.cjs) and skips device pairing.
-        '18791/tcp': [{ HostIp: '127.0.0.1', HostPort: String(relayPort) }],
+        // This port only carries clawpm-backend's own gateway connection, relayed
+        // through a same-container TCP forwarder so the gateway sees it as a genuine
+        // local-backend connection (see relay.cjs) and skips device pairing.
+        //
+        // Bind host depends on where clawpm-backend runs:
+        //   - backend on the host (local dev): '127.0.0.1' — reachable via localhost.
+        //   - backend in a container (compose/remote): the docker bridge gateway
+        //     (e.g. '172.17.0.1'), because the backend reaches the host through
+        //     host.docker.internal → host-gateway, and a 127.0.0.1-only publish is
+        //     NOT reachable from another container on native Linux. The bridge IP
+        //     keeps the relay off the machine's external NIC (not externally routable),
+        //     preserving the pairing-bypass protection.
+        // Override with CLAWPM_RELAY_BIND_HOST (see docker-compose.yml / .env).
+        '18791/tcp': [{ HostIp: process.env.CLAWPM_RELAY_BIND_HOST || '127.0.0.1', HostPort: String(relayPort) }],
       },
       ExtraHosts: ['host.docker.internal:host-gateway'],
       Binds: [
