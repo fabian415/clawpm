@@ -2,7 +2,7 @@ backend/node_modules
 frontend/node_modules
 .env
 backend/.env
-whiperx/.env
+whisperx/.env
 frontend/dist
 backend/data
 frontend/vite-dev*.log

@@ -148,13 +148,13 @@ services:
   # transcribe-api:
   #   profiles: [gpu]
   #   build:
-  #     context: ./whiperx
+  #     context: ./whisperx
   #     dockerfile: Dockerfile
   #   image: transcribe-api:latest
   #   container_name: transcribe-api
   #   restart: unless-stopped
   #   env_file:
-  #     - ./whiperx/.env
+  #     - ./whisperx/.env
   #   ports:
   #     - "${TRANSCRIBE_PORT:-8787}:8000"
   #   volumes:
