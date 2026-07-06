@@ -9,3 +9,4 @@ frontend/vite-dev*.log
 reference
 .claude
 .vscode
+searxng/core-config/settings.yml
