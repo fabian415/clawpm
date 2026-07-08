@@ -18,8 +18,8 @@
           <Loader2 class="w-5 h-5 animate-spin" />
         </div>
         <div v-else-if="records.length === 0" class="px-4 py-6 text-center text-xs text-slate-400">
-          尚無會議記錄<br>
-          <span class="text-slate-300">透過會議處理流程自動建立</span>
+          尚無{{ cfg.label }}<br>
+          <span class="text-slate-300">{{ kind === 'supplement' ? '由補充文件連結分發建立' : '透過會議處理流程自動建立' }}</span>
         </div>
         <button
           v-for="r in records"
@@ -30,8 +30,8 @@
             : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 border-l-2 border-transparent'"
           class="w-full text-left px-4 py-2.5 transition-colors"
         >
-          <div class="text-sm font-medium">會議記錄</div>
-          <div class="text-[10px] text-slate-400 mt-0.5 font-mono">{{ r.name }}</div>
+          <div class="text-sm font-medium truncate">{{ kind === 'supplement' ? r.name : cfg.label }}</div>
+          <div v-if="cfg.dateSub" class="text-[10px] text-slate-400 mt-0.5 font-mono">{{ r.name }}</div>
         </button>
       </div>
     </div>
@@ -62,7 +62,7 @@
         <!-- Title -->
         <div class="flex-1 flex justify-center">
           <span v-if="currentName" class="text-sm font-medium text-slate-500 truncate px-4">{{ currentName }}.md</span>
-          <span v-else class="text-sm text-slate-400">← 從左側選擇會議記錄</span>
+          <span v-else class="text-sm text-slate-400">← 從左側選擇{{ cfg.label }}</span>
         </div>
 
         <div class="flex items-center gap-2">
@@ -104,8 +104,8 @@
         <!-- Empty state -->
         <div v-if="!currentName" class="flex-1 flex flex-col items-center justify-center text-slate-400 gap-3">
           <BookOpen class="w-12 h-12 opacity-20" />
-          <p class="text-sm">從左側選擇一份會議記錄</p>
-          <p class="text-xs text-slate-300">會議記錄由會議處理流程第六步自動建立</p>
+          <p class="text-sm">從左側選擇一份{{ cfg.label }}</p>
+          <p class="text-xs text-slate-300">{{ cfg.hint }}</p>
         </div>
 
         <!-- Loading file -->
@@ -147,7 +147,13 @@ import {
 const props = defineProps({
   projectSlug: { type: String, required: true },
   projectName: { type: String, default: '' },
+  // 'record'（會議記錄）或 'supplement'（補充資料，來自 ess-kms 連結分發）
+  kind: { type: String, default: 'record' },
 })
+
+const cfg = computed(() => props.kind === 'supplement'
+  ? { api: '/api/project-supplements', label: '補充資料', hint: '補充資料由補充文件 ess-kms 連結分發建立', filePrefix: 'supplement', dateSub: false }
+  : { api: '/api/meeting-record', label: '會議記錄', hint: '會議記錄由會議處理流程第六步自動建立', filePrefix: 'record', dateSub: true })
 
 const mode = ref('preview')
 const sidebarOpen = ref(true)
@@ -172,7 +178,7 @@ function authHeaders() {
 async function fetchRecords() {
   isLoadingList.value = true
   try {
-    const res = await fetch(`/api/meeting-record/list?slug=${encodeURIComponent(props.projectSlug)}`, { headers: authHeaders() })
+    const res = await fetch(`${cfg.value.api}/list?slug=${encodeURIComponent(props.projectSlug)}`, { headers: authHeaders() })
     if (!res.ok) return
     const data = await res.json()
     records.value = data.records || []
@@ -193,7 +199,7 @@ async function loadRecord(name) {
   originalContent.value = ''
   try {
     const res = await fetch(
-      `/api/meeting-record/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(name)}`,
+      `${cfg.value.api}/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(name)}`,
       { headers: authHeaders() }
     )
     if (!res.ok) throw new Error('載入失敗')
@@ -215,7 +221,7 @@ async function saveFile() {
   clearTimeout(saveSuccessTimer)
   saveSuccess.value = false
   try {
-    const res = await fetch('/api/meeting-record/file', {
+    const res = await fetch(`${cfg.value.api}/file`, {
       method: 'PATCH',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug: props.projectSlug, name: currentName.value, content: fileContent.value }),
@@ -241,17 +247,17 @@ function exportFile() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `record-${props.projectSlug}-${currentName.value}.md`
+  a.download = `${cfg.value.filePrefix}-${props.projectSlug}-${currentName.value}.md`
   a.click()
   URL.revokeObjectURL(url)
 }
 
 async function confirmDelete() {
   if (!currentName.value) return
-  if (!confirm('確定要刪除此會議記錄嗎？此動作無法復原。')) return
+  if (!confirm(`確定要刪除此${cfg.value.label}嗎？此動作無法復原。`)) return
   try {
     const res = await fetch(
-      `/api/meeting-record/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(currentName.value)}`,
+      `${cfg.value.api}/file?slug=${encodeURIComponent(props.projectSlug)}&name=${encodeURIComponent(currentName.value)}`,
       { method: 'DELETE', headers: authHeaders() }
     )
     if (!res.ok) {

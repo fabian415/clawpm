@@ -82,7 +82,7 @@
           @toast="(msg, type) => showToast(msg, type)"
         />
 
-        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @record-project="openMeetingRecordProject" @project-change="handleReviewerProjectChange" />
+        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @record-project="openMeetingRecordProject" @supplement-project="openProjectSupplements" @project-change="handleReviewerProjectChange" />
 
         <SwotReportView
           v-else-if="currentPage === 'swotReport' && swotProject"
@@ -109,6 +109,13 @@
           v-else-if="currentPage === 'meetingRecord' && meetingRecordProject"
           :project-slug="meetingRecordProject.slug || meetingRecordProject.id"
           :project-name="meetingRecordProject.name || meetingRecordProject.title"
+        />
+
+        <MeetingRecordView
+          v-else-if="currentPage === 'projectSupplements' && projectSupplementsProject"
+          kind="supplement"
+          :project-slug="projectSupplementsProject.slug || projectSupplementsProject.id"
+          :project-name="projectSupplementsProject.name || projectSupplementsProject.title"
         />
 
         <SpeakerManagementView v-else-if="currentPage === 'speakers'" :team="currentUser?.teamName" />
@@ -256,6 +263,7 @@ const swotProject = ref(null)
 const marketProject = ref(null)
 const techProject = ref(null)
 const meetingRecordProject = ref(null)
+const projectSupplementsProject = ref(null)
 
 const breadcrumbs = computed(() => {
   const page = currentPage.value
@@ -293,6 +301,11 @@ const breadcrumbs = computed(() => {
     { label: '專案列表', page: 'reviewerOverview' },
     { label: meetingRecordProject.value.name || meetingRecordProject.value.title, icon: 'project', page: 'reviewer' },
     { label: '會議記錄' }
+  ]
+  if (page === 'projectSupplements' && projectSupplementsProject.value) return [
+    { label: '專案列表', page: 'reviewerOverview' },
+    { label: projectSupplementsProject.value.name || projectSupplementsProject.value.title, icon: 'project', page: 'reviewer' },
+    { label: '補充資料' }
   ]
   if (page === 'speakers') return [{ label: '聲紋管理' }]
   if (page === 'tasks') return [{ label: '任務管理' }]
@@ -371,6 +384,11 @@ function openTechProject(project) {
 function openMeetingRecordProject(project) {
   meetingRecordProject.value = project
   currentPage.value = 'meetingRecord'
+}
+
+function openProjectSupplements(project) {
+  projectSupplementsProject.value = project
+  currentPage.value = 'projectSupplements'
 }
 
 function handleTechAnalysisReady({ sessionKey, prompt, newSession }) {

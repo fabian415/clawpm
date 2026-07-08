@@ -43,6 +43,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # API 版本與端點路徑（依 Azure 文件；2025-10-15 起支援 enhancedMode / mai-transcribe）
@@ -134,6 +135,8 @@ def call_azure_transcribe(
     api_key: str,
     definition: dict,
     timeout: int = 600,
+    connect_timeout: int = 30,
+    max_retries: int = 3,
 ) -> dict:
     """
     呼叫 Azure Fast Transcription 端點，回傳解析後的 JSON。
@@ -141,6 +144,14 @@ def call_azure_transcribe(
     以 multipart/form-data 上傳：
       - audio      : 音檔
       - definition : JSON 字串
+
+    冷連線容錯：
+      Azure 這個同步端點在「第一次」呼叫時，TLS 連線／Front Door 路由／後端
+      STT 資源都是冷的，冷啟動會對正在上傳的 request body 施加背壓，導致 socket
+      寫入被卡住而拋出 `The write operation timed out`（write 階段逾時）。連線一旦
+      暖起來重試就會成功，因此這裡以指數退避自動重試整個上傳，避免第一次冷連線
+      失敗就讓整個轉錄任務掛掉。timeout 也拆成 (connect_timeout, timeout)，讓連線
+      階段快速失敗、讀取階段（等 Azure 同步轉錄）保留較長等待。
     """
     try:
         import requests
@@ -155,15 +166,33 @@ def call_azure_transcribe(
     print(f"  端點：{url}")
     print(f"  definition：{json.dumps(definition, ensure_ascii=False)}")
 
-    with open(audio_path, "rb") as f:
-        files = {"audio": (audio_path.name, f, media_type)}
-        data = {"definition": json.dumps(definition, ensure_ascii=False)}
-        headers = {"Ocp-Apim-Subscription-Key": api_key}
-        try:
-            resp = requests.post(url, headers=headers, files=files, data=data, timeout=timeout)
-        except requests.exceptions.RequestException as e:
-            print(f"ERROR: 呼叫 Azure API 失敗：{e}", file=sys.stderr)
-            sys.exit(1)
+    data = {"definition": json.dumps(definition, ensure_ascii=False)}
+    headers = {"Ocp-Apim-Subscription-Key": api_key}
+
+    resp = None
+    for attempt in range(1, max_retries + 1):
+        # 每次重試都重新開檔，確保檔案指標從頭讀（requests 會消耗掉 file object）
+        with open(audio_path, "rb") as f:
+            files = {"audio": (audio_path.name, f, media_type)}
+            try:
+                resp = requests.post(
+                    url, headers=headers, files=files, data=data,
+                    timeout=(connect_timeout, timeout),
+                )
+                break
+            except requests.exceptions.RequestException as e:
+                if attempt == max_retries:
+                    print(
+                        f"ERROR: 呼叫 Azure API 失敗（已重試 {max_retries} 次）：{e}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                wait = 2 ** attempt
+                print(
+                    f"第 {attempt} 次上傳失敗（{e}），{wait}s 後重試...",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
 
     if resp.status_code != 200:
         print(f"ERROR: Azure API 回傳 HTTP {resp.status_code}", file=sys.stderr)

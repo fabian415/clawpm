@@ -155,6 +155,15 @@
               >
                 <BookOpen class="w-3.5 h-3.5" /> 會議記錄
               </button>
+              <button
+                @click="emit('supplement-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-teal-700'"
+                class="bg-teal-500 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="查看此專案的補充資料"
+              >
+                <Paperclip class="w-3.5 h-3.5" /> 補充資料
+              </button>
               <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
                 <Trash2 class="w-3.5 h-3.5" /> 刪除
               </button>
@@ -272,6 +281,13 @@
                       >
                         <BookOpen class="w-3.5 h-3.5" /> 會議記錄
                       </button>
+                      <button
+                        @click="emit('supplement-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="補充資料"
+                      >
+                        <Paperclip class="w-3.5 h-3.5" /> 補充資料
+                      </button>
                     </div>
                   </td>
                   <td class="py-4 pl-2" @click.stop>
@@ -371,14 +387,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
   PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen,
-  Info, X, Sparkles
+  Info, X, Sparkles, Paperclip
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
 
-const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'record-project', 'project-change'])
+const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'record-project', 'supplement-project', 'project-change'])
 
 const mode = ref('preview')
 const sidebarOpen = ref(true)

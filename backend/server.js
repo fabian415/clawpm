@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import { createServer } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import archiver from 'archiver'
@@ -66,6 +66,12 @@ const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
 // Override with CLAWPM_PROXY_HOST if your Docker setup uses a different bridge IP.
 const CLAWPM_PROXY_HOST = process.env.CLAWPM_PROXY_HOST || 'host.docker.internal'
 const AZURE_API_VERSION = process.env.AZURE_API_VERSION || '2025-04-01-preview'
+
+// ess-kms 知識庫 GraphQL（供補充文件連結萃取 → 抓頁面內容用）。token 只放在後端，
+// 不傳進容器；容器內腳本只負責從文件萃取 URL，實際抓取由後端完成。
+const ESS_KMS_GRAPHQL_ENDPOINT = process.env.ESS_KMS_GRAPHQL_ENDPOINT || 'https://ess-kms.edgecenter.io/graphql'
+const ESS_KMS_GRAPHQL_TOKEN = process.env.ESS_KMS_GRAPHQL_TOKEN || ''
+const ESS_KMS_LOCALE = process.env.ESS_KMS_LOCALE || 'en'
 const AZURE_CONFIGS_DIR = path.resolve('./data/azure_configs')
 let RUNNING_PORT = INITIAL_PORT  // updated once the server binds
 
@@ -1359,6 +1365,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 const IMAGE_EXTRACT_SCRIPT = `${CONTAINER_WORKSPACE}/skills/project-insight-synthesizer/scripts/extract_supplementary_images.py`
+const LINK_EXTRACT_SCRIPT = `${CONTAINER_WORKSPACE}/skills/project-insight-synthesizer/scripts/extract_supplementary_links.py`
 const IMAGE_SOURCE_EXTS = new Set(['.pptx', '.xlsx', '.pdf'])
 
 // Convert FTP-relative doc paths (as stored when uploaded) into container-visible absolute paths.
@@ -1607,6 +1614,7 @@ app.get('/api/project-insights/export', requireAuth, async (req, res) => {
     ['swot', swotDir],
     ['market', marketDir],
     ['tech', techDir],
+    ['supplements', supplementsDir],
   ]
   for (const [label, dirFn] of subDirs) {
     const dir = dirFn(hostInsightsDir, slug)
@@ -1952,6 +1960,220 @@ function suggestionsPathFor(hostInsightsDir, meetingDate) {
 
 function assignmentsPathFor(hostInsightsDir, meetingDate) {
   return path.join(assetsDirFor(hostInsightsDir), `assignments-${meetingDate}.json`)
+}
+
+// 圖片 manifest 也綁定會議日期，避免舊會議留下的 manifest.json 在 2 小時新鮮度視窗內被誤讀成這次會議的。
+function imageManifestPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `manifest-${meetingDate}.json`)
+}
+
+// ── 補充文件 ess-kms 連結分發 ────────────────────────────────────────────────
+// 容器內的 extract_supplementary_links.py 只把 URL 萃取進 links-manifest-{date}.json；
+// 後端負責用 GraphQL 抓每頁 title+content、給 AI 分類建議，並在使用者確認後把
+// Markdown 寫進 supplements-{slug}/。檔名綁日期，避免舊會議的 manifest 在新鮮度視窗內被誤用。
+function linksManifestPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `links-manifest-${meetingDate}.json`)
+}
+
+function linkReviewCachePathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `link-review-${meetingDate}.json`)
+}
+
+function linkAssignmentsPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `link-assignments-${meetingDate}.json`)
+}
+
+function supplementsDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `supplements-${slug}`)
+}
+
+function supplementFilePath(hostInsightsDir, slug, name) {
+  const dir = supplementsDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+// 補充資料檔名是頁面標題淨化後的結果（可含中文），只擋路徑穿越，不像會議記錄限定日期格式。
+function validSupplementName(s) {
+  return typeof s === 'string' && s.length > 0 && s.length < 300
+    && !s.includes('..') && !s.includes('/') && !s.includes('\\')
+}
+
+// 把頁面 title 淨化成安全檔名（去掉路徑分隔與控制字元），並確保在目標資料夾中唯一。
+function sanitizeTitleToFilename(title, dir) {
+  let base = String(title || '').trim()
+    .replace(/[\\/:*?"<>|]/g, '-')   // 檔名保留字元
+    .replace(/[\x00-\x1f]/g, '')      // 控制字元
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+/, '')              // 別讓檔名以點開頭
+    .slice(0, 120)
+    .trim()
+  if (!base) base = 'untitled'
+  let candidate = `${base}.md`
+  let n = 2
+  while (fs.existsSync(path.join(dir, candidate))) {
+    candidate = `${base}-${n}.md`
+    n++
+  }
+  return candidate
+}
+
+// 把 manifest 裡的一筆連結（可能是裸 path、含 locale 前綴的 path、或完整 URL）正規化成
+// { path, locale, url, sourceFile, location }。Wiki.js 的 URL 結構是 /{locale}/{path}，而
+// GraphQL singleByPath 需要「去掉 locale 的 path」+ 另外傳 locale，所以要把首段 locale 拆出來。
+function normalizeKmsLink(entry) {
+  // 優先用已萃取好的裸 path；沒有才退回 url（url 的 pathname 會含 /{locale}/ 前綴）。
+  const raw = String((entry && (entry.path || entry.url)) || '').trim()
+  if (!raw) return null
+  let pathname
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw)
+      if (u.hostname.toLowerCase() !== 'ess-kms.edgecenter.io') return null
+      pathname = u.pathname
+    } catch { return null }
+  } else {
+    pathname = raw
+  }
+  let segs = pathname.split('/').filter(Boolean)
+  if (segs.length === 0) return null
+  let locale = (entry && entry.locale) || ESS_KMS_LOCALE
+  // Wiki.js URL 結構是 /{locale}/{path}。只在「首段確實是 locale」時才拆：
+  // 有給 entry.locale → 首段等於它才拆（裸 path 通常已不含 locale，就不會誤砍真實段落）；
+  // 沒給 locale → 首段長得像 locale（en、zh、zh-tw…）就當作 locale 拆掉。
+  if (entry?.locale) {
+    if (segs[0].toLowerCase() === String(entry.locale).toLowerCase()) segs = segs.slice(1)
+  } else if (/^[a-z]{2}(-[a-z]{2})?$/i.test(segs[0])) {
+    locale = segs[0].toLowerCase()
+    segs = segs.slice(1)
+  }
+  if (segs.length === 0) return null
+  const pagePath = segs.join('/')
+  return {
+    path: pagePath,
+    locale,
+    url: (entry && entry.url) || `https://ess-kms.edgecenter.io/${locale}/${pagePath}`,
+    sourceFile: (entry && entry.sourceFile) || '補充文件',
+    location: (entry && entry.location) || '',
+  }
+}
+
+// 下載 ess-kms 頁面內容裡引用的圖片（多為 /xdept/public/... 之類的站內相對路徑）到 _assets/，
+// 並把 Markdown 裡的圖片路徑改成本地可服務的 ../_assets/<file>。回傳 { content, changed }。
+async function localizeKmsImages(content, assetsDir) {
+  if (!content) return { content, changed: false }
+  const imgRe = /!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g
+  const srcs = new Set()
+  let m
+  while ((m = imgRe.exec(content)) !== null) {
+    const src = m[2]
+    // 只處理 ess-kms 站內圖片：以 / 開頭的相對路徑，或指向 ess-kms 的絕對 URL。
+    if (src.startsWith('/') || /^https?:\/\/ess-kms\.edgecenter\.io\//i.test(src)) srcs.add(src)
+  }
+  if (srcs.size === 0) return { content, changed: false }
+
+  fs.mkdirSync(assetsDir, { recursive: true })
+  const replacements = new Map()
+  for (const src of srcs) {
+    const url = src.startsWith('/') ? `https://ess-kms.edgecenter.io${src}` : src
+    try {
+      // /xdept/public/... 這類圖是公開的，帶 Bearer token 反而會被擋（403）。所以先不帶 token 抓，
+      // 失敗才退回帶 token（少數受保護的圖才需要）。
+      let res = await fetch(url)
+      if (!res.ok && ESS_KMS_GRAPHQL_TOKEN) {
+        res = await fetch(url, { headers: { Authorization: `Bearer ${ESS_KMS_GRAPHQL_TOKEN}` } })
+      }
+      if (!res.ok) { dbgErr('[link-image] 下載失敗', res.status, url); continue }
+      const buf = Buffer.from(await res.arrayBuffer())
+      let base = decodeURIComponent(url.split('/').pop().split('?')[0] || 'image')
+        .replace(/[\\/:*?"<>|]/g, '-').replace(/[\x00-\x1f]/g, '').slice(0, 100) || 'image'
+      // 用來源路徑 hash 當前綴，確保不同頁面同名圖不衝突、同一張圖重覆執行時冪等。
+      const filename = `${createHash('sha1').update(src).digest('hex').slice(0, 8)}-${base}`
+      fs.writeFileSync(path.join(assetsDir, filename), buf)
+      replacements.set(src, `../_assets/${filename}`)
+    } catch (err) {
+      dbgErr('[link-image] 下載例外', url, err?.message)
+    }
+  }
+  if (replacements.size === 0) return { content, changed: false }
+
+  const localized = content.replace(imgRe, (whole, alt, src, title) =>
+    replacements.has(src) ? `![${alt}](${replacements.get(src)}${title || ''})` : whole)
+  return { content: localized, changed: localized !== content }
+}
+
+// 用 GraphQL pages.singleByPath 抓回單一頁面的 title + content。失敗回 null。
+async function fetchKmsPage(pagePath, locale = ESS_KMS_LOCALE) {
+  if (!ESS_KMS_GRAPHQL_TOKEN) {
+    dbgErr('[link-review] 未設定 ESS_KMS_GRAPHQL_TOKEN，跳過抓取', pagePath)
+    return null
+  }
+  const query = `query ($path: String!, $locale: String!) {
+    pages { singleByPath(path: $path, locale: $locale) { id title content createdAt updatedAt } }
+  }`
+  try {
+    const res = await fetch(ESS_KMS_GRAPHQL_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ESS_KMS_GRAPHQL_TOKEN}`,
+      },
+      body: JSON.stringify({ query, variables: { path: pagePath, locale: locale || ESS_KMS_LOCALE } }),
+    })
+    if (!res.ok) {
+      dbgErr('[link-review] GraphQL HTTP', res.status, pagePath)
+      return null
+    }
+    const data = await res.json()
+    const page = data?.data?.pages?.singleByPath
+    if (!page) return null
+    return {
+      id: page.id ?? null,
+      title: (page.title || '').trim() || pagePath,
+      content: page.content || '',
+      updatedAt: page.updatedAt || null,
+    }
+  } catch (err) {
+    dbgErr('[link-review] GraphQL fetch failed', pagePath, err?.message)
+    return null
+  }
+}
+
+// 一次性請 LLM 依 title+content 對照專案清單給出 suggestedSlug。失敗回空建議（不阻斷流程）。
+async function suggestLinkProject(provisionUserId, title, content, projects) {
+  if (!Array.isArray(projects) || projects.length === 0) return { suggestedSlug: null, reason: '無可用專案清單' }
+  const projectList = projects
+    .map(p => `- ${p.name}（${p.slug}）${p.description ? `：${p.description}` : '（尚無描述）'}`)
+    .join('\n')
+  const prompt = [
+    `以下是一篇從會議補充文件連結抓回的知識庫頁面。請判斷它最應該歸屬到哪一個既有專案。`,
+    ``,
+    `已知專案清單：`,
+    projectList,
+    ``,
+    `頁面標題：${title}`,
+    `頁面內容（節錄）：`,
+    (content || '').slice(0, 4000),
+    ``,
+    `請對照專案的名稱與描述，找出語意最吻合的專案。若沒有任何專案合理對應，suggestedSlug 給 null。`,
+    `只回覆 JSON，格式為：{"suggestedSlug": "{清單中的 slug 或 null}", "reason": "{一句話說明理由}"}`,
+    `不要有其他文字、不要用 markdown 程式碼區塊包住。`,
+  ].join('\n')
+  try {
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('link-suggest')
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
+    const raw = (lastMsg.content || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+    const parsed = JSON.parse(raw)
+    const slug = parsed?.suggestedSlug && projects.some(p => p.slug === parsed.suggestedSlug)
+      ? parsed.suggestedSlug : null
+    return { suggestedSlug: slug, reason: typeof parsed?.reason === 'string' ? parsed.reason : '' }
+  } catch (err) {
+    dbgErr('[link-review] suggest failed', err?.message)
+    return { suggestedSlug: null, reason: '' }
+  }
 }
 
 // 在記錄檔案的「## 相關圖片」區段裡新增或更新某張圖片的 bullet（用圖片檔名當識別key）。
@@ -2539,6 +2761,7 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
   if (imageSourcePaths.length > 0) {
     const assetsDir = `${CONTAINER_INSIGHTS_DIR}/_assets`
     const suggestionsPath = `${assetsDir}/suggestions-${meetingDate}.json`
+    const imageManifestPath = `${assetsDir}/manifest-${meetingDate}.json`
     parts.push(
       ``,
       `## 補充文件圖片萃取與「建議」分類（不要自己決定插入哪個專案，也不要修改任何 record-*.md）`,
@@ -2550,8 +2773,8 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
       ...outputEntries.map(e => `- ${e.name}（${e.slug}）${e.description ? `：${e.description}` : '（尚無描述）'}`),
       ``,
       `圖片最終要分到哪個專案，由使用者在前端介面手動確認，你只需要負責萃取與給建議，不要自己寫入任何專案的記錄檔案：`,
-      `1. 執行：python3 ${IMAGE_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir}`,
-      `2. 讀取產生的 ${assetsDir}/manifest.json，並用 Read 工具逐一實際開啟、親眼檢視每一張圖片本身的畫面內容，把圖片裡的關鍵文字、術語、表格欄位都看清楚（不要只看大概構圖，更不能只憑 manifest 裡的文字欄位猜測內容）`,
+      `1. 執行：python3 ${IMAGE_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir} --manifest ${imageManifestPath}`,
+      `2. 讀取產生的 ${imageManifestPath}，並用 Read 工具逐一實際開啟、親眼檢視每一張圖片本身的畫面內容，把圖片裡的關鍵文字、術語、表格欄位都看清楚（不要只看大概構圖，更不能只憑 manifest 裡的文字欄位猜測內容）`,
       `3. 對 manifest 裡「每一張」圖片，先判斷這張圖片本身的類型（例如：數據折線圖／長條圖、UI 截圖、流程圖、架構圖、表格…），再依照圖片裡實際看到的內容給出建議（找不到合理對應時 suggestedSlug 給 null，不要硬猜）：`,
       `   - 對照圖片中出現的具體名詞（工具名、程式庫名、API、模組名、版本號、品牌／產品名等）與上方「已知專案清單」`,
       `   - manifest 裡的 sourceFile/location/captionHint 都只是文件結構上的輔助線索，不能當作判斷依據。captionHint 尤其要小心：它只是該投影片或該頁文件裡離圖片最近的一段文字（例如投影片標題、頁面第一行字），**不是圖片內容的描述**，常常跟圖片實際畫面完全無關，絕對不能直接拿來當 suggestedCaption 或用來判斷 suggestedSlug`,
@@ -2563,6 +2786,17 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
       `   {"images": [{"file": "{manifest 中的 file 檔名}", "suggestedSlug": "{已知專案清單中的 slug 或 null}", "suggestedCaption": "{一句話說明這張圖在說什麼}", "reason": "{為什麼建議這個專案，或為什麼判斷不相關}"}, ...]}`,
       `   陣列必須包含 manifest 裡的每一張圖片，數量要對得上，不可以省略`,
       `5. 完成後告知使用者：補充文件已萃取出幾張圖片、建議寫好了，請到前端「圖片分類確認」面板逐一確認後才會真正寫入專案記錄`,
+    )
+
+    parts.push(
+      ``,
+      `## 補充文件 ess-kms 連結萃取（只萃取連結，不要抓內容、不要分類、不要寫任何檔案）`,
+      ``,
+      `上述補充文件內文可能夾帶 https://ess-kms.edgecenter.io/{path} 形式的知識庫連結。你只需要把這些連結萃取出來：`,
+      `1. 執行：python3 ${LINK_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir} --manifest ${assetsDir}/links-manifest-${meetingDate}.json`,
+      `2. 這支腳本會產生 ${assetsDir}/links-manifest-${meetingDate}.json（列出所有 ess-kms 連結的 path）`,
+      `3. 你「不需要」也「不可以」自己去抓這些連結的頁面內容、判斷專案歸屬或寫入任何專案記錄——頁面內容抓取與分類建議一律由後端負責`,
+      `4. 完成後告知使用者：補充文件已萃取出幾條 ess-kms 連結，請到前端「連結分類確認」面板逐一確認後才會真正寫入專案`,
     )
   }
 
@@ -2618,7 +2852,7 @@ app.get('/api/meeting-record/image-review', requireAuth, async (req, res) => {
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
-  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifestPath = imageManifestPathFor(hostInsightsDir, meetingDate)
 
   const manifest = readJsonSafe(manifestPath)
   const generatedAt = manifest?.generatedAt ? new Date(manifest.generatedAt).getTime() : 0
@@ -2664,7 +2898,7 @@ app.post('/api/meeting-record/image-review/confirm', requireAuth, async (req, re
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
-  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifestPath = imageManifestPathFor(hostInsightsDir, meetingDate)
   const manifest = readJsonSafe(manifestPath)
   const imgMeta = manifest?.images?.find(i => i.file === file)
   if (!imgMeta) return res.status(404).json({ error: '找不到對應的圖片（manifest 已變更或過期）' })
@@ -2720,15 +2954,16 @@ app.post('/api/meeting-record/image-review/confirm', requireAuth, async (req, re
 // 給使用者在前端快速測試：對單一一張圖片，直接請 agent 用 Read 工具親眼檢視並回報一句話描述，
 // 不寫入任何 suggestions/assignments 檔案，純粹用來驗證目前這個環境的模型是否真的能讀到圖片畫面內容。
 app.post('/api/meeting-record/image-review/test-caption', requireAuth, async (req, res) => {
-  const { file } = req.body ?? {}
+  const { file, meetingDate } = req.body ?? {}
   if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
     return res.status(400).json({ error: '無效的檔案名稱' })
   }
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
-  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifestPath = imageManifestPathFor(hostInsightsDir, meetingDate)
   const manifest = readJsonSafe(manifestPath)
   const imgMeta = manifest?.images?.find(i => i.file === file)
   if (!imgMeta) return res.status(404).json({ error: '找不到對應的圖片（manifest 已變更或過期）' })
@@ -2749,6 +2984,296 @@ app.post('/api/meeting-record/image-review/test-caption', requireAuth, async (re
     res.json({ success: true, caption })
   } catch (err) {
     res.status(502).json({ error: err.message || 'AI 測試判讀失敗' })
+  }
+})
+
+// ── 補充文件 ess-kms 連結分發 ────────────────────────────────────────────────
+// 讀 links-manifest.json（agent 萃取的 URL 清單），逐條 GraphQL 抓 title+content 並請 LLM
+// 給專案建議，結果快取到 link-review-{date}.json；再合併使用者的 link-assignments-{date}.json。
+app.get('/api/meeting-record/link-review', requireAuth, async (req, res) => {
+  const { meetingDate } = req.query
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const manifestPath = linksManifestPathFor(hostInsightsDir, meetingDate)
+
+  const manifest = readJsonSafe(manifestPath)
+  // agent 有時沒寫 generatedAt，改用檔案 mtime 當新鮮度依據（manifest 每次分發都會重寫）。
+  let manifestStamp = manifest?.generatedAt ? new Date(manifest.generatedAt).getTime() : 0
+  if (!manifestStamp) {
+    try { manifestStamp = fs.statSync(manifestPath).mtimeMs } catch {}
+  }
+  const fresh = !!manifestStamp && (Date.now() - manifestStamp <= IMAGE_REVIEW_FRESHNESS_MS)
+
+  // 正規化每筆連結（處理 path 塞完整 URL、含 locale 前綴、缺欄位等變異），依 path 去重。
+  const normalized = []
+  const seenPaths = new Set()
+  for (const entry of (manifest?.links || [])) {
+    const link = normalizeKmsLink(entry)
+    if (!link || seenPaths.has(link.path)) continue
+    seenPaths.add(link.path)
+    normalized.push(link)
+  }
+
+  if (!fresh || normalized.length === 0) {
+    return res.json({ fresh, links: [], allConfirmed: true })
+  }
+
+  // 快取：只要 manifest 沒換新（stamp 相同），就沿用已抓好的 title/content/建議，避免每次輪詢都重打 GraphQL 與 LLM。
+  // 前綴 cache 版本號：修了 normalize/localize 邏輯後，讓舊的錯誤快取自動失效重建。
+  const cacheKey = `v3-${manifestStamp}`
+  const cachePath = linkReviewCachePathFor(hostInsightsDir, meetingDate)
+  let cache = readJsonSafe(cachePath)
+  if (!cache || cache.cacheKey !== cacheKey) {
+    const projectsData = readJsonSafe(path.join(hostInsightsDir, 'reviewer', 'projects.json'))
+    const projects = (projectsData?.projects || [])
+      .filter(p => p.name && (p.slug || p.id))
+      .map(p => ({ name: p.name, slug: p.slug || p.id, description: p.description || '' }))
+
+    const assetsDir = assetsDirFor(hostInsightsDir)
+    const items = []
+    for (const link of normalized) {
+      const page = await fetchKmsPage(link.path, link.locale)
+      if (!page) {
+        items.push({
+          path: link.path, url: link.url, sourceFile: link.sourceFile, location: link.location,
+          title: link.path, content: '', excerpt: '', suggestedSlug: null,
+          reason: ESS_KMS_GRAPHQL_TOKEN
+            ? '無法透過 GraphQL 取得此頁面內容（可能是路徑錯誤或權限不足）'
+            : '後端未設定 ESS_KMS_GRAPHQL_TOKEN，無法抓取頁面內容',
+          fetchError: true,
+        })
+        continue
+      }
+      // 抓內容當下就把站內圖片下載到 _assets/ 並改寫路徑，讓「確認前」的預覽也看得到圖。
+      const content = (await localizeKmsImages(page.content, assetsDir)).content
+      const suggestion = await suggestLinkProject(provisionUserId, page.title, content, projects)
+      items.push({
+        path: link.path, url: link.url, sourceFile: link.sourceFile, location: link.location,
+        title: page.title, content,
+        excerpt: content.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\s+/g, ' ').trim().slice(0, 200),
+        suggestedSlug: suggestion.suggestedSlug, reason: suggestion.reason, fetchError: false,
+      })
+    }
+    cache = { cacheKey, fetchedAt: new Date().toISOString(), items }
+    writeJsonSafe(cachePath, cache)
+  }
+
+  const assignments = readJsonSafe(linkAssignmentsPathFor(hostInsightsDir, meetingDate)) || {}
+  const links = (cache.items || []).map(item => {
+    const assignment = assignments[item.path]
+    return {
+      path: item.path,
+      url: item.url,
+      sourceFile: item.sourceFile,
+      location: item.location,
+      title: item.title,
+      excerpt: item.excerpt,
+      suggestedSlug: item.suggestedSlug ?? null,
+      reason: item.reason ?? '',
+      fetchError: !!item.fetchError,
+      currentSlug: assignment?.slug ?? null,
+      skipped: !!assignment?.skipped,
+      confirmed: !!assignment,
+    }
+  })
+
+  res.json({ fresh, links, allConfirmed: links.every(l => l.confirmed) })
+})
+
+// 回傳單條連結抓回的完整 Markdown 內容，供前端預覽。
+app.get('/api/meeting-record/link-review/preview', requireAuth, async (req, res) => {
+  const { meetingDate, path: pagePath } = req.query
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+  if (!pagePath || typeof pagePath !== 'string') return res.status(400).json({ error: '缺少 path 參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const cache = readJsonSafe(linkReviewCachePathFor(hostInsightsDir, meetingDate))
+  const item = (cache?.items || []).find(i => i.path === pagePath)
+  if (!item) return res.status(404).json({ error: '找不到對應的連結（快取已變更或過期）' })
+
+  // 直接在後端把本地化圖片路徑（../_assets/<file>）改寫成帶 token 的 asset 端點，讓任何前端
+  // （不論版本）都能直接顯示圖片，不需前端再做一次替換。<img> 無法帶 Authorization header，
+  // 所以走 ?token= query（同 asset 端點既有設計）。
+  const bearer = (req.headers.authorization || '').startsWith('Bearer ')
+    ? req.headers.authorization.slice(7) : ''
+  const rewriteAssetPaths = (md) => (md || '').replace(
+    /!\[([^\]]*)\]\((?:\.\.\/)?_assets\/([^)\s]+)\)/g,
+    (_, alt, file) => `![${alt}](/api/project-insights/asset?file=${encodeURIComponent(file)}&token=${encodeURIComponent(bearer)})`,
+  )
+
+  // 已分類的連結：直接回傳已寫入 supplements 的檔案（圖片已下載、路徑已本地化），預覽即可看到圖。
+  const assignment = (readJsonSafe(linkAssignmentsPathFor(hostInsightsDir, meetingDate)) || {})[pagePath]
+  if (assignment?.slug && assignment?.file) {
+    const filePath = supplementFilePath(hostInsightsDir, assignment.slug, assignment.file)
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        return res.json({ title: item.title, content: rewriteAssetPaths(fs.readFileSync(filePath, 'utf8')), url: item.url, localized: true })
+      } catch {}
+    }
+  }
+
+  res.json({ title: item.title, content: rewriteAssetPaths(item.content), url: item.url, localized: false })
+})
+
+app.post('/api/meeting-record/link-review/confirm', requireAuth, async (req, res) => {
+  const { meetingDate, path: pagePath, slug, skip } = req.body ?? {}
+
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+  if (!pagePath || typeof pagePath !== 'string') return res.status(400).json({ error: '無效的連結路徑' })
+  if (!skip && !validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const cache = readJsonSafe(linkReviewCachePathFor(hostInsightsDir, meetingDate))
+  const item = (cache?.items || []).find(i => i.path === pagePath)
+  if (!item) return res.status(404).json({ error: '找不到對應的連結（快取已變更或過期）' })
+
+  const assignmentsPath = linkAssignmentsPathFor(hostInsightsDir, meetingDate)
+  const assignments = readJsonSafe(assignmentsPath) || {}
+  const previous = assignments[pagePath]
+
+  // 重指派：先刪掉先前寫進舊專案 supplements 資料夾的那份檔案，避免同一頁殘留在兩個專案。
+  if (previous?.slug && previous.file && previous.slug !== (skip ? null : slug)) {
+    const oldFile = path.join(supplementsDir(hostInsightsDir, previous.slug), previous.file)
+    if (oldFile.startsWith(supplementsDir(hostInsightsDir, previous.slug) + path.sep) && fs.existsSync(oldFile)) {
+      try { fs.unlinkSync(oldFile) } catch {}
+    }
+  }
+
+  if (skip) {
+    assignments[pagePath] = { slug: null, file: null, skipped: true, confirmedAt: new Date().toISOString() }
+    writeJsonSafe(assignmentsPath, assignments)
+    return res.json({ success: true, path: pagePath, slug: null, skipped: true })
+  }
+
+  if (item.fetchError || !item.content) {
+    return res.status(400).json({ error: '此連結沒有可寫入的內容（抓取失敗）' })
+  }
+
+  const dir = supplementsDir(hostInsightsDir, slug)
+  fs.mkdirSync(dir, { recursive: true })
+
+  // 重指派回同一專案時沿用舊檔名覆寫，否則產生新的唯一檔名。
+  const filename = (previous?.slug === slug && previous?.file)
+    ? previous.file
+    : sanitizeTitleToFilename(item.title, dir)
+  const filePath = path.join(dir, filename)
+  if (!filePath.startsWith(dir + path.sep)) return res.status(400).json({ error: '無效的檔名' })
+
+  const header = [
+    `# ${item.title}`,
+    ``,
+    `> 來源：${item.url}`,
+    `> 補充文件連結，會議日期：${meetingDate}`,
+    ``,
+  ].join('\n')
+  let body = (item.content || '').replace(/\\n/g, '\n')
+  // 把內文引用的 ess-kms 站內圖片（/xdept/public/... 等）下載到 _assets/ 並改寫成本地路徑。
+  body = (await localizeKmsImages(body, assetsDirFor(hostInsightsDir))).content
+  fs.writeFileSync(filePath, `${header}${body}\n`, 'utf8')
+
+  assignments[pagePath] = { slug, file: filename, skipped: false, confirmedAt: new Date().toISOString() }
+  writeJsonSafe(assignmentsPath, assignments)
+
+  res.json({ success: true, path: pagePath, slug, file: filename, skipped: false })
+})
+
+// ── 專案補充資料（supplements-{slug}/，由 ess-kms 連結分發寫入） ──────────────
+app.get('/api/project-supplements/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = supplementsDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ records: [] })
+
+  try {
+    const records = fs.readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => {
+        const name = f.replace(/\.md$/, '')
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ records })
+  } catch {
+    res.status(500).json({ error: '讀取補充資料清單失敗' })
+  }
+})
+
+app.get('/api/project-supplements/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+  if (!validSlug(slug) || !validSupplementName(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = supplementFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    let content = fs.readFileSync(hostPath, 'utf8')
+    // 修復既有檔案：若內文還有未下載的 ess-kms 站內圖片，下載到 _assets/ 並改寫路徑後回寫檔案。
+    const assetsDir = assetsDirFor(path.join(paths.workspace, 'project-insights'))
+    const localized = await localizeKmsImages(content, assetsDir)
+    if (localized.changed) {
+      content = localized.content
+      try { fs.writeFileSync(hostPath, content, 'utf8') } catch {}
+    }
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/project-supplements/file', requireAuth, async (req, res) => {
+  const { slug, name, content } = req.body ?? {}
+  if (!validSlug(slug) || !validSupplementName(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = supplementFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/project-supplements/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+  if (!validSlug(slug) || !validSupplementName(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = supplementFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
   }
 })
 
