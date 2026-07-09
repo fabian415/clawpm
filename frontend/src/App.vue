@@ -82,7 +82,7 @@
           @toast="(msg, type) => showToast(msg, type)"
         />
 
-        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @record-project="openMeetingRecordProject" @supplement-project="openProjectSupplements" @project-change="handleReviewerProjectChange" />
+        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @presentation-project="openPresentationProject" @record-project="openMeetingRecordProject" @supplement-project="openProjectSupplements" @project-change="handleReviewerProjectChange" />
 
         <SwotReportView
           v-else-if="currentPage === 'swotReport' && swotProject"
@@ -103,6 +103,13 @@
           :project-slug="techProject.slug || techProject.id"
           :project-name="techProject.name || techProject.title"
           @tech-analysis-ready="handleTechAnalysisReady"
+        />
+
+        <PresentationView
+          v-else-if="currentPage === 'presentationReport' && presentationProject"
+          :project-slug="presentationProject.slug || presentationProject.id"
+          :project-name="presentationProject.name || presentationProject.title"
+          @presentation-ready="handlePresentationReady"
         />
 
         <MeetingRecordView
@@ -230,6 +237,7 @@ import SessionsView from './views/SessionsView.vue'
 import SwotReportView from './views/SwotReportView.vue'
 import MarketAnalyzerView from './views/MarketAnalyzerView.vue'
 import TechAnalyzerView from './views/TechAnalyzerView.vue'
+import PresentationView from './views/PresentationView.vue'
 import MeetingRecordView from './views/MeetingRecordView.vue'
 import LoginView from './views/LoginView.vue'
 import DashboardView from './views/DashboardView.vue'
@@ -262,6 +270,7 @@ const selectedTask = ref(null)
 const swotProject = ref(null)
 const marketProject = ref(null)
 const techProject = ref(null)
+const presentationProject = ref(null)
 const meetingRecordProject = ref(null)
 const projectSupplementsProject = ref(null)
 
@@ -296,6 +305,11 @@ const breadcrumbs = computed(() => {
     { label: '專案列表', page: 'reviewerOverview' },
     { label: techProject.value.name || techProject.value.title, icon: 'project', page: 'reviewer' },
     { label: '技術分享' }
+  ]
+  if (page === 'presentationReport' && presentationProject.value) return [
+    { label: '專案列表', page: 'reviewerOverview' },
+    { label: presentationProject.value.name || presentationProject.value.title, icon: 'project', page: 'reviewer' },
+    { label: '簡報生成' }
   ]
   if (page === 'meetingRecord' && meetingRecordProject.value) return [
     { label: '專案列表', page: 'reviewerOverview' },
@@ -379,6 +393,21 @@ function handleMarketAnalysisReady({ sessionKey, prompt, newSession }) {
 function openTechProject(project) {
   techProject.value = project
   currentPage.value = 'techReport'
+}
+
+function openPresentationProject(project) {
+  presentationProject.value = project
+  currentPage.value = 'presentationReport'
+}
+
+function handlePresentationReady({ sessionKey, prompt, newSession }) {
+  if (newSession) {
+    chat.newSession()
+  } else {
+    chat.setSession(sessionKey)
+  }
+  chat.sendMessage(prompt)
+  chat.openPanel()
 }
 
 function openMeetingRecordProject(project) {

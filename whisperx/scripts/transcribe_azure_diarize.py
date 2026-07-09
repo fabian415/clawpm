@@ -137,6 +137,7 @@ def compute_logprobs_chunked(audio: np.ndarray, model, processor, device: str,
     )
 
     chunks = []
+    partition_stats = []  # 診斷用：每個 partition 的 (輸入樣本數, 實際輸出影格數)
     with torch.no_grad():
         for start, end in part["partitions"]:
             segment = audio[start:end] if end is not None else audio[start:]
@@ -145,12 +146,34 @@ def compute_logprobs_chunked(audio: np.ndarray, model, processor, device: str,
             logits = model(input_values).logits[0]  # (frames, vocab)
             logprobs = torch.log_softmax(logits, dim=-1).cpu().numpy()
             chunks.append(logprobs)
+            partition_stats.append((len(segment), logprobs.shape[0]))
 
     lpz = np.concatenate(chunks, axis=0)
     # 刪除 overlap 區間重複計算的 frame，避免同一段音訊被算兩次機率
     delete_idx = [i for i in part["delete_overlap_list"] if 0 <= i < len(lpz)]
     if delete_idx:
         lpz = np.delete(lpz, sorted(set(delete_idx)), axis=0)
+
+    # 診斷：若拼接後的影格數遠少於音訊長度的理論值（samples / SAMPLES_TO_FRAMES_RATIO），
+    # 代表某些 partition 實際輸出的影格數遠低於預期（例如 wav2vec2 對該段內容的
+    # 下採樣行為與 SAMPLES_TO_FRAMES_RATIO 假設不符），逐一印出每個 partition 的
+    # 樣本數/理論影格數/實際影格數，方便定位是哪個 partition 出問題。
+    expected_total = t // SAMPLES_TO_FRAMES_RATIO
+    if expected_total > 0 and len(lpz) < expected_total * 0.5:
+        print(
+            f"    診斷：lpz 拼接後僅 {len(lpz)} 影格，遠少於理論值 {expected_total}"
+            f"（輸入 {t} samples），逐一 partition 明細：",
+            file=sys.stderr,
+        )
+        for idx, (in_samples, out_frames) in enumerate(partition_stats):
+            expected = in_samples // SAMPLES_TO_FRAMES_RATIO
+            flag = "  <== 異常" if expected > 0 and out_frames < expected * 0.5 else ""
+            print(
+                f"      partition {idx}: 輸入 {in_samples} samples（理論 {expected} 影格），"
+                f"實際輸出 {out_frames} 影格{flag}",
+                file=sys.stderr,
+            )
+
     return lpz
 
 
@@ -177,9 +200,34 @@ def align_sentences(sentences: list, lpz: np.ndarray, processor) -> list:
 
     ground_truth_mat, utt_begin_indices = prepare_text(config, sentences)
     timings, char_probs, state_list = ctc_segmentation(config, lpz, ground_truth_mat)
+    # ctc-segmentation 的 determine_utterance_segments 會用 timings[index + 1]，
+    # 當文字太多、影格太少導致對齊把某句起始壓到最後一格時，會 IndexError
+    # （套件已知邊界 bug）。先把索引 clamp 到 len(timings) - 2，避免越界。
+    max_index = len(timings) - 2
+    if max_index >= 0:
+        utt_begin_indices = np.minimum(utt_begin_indices, max_index)
     segments = determine_utterance_segments(config, utt_begin_indices, char_probs, timings, sentences)
 
     return [(start, end, conf, text) for (start, end, conf), text in zip(segments, sentences)]
+
+
+def _even_distribute(sentences: list, duration_s: float) -> list:
+    """
+    對齊失敗時的退路：依字數比例，把整批句子平均分配在這段音訊時間內。
+    回傳 [(start_s, end_s, conf, text), ...]，時間相對於這段音訊起點；
+    conf 設為 0.0，表示是估計值而非真實對齊結果。
+    """
+    if not sentences:
+        return []
+    char_counts = [max(1, len(s)) for s in sentences]
+    total = sum(char_counts)
+    results = []
+    cursor = 0.0
+    for text, c in zip(sentences, char_counts):
+        seg = duration_s * (c / total)
+        results.append((cursor, cursor + seg, 0.0, text))
+        cursor += seg
+    return results
 
 
 def align_sentences_chunked(
@@ -238,11 +286,32 @@ def align_sentences_chunked(
             f"音訊 {sample_start / 16000:.0f}s-{sample_end / 16000:.0f}s）"
         )
         audio_slice = audio[sample_start:sample_end]
-        lpz_batch = compute_logprobs_chunked(
-            audio_slice, model, processor, device, max_len_s=max_chunk_seconds,
-        )
-        batch_result = align_sentences(batch_sentences, lpz_batch, processor)
-        del lpz_batch, audio_slice
+        slice_seconds = len(audio_slice) / 16000.0
+        try:
+            lpz_batch = compute_logprobs_chunked(
+                audio_slice, model, processor, device, max_len_s=max_chunk_seconds,
+            )
+            # 影格帳自檢：lpz 影格對應的秒數應與音訊長度相符；差太多代表
+            # chunk 拼接/overlap 刪除把影格算掉了，對齊幾乎必然失敗。
+            lpz_seconds = len(lpz_batch) * FRAME_DURATION_S
+            if slice_seconds > 0 and lpz_seconds < slice_seconds * 0.5:
+                print(
+                    f"    警告：批次 {batch_idx + 1} log 機率影格僅 {lpz_seconds:.0f}s，"
+                    f"遠少於音訊 {slice_seconds:.0f}s（影格帳可疑），對齊可能不準。",
+                    file=sys.stderr,
+                )
+            batch_result = align_sentences(batch_sentences, lpz_batch, processor)
+            del lpz_batch
+        except Exception as e:
+            # 單一批次對齊失敗（例如 ctc-segmentation 回溯失敗）不應拖垮整個任務，
+            # 退回用字數比例平均分配時間戳，讓流程能跑完。
+            print(
+                f"    警告：批次 {batch_idx + 1} 強制對齊失敗（{e}），"
+                f"改用字數比例平均分配時間戳。",
+                file=sys.stderr,
+            )
+            batch_result = _even_distribute(batch_sentences, slice_seconds)
+        del audio_slice
 
         import gc
         gc.collect()

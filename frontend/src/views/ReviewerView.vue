@@ -147,6 +147,15 @@
                 <Code2 class="w-3.5 h-3.5" /> 技術分享
               </button>
               <button
+                @click="emit('presentation-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                :disabled="!currentSlug"
+                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-indigo-700'"
+                class="bg-indigo-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                title="根據此專案內容生成簡報 (.pptx)"
+              >
+                <Presentation class="w-3.5 h-3.5" /> 簡報生成
+              </button>
+              <button
                 @click="emit('record-project', { slug: currentSlug, name: currentTitle || currentSlug })"
                 :disabled="!currentSlug"
                 :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-orange-700'"
@@ -275,6 +284,13 @@
                         <Code2 class="w-3.5 h-3.5" /> 技術分享
                       </button>
                       <button
+                        @click="emit('presentation-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="簡報生成"
+                      >
+                        <Presentation class="w-3.5 h-3.5" /> 簡報生成
+                      </button>
+                      <button
                         @click="emit('record-project', { slug: p.slug, name: p.name })"
                         class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors whitespace-nowrap"
                         title="會議記錄"
@@ -387,14 +403,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
   PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen,
-  Info, X, Sparkles, Paperclip
+  Info, X, Sparkles, Paperclip, Presentation
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
 
-const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'record-project', 'supplement-project', 'project-change'])
+const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'presentation-project', 'record-project', 'supplement-project', 'project-change'])
 
 const mode = ref('preview')
 const sidebarOpen = ref(true)

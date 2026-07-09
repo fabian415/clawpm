@@ -1615,6 +1615,7 @@ app.get('/api/project-insights/export', requireAuth, async (req, res) => {
     ['market', marketDir],
     ['tech', techDir],
     ['supplements', supplementsDir],
+    ['pptx', pptxDir],
   ]
   for (const [label, dirFn] of subDirs) {
     const dir = dirFn(hostInsightsDir, slug)
@@ -1995,6 +1996,21 @@ function supplementFilePath(hostInsightsDir, slug, name) {
   return full
 }
 
+// ── 簡報(.pptx)產出 ─────────────────────────────────────────────────────────
+// 由 presentation-generator skill 產出,存在 project-insights/pptx-{slug}/{timestamp}.pptx，
+// 同資料夾另有 {timestamp}.spec.json(deck spec)與 {timestamp}/page-NN.png(預覽縮圖)。
+function pptxDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `pptx-${slug}`)
+}
+
+function pptxFilePath(hostInsightsDir, slug, name) {
+  const dir = pptxDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.pptx') ? name : `${name}.pptx`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
 // 補充資料檔名是頁面標題淨化後的結果（可含中文），只擋路徑穿越，不像會議記錄限定日期格式。
 function validSupplementName(s) {
   return typeof s === 'string' && s.length > 0 && s.length < 300
@@ -2365,6 +2381,380 @@ app.get('/api/swot/result', requireAuth, async (req, res) => {
   if (!hostPath) return res.status(403).json({ error: '無權限' })
 
   res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Presentation Generator（.pptx 簡報產出）──────────────────────────────────
+
+const CONTAINER_SKILL_PPTX = `${CONTAINER_WORKSPACE}/skills/presentation-generator`
+
+const PPTX_ACCENTS = ['green', 'blue', 'gold', 'pink', 'sand', 'green2']
+
+function randomAccentOrder() {
+  const a = [...PPTX_ACCENTS]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a.slice(0, 5)
+}
+
+function newTimestamp() {
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
+// ── Phase 1：探索（做市場/技術研究 + 依專案動態產出要反問使用者的問題）─────────
+app.post('/api/presentation/plan/start', requireAuth, async (req, res) => {
+  const { projectSlug, projectName, note } = req.body ?? {}
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  const userNote = (typeof note === 'string' && note.trim()) ? note.trim() : ''
+
+  const planId = newTimestamp()
+  const today = new Date().toISOString().slice(0, 10)
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const pptxFolderContainer = `${CONTAINER_INSIGHTS_DIR}/pptx-${projectSlug}`
+  const discoveryPath = `${pptxFolderContainer}/${planId}.discovery.json`
+  const sessionKey = makeScopedSessionKey('presentation')
+
+  const parts = [
+    `請使用 presentation-generator skill 的 **discovery 模式**，為「${displayName}」專案的簡報做前置研究與提問（這個階段不要生成 pptx）。`,
+    '',
+    `專案 slug：${projectSlug}`,
+    `專案名稱：${displayName}`,
+    `日期：${today}`,
+    ...(userNote ? ['', `使用者的額外方向說明（請在研究與設計問題時納入考量）：「${userNote}」`] : []),
+    '',
+    '資料來源（請完整讀取）：',
+    `- 專案知識庫主檔：${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`,
+    `- 逐次會議記錄資料夾：${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}/（若存在，讀取其中所有 .md）`,
+    `- 補充資料資料夾：${CONTAINER_INSIGHTS_DIR}/supplements-${projectSlug}/（若存在，讀取其中所有 .md）`,
+    `- 既有 SWOT 分析資料夾：${CONTAINER_INSIGHTS_DIR}/swot-${projectSlug}/（若存在，用 Glob 列出其中的 {timestamp}.md，只讀檔名時間戳記最新的一份）`,
+    `- 既有市場行銷分析資料夾：${CONTAINER_INSIGHTS_DIR}/market-${projectSlug}/（若存在，同樣只讀最新一份）`,
+    `- 既有技術分享分析資料夾：${CONTAINER_INSIGHTS_DIR}/tech-${projectSlug}/（若存在，同樣只讀最新一份）`,
+    `- 圖片資產目錄：${CONTAINER_INSIGHTS_DIR}/_assets/`,
+    '',
+    '請依 SKILL.md 的 Mode A 執行：',
+    '1. 完整讀取專案內容，掌握現狀、數據、成果、目標客戶線索；同時讀取上面既有的 SWOT/市場/技術分析報告最新版（若存在），重複利用其中已驗證的洞察與來源標記，不要重做一次相同分析',
+    '2. 用 Glob 列出 _assets/ 實際存在的圖片並建立圖片語意清單（file/desc/topic）',
+    '3. 先確認既有報告是否已涵蓋市場規模/競品/趨勢/技術背景，缺的部分再用 web 搜尋做**深入**研究補齊，逐條記錄來源 URL',
+    '4. 依這個專案的實際狀況，動態設計 3–5 個要反問使用者的關鍵問題（single/multi/open，選項要貼合本專案）',
+    `5. 依 references/discovery-schema.md 寫出完整 discovery.json 到：${discoveryPath}`,
+    `   （planId 請填 "${planId}"；請先建立資料夾 ${pptxFolderContainer}/ 若尚未存在）`,
+    '',
+    '完成後回報：研究到的主要洞察（含來源）、設計了哪些問題。這個階段**不要**產生 pptx。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), planId })
+})
+
+app.get('/api/presentation/plan/result', requireAuth, async (req, res) => {
+  const { slug, planId } = req.query
+  if (!validSlug(slug) || !validTimestamp(planId)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+  const discoveryHostPath = path.join(dir, `${planId}.discovery.json`)
+  if (!discoveryHostPath.startsWith(dir + path.sep) || !fs.existsSync(discoveryHostPath)) {
+    return res.json({ ready: false })
+  }
+  const discovery = readJsonSafe(discoveryHostPath)
+  if (!discovery) return res.json({ ready: false })
+  res.json({ ready: true, discovery })
+})
+
+const PPTX_STYLES = ['professional', 'vivid', 'minimal', 'warm']
+
+function validRevision(v) {
+  const n = Number(v)
+  return Number.isInteger(n) && n >= 1 && n <= 20
+}
+
+// ── Phase 2：故事大綱（先寫目的、設計逐頁大綱、自我檢視，交給使用者確認或依回饋重做）──
+// outline 檔用 revision 編號（{planId}.outline.v{N}.json），每次呼叫（含重新設計）都是
+// 新檔案，避免「使用者要求重寫、但輪詢讀到舊檔」的競態，也保留每一版的歷史方便除錯。
+app.post('/api/presentation/outline/start', requireAuth, async (req, res) => {
+  const { projectSlug, projectName, planId, answers, style, feedback, previousRevision } = req.body ?? {}
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (!validTimestamp(planId)) return res.status(400).json({ error: '缺少有效的 planId（請先完成規劃階段）' })
+  const deckStyle = PPTX_STYLES.includes(style) ? style : 'professional'
+  const revision = validRevision(previousRevision) ? Number(previousRevision) + 1 : 1
+  const isRefine = revision > 1
+
+  const today = new Date().toISOString().slice(0, 10)
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const pptxFolderContainer = `${CONTAINER_INSIGHTS_DIR}/pptx-${projectSlug}`
+  const discoveryPath = `${pptxFolderContainer}/${planId}.discovery.json`
+  const outlinePath = `${pptxFolderContainer}/${planId}.outline.v${revision}.json`
+  const previousOutlinePath = `${pptxFolderContainer}/${planId}.outline.v${revision - 1}.json`
+  const sessionKey = makeScopedSessionKey('presentation')
+
+  let answersBlock = '（使用者未提供額外回答，請依 discovery.json 的問題以合理預設進行）'
+  try {
+    if (answers && typeof answers === 'object') answersBlock = JSON.stringify(answers, null, 2)
+  } catch {}
+  const feedbackText = (typeof feedback === 'string' && feedback.trim()) ? feedback.trim() : ''
+
+  const parts = [
+    `請使用 presentation-generator skill 的 **outline 模式**，為「${displayName}」專案${isRefine ? '重新設計' : '設計'}故事大綱（這個階段不要生成 pptx，只寫 outline.json）。`,
+    '',
+    `專案 slug：${projectSlug}`,
+    `專案名稱：${displayName}`,
+    `日期：${today}`,
+    `視覺風格（供你安排語氣參考）：${deckStyle}`,
+    '',
+    `研究檔（discovery.json）：${discoveryPath}（請先讀取，取得研究摘要、圖片語意清單）`,
+    '',
+    '使用者對規劃問題的回答（key 為問題 id，對照 discovery.json 的 questions）：',
+    '```json',
+    answersBlock,
+    '```',
+    '',
+    ...(isRefine ? [
+      `**這是重新設計（第 ${revision} 版）**：請先讀取上一版大綱：${previousOutlinePath}`,
+      `使用者對上一版的回饋：「${feedbackText || '（使用者未填寫具體文字，僅按下重新設計）'}」`,
+      '請針對回饋具體修正故事線與每頁目的，不是換個說法敷衍過去；若回饋指出「太像流水帳」，',
+      '就要實際刪減/合併目的薄弱的頁面，換成更有畫面感的頁型。',
+      '',
+    ] : []),
+    '請依 SKILL.md 的 Mode B 執行：',
+    '1. 消化 discovery.json 與使用者回答' + (isRefine ? '、上一版大綱與使用者回饋' : '') + '，定出受眾/核心訊息/強調重點/頁數',
+    '2. **先寫整份簡報的 deck_purpose（完整目的）**，再逐頁「先寫 purpose、再寫 one_liner」',
+    '3. 封面固定用 type=cover，目的固定（建立位階與野心），不要另外設計封面呈現方式',
+    '4. 自我檢視：是否為一篇完整、連貫、有記憶點的故事？有沒有目的薄弱的流水帳頁面？誠實填 self_check，不通過就修正到通過',
+    `5. 依 references/outline-schema.md 寫出完整 outline.json 到：${outlinePath}`,
+    `   （planId 填 "${planId}"，revision 填 ${revision}${isRefine ? `，based_on_feedback 填使用者的回饋文字` : ''}；請先建立資料夾 ${pptxFolderContainer}/ 若尚未存在）`,
+    '',
+    '完成後回報：deck_purpose、核心訊息、逐頁大綱摘要（一頁一句話＋目的一句話）、self_check 結果。',
+    '**這個階段絕對不要**寫 deck spec、呼叫 deck_builder 或產生 pptx——大綱要先給使用者確認。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), planId, revision })
+})
+
+app.get('/api/presentation/outline/result', requireAuth, async (req, res) => {
+  const { slug, planId, revision } = req.query
+  if (!validSlug(slug) || !validTimestamp(planId) || !validRevision(revision)) {
+    return res.status(400).json({ error: '無效的參數' })
+  }
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+  const outlineHostPath = path.join(dir, `${planId}.outline.v${revision}.json`)
+  if (!outlineHostPath.startsWith(dir + path.sep) || !fs.existsSync(outlineHostPath)) {
+    return res.json({ ready: false })
+  }
+  const outline = readJsonSafe(outlineHostPath)
+  if (!outline) return res.json({ ready: false })
+  res.json({ ready: true, outline })
+})
+
+// ── Phase 3：build（只在使用者已確認某一版大綱後才觸發，依大綱生成 pptx）──────────
+app.post('/api/presentation/generate', requireAuth, async (req, res) => {
+  const { projectSlug, projectName, planId, revision, style } = req.body ?? {}
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (!validTimestamp(planId)) return res.status(400).json({ error: '缺少有效的 planId（請先完成規劃階段）' })
+  if (!validRevision(revision)) return res.status(400).json({ error: '缺少已確認的故事大綱版本（請先完成大綱確認）' })
+  const deckStyle = PPTX_STYLES.includes(style) ? style : 'professional'
+
+  const today = new Date().toISOString().slice(0, 10)
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const pptxFolderContainer = `${CONTAINER_INSIGHTS_DIR}/pptx-${projectSlug}`
+  // 沿用 planId 當最終簡報的 timestamp，讓 discovery / outline / spec / pptx / 預覽同名成組
+  const outputPptx = `${pptxFolderContainer}/${planId}.pptx`
+  const specPath = `${pptxFolderContainer}/${planId}.spec.json`
+  const discoveryPath = `${pptxFolderContainer}/${planId}.discovery.json`
+  const outlinePath = `${pptxFolderContainer}/${planId}.outline.v${revision}.json`
+  const previewDir = `${pptxFolderContainer}/${planId}`
+  const sessionKey = makeScopedSessionKey('presentation')
+  const layoutSeed = Math.floor(Math.random() * 10000)
+
+  const parts = [
+    `請使用 presentation-generator skill 的 **build 模式**，依「已核准的故事大綱」為「${displayName}」專案產出 PowerPoint 簡報（.pptx）。`,
+    '',
+    `專案 slug：${projectSlug}`,
+    `專案名稱：${displayName}`,
+    `日期：${today}`,
+    '',
+    `研究檔（discovery.json）：${discoveryPath}`,
+    `**已核准的故事大綱（outline.json，第 ${revision} 版）：${outlinePath}**`,
+    '請先讀取這份大綱，逐頁依其 purpose 與 one_liner 撰寫內容，不要偏離已核准的目的重新發揮。',
+    '',
+    '本次版面變化設定（很重要:每次都要做出不同的 layout,避免每份簡報長得一樣）：',
+    `- **視覺風格（使用者指定）：meta.style 請設為 "${deckStyle}"**（professional / vivid / minimal / warm）。`,
+    `- 請在 meta 設 layoutSeed:${layoutSeed}（讓版面變體的預設每次不同）。`,
+    '- **主動變換每頁的版面變體**（見 deck-spec-schema.md「版面變體」）:',
+    '    · bullets 可用 variant: list（條列）/ cards（卡片）,並用 imageSide: left/right 換圖片位置',
+    '    · stats 可用 variant: row（單排）/ grid（2×2）;two_column 可用 variant: panels / divider',
+    '    · 適時改用 process / big_number / quote / hero_image / image_full 等不同頁型呈現',
+    '- 封面固定用 type=cover，只給 title/domain/team/date，不要加 variant 或任何賽事字樣。',
+    '- 多數內容頁**不要**設 accent（留空會自動吃 style 主色,整份才一致）。',
+    '',
+    '產出設定：',
+    `- 圖片解析根目錄（--assets-root）：${CONTAINER_INSIGHTS_DIR}`,
+    `- 模板（--template）：${CONTAINER_SKILL_PPTX}/references/template.pptx`,
+    `- deck spec 輸出：${specPath}`,
+    `- pptx 輸出（--out）：${outputPptx}`,
+    `- 預覽縮圖輸出資料夾：${previewDir}/`,
+    '',
+    '請依 SKILL.md 的 Mode C 執行：',
+    '1. 讀取已核准的 outline.json，逐頁取用 purpose 與 one_liner',
+    '2. 語意配對圖片:只在圖片真正支撐該頁訊息時才放，圖說寫清楚它證明什麼;配不上就不放',
+    '3. 決定本次版面組合(layoutSeed + 混搭頁型與變體),避免與過往雷同',
+    `4. 依 references/deck-spec-schema.md 寫出完整 spec 到 ${specPath}（外部數字句末附來源,倒數第二頁放 sources）`,
+    '5. 執行 scripts/deck_builder.py 產 pptx;missing_images 非空就修正重跑',
+    '6. 執行 scripts/render_preview.py 產預覽',
+    '7. 回報:pptx 頁數、逐頁如何對應大綱目的、用了哪些 _assets 圖(用在哪頁與原因)、引用了哪些來源、這次的版面/配色變化',
+    '',
+    '務必:忠於已核准的大綱、圖片語意到位不硬塞、外部引用附連結、只用真實存在的 _assets 圖。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: planId, timestamp: today })
+})
+
+app.get('/api/presentation/result', requireAuth, async (req, res) => {
+  const { slug, filename } = req.query
+  if (!validSlug(slug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const hostPath = pptxFilePath(hostInsightsDir, slug, filename)
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  const ready = fs.existsSync(hostPath)
+  let pages = 0
+  if (ready) {
+    const previewDir = path.join(pptxDir(hostInsightsDir, slug), filename)
+    try {
+      pages = fs.readdirSync(previewDir).filter(f => /^page-\d+\.png$/.test(f)).length
+    } catch {}
+  }
+  res.json({ ready, pages })
+})
+
+app.get('/api/presentation/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+  if (!fs.existsSync(dir)) return res.json({ decks: [] })
+
+  try {
+    const decks = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.pptx$/.test(f))
+      .map(f => {
+        const name = f.replace(/\.pptx$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        let pages = 0
+        try { pages = fs.readdirSync(path.join(dir, name)).filter(x => /^page-\d+\.png$/.test(x)).length } catch {}
+        return { name, displayDate, mtime, pages }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+    res.json({ decks })
+  } catch {
+    res.status(500).json({ error: '讀取簡報清單失敗' })
+  }
+})
+
+app.get('/api/presentation/download', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const hostPath = pptxFilePath(hostInsightsDir, slug, name)
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    res.setHeader('Content-Disposition', `attachment; filename="${slug}-${name}.pptx"`)
+    res.send(data)
+  } catch (err) {
+    console.error('[presentation] download error:', err.message)
+    res.status(500).json({ error: '下載失敗' })
+  }
+})
+
+// 預覽 PNG:img 標籤無法帶 Authorization header，改用 query token 驗證(同 /asset 端點作法)。
+app.get('/api/presentation/preview', async (req, res) => {
+  const { slug, name, page, token } = req.query
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  const pageNum = String(page || '').padStart(2, '0')
+  if (!/^\d{2}$/.test(pageNum)) return res.status(400).json({ error: '無效的頁碼' })
+
+  let user
+  try {
+    const auth = req.headers.authorization ?? ''
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null
+    user = verifyToken(bearer || token)
+  } catch {
+    return res.status(401).json({ error: '未授權' })
+  }
+
+  const provisionUserId = await getProvisionUserId(user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const previewDir = path.join(pptxDir(hostInsightsDir, slug), name)
+  const hostPath = path.join(previewDir, `page-${pageNum}.png`)
+  if (!hostPath.startsWith(previewDir + path.sep) || !fs.existsSync(hostPath)) {
+    return res.status(404).json({ error: '預覽不存在' })
+  }
+
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', 'image/png')
+    res.setHeader('Cache-Control', 'private, max-age=86400')
+    res.send(data)
+  } catch {
+    res.status(500).json({ error: '讀取預覽失敗' })
+  }
+})
+
+app.delete('/api/presentation/delete', requireAuth, async (req, res) => {
+  const { slug, name } = req.body ?? {}
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+
+  // 一份簡報 = {name}.pptx + {name}.spec.json + {name}.discovery.json + 每一版
+  // {name}.outline.v{N}.json + {name}/(預覽縮圖資料夾)。逐一刪除,並確保每個目標路徑
+  // 都仍在 pptx-{slug} 資料夾內(擋路徑穿越)。
+  const targets = [
+    path.join(dir, `${name}.pptx`),
+    path.join(dir, `${name}.spec.json`),
+    path.join(dir, `${name}.discovery.json`),
+    path.join(dir, name),
+  ]
+  try {
+    for (let rev = 1; rev <= 20; rev++) {
+      targets.push(path.join(dir, `${name}.outline.v${rev}.json`))
+    }
+    for (const t of targets) {
+      if (!t.startsWith(dir + path.sep)) continue
+      if (fs.existsSync(t)) fs.rmSync(t, { recursive: true, force: true })
+    }
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[presentation] delete error:', err.message)
+    res.status(500).json({ error: '刪除失敗' })
+  }
 })
 
 // ── Market Analyzer ───────────────────────────────────────────────────────────
