@@ -1,4 +1,5 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { SESSION_EXPIRED_EVENT } from '../utils/authGuard'
 
 function getStoredUser() {
   try {
@@ -225,6 +226,13 @@ export function useApp() {
     fetch('/api/auth/logout', { method: 'POST' }).catch(() => {})
   }
 
+  function handleSessionExpired() {
+    stopStatsPolling()
+    currentUser.value = null
+    authError.value = '登入已過期，請重新登入'
+    currentPage.value = 'login'
+  }
+
   async function completeSetup(config) {
     const token = localStorage.getItem('clawpm_token')
     try {
@@ -319,9 +327,13 @@ export function useApp() {
 
   onMounted(() => {
     if (localStorage.getItem('clawpm_token')) startStatsPolling()
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired)
   })
 
-  onUnmounted(() => stopStatsPolling())
+  onUnmounted(() => {
+    stopStatsPolling()
+    window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired)
+  })
 
   async function handleRestart() {
     isRestarting.value = true
