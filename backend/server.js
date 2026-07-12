@@ -46,6 +46,11 @@ import {
   deleteContainerConfig,
 } from './src/containers/DevicePairer.js'
 import { getUserPaths } from './src/containers/WorkspaceManager.js'
+import {
+  listSkills, readSkill, createSkill, updateSkill, deleteSkill, cloneSkill,
+  slugValid as skillSlugValid, isProtectedSkill, parseFrontmatter,
+  createDraftId, readDraft, deleteDraft, draftContainerPath,
+} from './src/managers/SkillManager.js'
 
 dotenv.config()
 
@@ -3064,6 +3069,359 @@ app.get('/api/tech/result', requireAuth, async (req, res) => {
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostPath = techFilePath(path.join(paths.workspace, 'project-insights'), slug, filename)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Skill Management ──────────────────────────────────────────────────────────
+// 系統範本技能（SKILL_NAMES，見 WorkspaceManager.js）唯讀，僅能複製為自訂技能。
+// 自訂技能可自由編輯／刪除／發動；技能資料夾本身即唯一真相來源，不另建中繼資料。
+
+function skillRunDir(hostInsightsDir, skillSlug, projectSlug) {
+  return path.join(hostInsightsDir, `custom-${skillSlug}-${projectSlug}`)
+}
+
+function skillRunFilePath(hostInsightsDir, skillSlug, projectSlug, name) {
+  const dir = skillRunDir(hostInsightsDir, skillSlug, projectSlug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+app.get('/api/skills', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  res.json({ skills: listSkills(paths) })
+})
+
+app.get('/api/skills/:slug', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const skill = readSkill(paths, slug)
+  if (!skill) return res.status(404).json({ error: '技能不存在' })
+
+  res.json(skill)
+})
+
+app.post('/api/skills', requireAuth, requireAdmin, async (req, res) => {
+  const { slug, content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼（僅限小寫英數字與連字號）' })
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '技能內容不可為空' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    const result = createSkill(paths, slug, content)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/skills/:slug/clone', requireAuth, requireAdmin, async (req, res) => {
+  const { slug } = req.params
+  const { newSlug, newName } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!skillSlugValid(newSlug)) return res.status(400).json({ error: '無效的新技能識別碼（僅限小寫英數字與連字號）' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    const result = cloneSkill(paths, slug, newSlug, newName)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// 依使用者的（可能簡短、不完整的）修改需求，請 AI 修正一份 SKILL.md 草稿並整份回傳。
+// 純運算、不寫檔——實際落地交由前端 diff 審閱後、使用者按「儲存」時走既有的建立/更新路由。
+app.post('/api/skills/revise', requireAuth, requireAdmin, async (req, res) => {
+  const { content, instruction } = req.body ?? {}
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '缺少目前的 SKILL.md 內容' })
+  if (typeof instruction !== 'string' || !instruction.trim()) return res.status(400).json({ error: '請描述想要的修改' })
+
+  const promptParts = [
+    '你是一位技能（Skill）文件編輯助手。以下是一份 SKILL.md 的目前內容，使用者提出了一個修改需求（可能簡短、不完整），請你依需求修改這份文件。',
+    '',
+    '【目前的 SKILL.md 內容】',
+    '```',
+    content,
+    '```',
+    '',
+    `【使用者的修改需求】\n${instruction.trim()}`,
+    '',
+    '【規則】',
+    '- 只修改與使用者需求相關的部分，其餘內容盡量保持原樣（包含未提及的 Workflow 步驟、輸出格式等段落）',
+    '- 必須保留合法的 --- frontmatter 區塊，且 name、description 欄位不可缺漏，除非使用者明確要求變更',
+    '- 不要輸出任何說明文字、前言或客套話，直接輸出修改後的完整 SKILL.md 內容，並以 ```markdown 包住整份內容',
+  ]
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('skill-revise-' + Date.now())
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, promptParts.join('\n'))
+    const revised = stripCodeFence(lastMsg.content)
+    if (!revised.trim()) return res.status(502).json({ error: 'AI 回覆為空，請重試' })
+    res.json({ success: true, content: revised })
+  } catch (err) {
+    console.error('[skills] revise error:', err.message)
+    res.status(500).json({ error: err.message || 'AI 修正失敗' })
+  }
+})
+
+app.put('/api/skills/:slug', requireAuth, requireAdmin, async (req, res) => {
+  const { slug } = req.params
+  const { content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (isProtectedSkill(slug)) return res.status(403).json({ error: '系統範本技能不可編輯，請先複製為自訂技能' })
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '技能內容不可為空' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    const result = updateSkill(paths, slug, content)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.delete('/api/skills/:slug', requireAuth, requireAdmin, async (req, res) => {
+  const { slug } = req.params
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (isProtectedSkill(slug)) return res.status(403).json({ error: '系統範本技能不可刪除' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    deleteSkill(paths, slug)
+    res.json({ success: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// ── Skill Management：AI 產生技能草稿 ────────────────────────────────────────
+
+app.post('/api/skills/generate', requireAuth, requireAdmin, async (req, res) => {
+  const { description } = req.body ?? {}
+  if (typeof description !== 'string' || !description.trim()) {
+    return res.status(400).json({ error: '請描述想要的技能' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const draftId = createDraftId(paths)
+  const sessionKey = makeScopedSessionKey('skill-creator')
+  const draftContainerFullPath = `${CONTAINER_WORKSPACE}/${draftContainerPath(draftId)}`
+
+  const parts = [
+    '請使用 skill-creator 技能，依照以下需求草擬一個新技能的 SKILL.md 草稿。',
+    '',
+    `需求描述：${description.trim()}`,
+    '',
+    `草稿輸出路徑：${draftContainerFullPath}`,
+    '（這是 workspace 底下的暫存路徑，不在 skills/ 目錄下；請只寫這一個檔案，不要建立或修改 skills/ 底下任何正式技能資料夾）',
+    '',
+    '請依 skill-creator 的 Workflow 完整執行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), draftId })
+})
+
+app.get('/api/skills/drafts/:draftId', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  res.json(readDraft(paths, req.params.draftId))
+})
+
+app.post('/api/skills/drafts/:draftId/save', requireAuth, requireAdmin, async (req, res) => {
+  const { draftId } = req.params
+  const { slug, content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼（僅限小寫英數字與連字號）' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const draft = readDraft(paths, draftId)
+  if (!draft.ready) return res.status(404).json({ error: '草稿不存在或尚未產生完成' })
+
+  // Allow the user to tweak the draft in the review step before saving; falls back to the AI-written draft as-is.
+  const finalContent = (typeof content === 'string' && content.trim()) ? content : draft.content
+
+  try {
+    const result = createSkill(paths, slug, finalContent)
+    deleteDraft(paths, draftId)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.delete('/api/skills/drafts/:draftId', requireAuth, requireAdmin, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  deleteDraft(paths, req.params.draftId)
+  res.json({ success: true })
+})
+
+// ── Skill Management：通用發動（針對特定專案執行任一技能）────────────────────
+
+app.post('/api/skills/:slug/run', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, projectName, instruction } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const skill = readSkill(paths, slug)
+  if (!skill) return res.status(404).json({ error: '技能不存在' })
+
+  const fm = parseFrontmatter(skill.content) || {}
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const userInstruction = (typeof instruction === 'string' && instruction.trim()) ? instruction.trim() : ''
+
+  const timestamp = newTimestamp()
+  const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+  const recordFolderContainerPath = `${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}`
+  const docFolderContainerPath = `${CONTAINER_WORKSPACE}/ftp_data/doc`
+  const runFolderContainer = `${CONTAINER_INSIGHTS_DIR}/custom-${slug}-${projectSlug}`
+  const containerOutputPath = `${runFolderContainer}/${timestamp}.md`
+  const sessionKey = makeScopedSessionKey(`skill-${slug}`)
+
+  const parts = [
+    `請使用 skills/${slug}（${fm.name || slug}）技能，針對「${displayName}」專案執行以下任務。`,
+    '',
+    `技能說明：${fm.description || '（無）'}`,
+    '',
+    `專案洞察來源檔案（若存在）：${projectContainerPath}`,
+    `專案會議記錄資料夾（若存在，請列出並讀取其中所有 .md 檔案）：${recordFolderContainerPath}/`,
+    `專案文件資料夾（若存在且與任務相關，請一併參考）：${docFolderContainerPath}/`,
+    '',
+    userInstruction ? `使用者補充指令：${userInstruction}` : '使用者未提供補充指令，請依此技能 SKILL.md 定義的預設行為執行。',
+    '',
+    '請依你的 SKILL.md 定義完整執行工作流程。',
+    `完成後，請將最終輸出寫入：${containerOutputPath}（若資料夾不存在，請先建立 ${runFolderContainer}/）`,
+    '',
+    '最後檢查所有的 Markdown 檔案寫入時，\\n 要取代成斷行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: timestamp })
+})
+
+app.get('/api/skills/:slug/runs', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = skillRunDir(path.join(paths.workspace, 'project-insights'), slug, projectSlug)
+
+  if (!fs.existsSync(dir)) return res.json({ reports: [] })
+
+  try {
+    const reports = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.md$/.test(f))
+      .map((f) => {
+        const name = f.replace(/\.md$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)} ${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, displayDate, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ reports })
+  } catch {
+    res.status(500).json({ error: '讀取執行紀錄清單失敗' })
+  }
+})
+
+app.get('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, name } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, name, content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, name } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
+  }
+})
+
+app.get('/api/skills/:slug/runs/result', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, filename } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, filename)
 
   if (!hostPath) return res.status(403).json({ error: '無權限' })
 

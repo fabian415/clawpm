@@ -206,6 +206,17 @@
                 <span class="toolbar-tip">補充資料</span>
               </span>
               <span class="relative tip-wrap">
+                <button
+                  @click="emit('custom-skill-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-pink-700'"
+                  class="bg-pink-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <Wand2 class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">自訂技能</span>
+              </span>
+              <span class="relative tip-wrap">
                 <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors">
                   <Trash2 class="w-3.5 h-3.5" />
                 </button>
@@ -339,6 +350,13 @@
                       >
                         <Paperclip class="w-3.5 h-3.5" /> 補充資料
                       </button>
+                      <button
+                        @click="emit('custom-skill-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="自訂技能"
+                      >
+                        <Wand2 class="w-3.5 h-3.5" /> 自訂技能
+                      </button>
                     </div>
                   </td>
                   <td class="py-4 pl-2" @click.stop>
@@ -438,14 +456,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
   PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen,
-  Info, X, Sparkles, Paperclip, Presentation
+  Info, X, Sparkles, Paperclip, Presentation, Wand2
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
 
-const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'presentation-project', 'record-project', 'supplement-project', 'project-change'])
+const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'presentation-project', 'record-project', 'supplement-project', 'custom-skill-project', 'project-change'])
 
 const mode = ref('preview')
 const sidebarOpen = ref(true)

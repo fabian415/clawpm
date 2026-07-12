@@ -23,6 +23,7 @@ const SKILL_NAMES = [
   'market-analyzer',
   'tech-analyzer',
   'presentation-generator',
+  'skill-creator',
 ]
 
 // Always overwrite on init to keep assistant character and workspace instructions current.
@@ -137,7 +138,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
   }
 }
 
-function copyDirRecursive(src, dest) {
+export function copyDirRecursive(src, dest) {
   if (!fs.existsSync(src)) return false
   if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true })
 
@@ -312,4 +313,4 @@ export function updateWorkspaceEnv(userId, updates) {
   return Object.keys(updates)
 }
 
-export { ALLOWED_ENV_KEYS }
+export { ALLOWED_ENV_KEYS, SKILL_NAMES }

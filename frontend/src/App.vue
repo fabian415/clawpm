@@ -82,7 +82,7 @@
           @toast="(msg, type) => showToast(msg, type)"
         />
 
-        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @presentation-project="openPresentationProject" @record-project="openMeetingRecordProject" @supplement-project="openProjectSupplements" @project-change="handleReviewerProjectChange" />
+        <ReviewerView v-else-if="currentPage === 'reviewer'" :initial-slug="reviewerInitialSlug" @swot-project="openSwotProject" @market-project="openMarketProject" @tech-project="openTechProject" @presentation-project="openPresentationProject" @record-project="openMeetingRecordProject" @supplement-project="openProjectSupplements" @custom-skill-project="openCustomSkillProject" @project-change="handleReviewerProjectChange" />
 
         <SwotReportView
           v-else-if="currentPage === 'swotReport' && swotProject"
@@ -123,6 +123,15 @@
           kind="supplement"
           :project-slug="projectSupplementsProject.slug || projectSupplementsProject.id"
           :project-name="projectSupplementsProject.name || projectSupplementsProject.title"
+        />
+
+        <CustomSkillReportView
+          v-else-if="currentPage === 'customSkillReport' && customSkillProject"
+          :project-slug="customSkillProject.slug || customSkillProject.id"
+          :project-name="customSkillProject.name || customSkillProject.title"
+          :initial-skill-slug="customSkillReportSkillSlug"
+          :initial-report-name="customSkillReportFilename"
+          @skill-ready="handleSkillReady"
         />
 
         <SpeakerManagementView v-else-if="currentPage === 'speakers'" :team="currentUser?.teamName" />
@@ -170,6 +179,8 @@
         <ReleaseNoteView v-else-if="currentPage === 'releaseNote'" />
 
         <TerminologyView v-else-if="currentPage === 'terminology'" @toast="(msg, type) => showToast(msg, type)" />
+
+        <SkillsView v-else-if="currentPage === 'skills'" :is-admin="isAdmin" @skill-ready="handleSkillReady" @open-report="handleOpenSkillReport" />
       </div>
     </main>
   </div>
@@ -252,6 +263,8 @@ import SpeakerManagementView from './views/SpeakerManagementView.vue'
 import TasksView from './views/TasksView.vue'
 import ReleaseNoteView from './views/ReleaseNoteView.vue'
 import TerminologyView from './views/TerminologyView.vue'
+import SkillsView from './views/SkillsView.vue'
+import CustomSkillReportView from './views/CustomSkillReportView.vue'
 
 const {
   currentPage, sidebarCollapsed, isDark, isConfiguring, configProgress,
@@ -273,6 +286,9 @@ const techProject = ref(null)
 const presentationProject = ref(null)
 const meetingRecordProject = ref(null)
 const projectSupplementsProject = ref(null)
+const customSkillProject = ref(null)
+const customSkillReportSkillSlug = ref('')
+const customSkillReportFilename = ref('')
 
 const breadcrumbs = computed(() => {
   const page = currentPage.value
@@ -321,6 +337,12 @@ const breadcrumbs = computed(() => {
     { label: projectSupplementsProject.value.name || projectSupplementsProject.value.title, icon: 'project', page: 'reviewer' },
     { label: '補充資料' }
   ]
+  if (page === 'customSkillReport' && customSkillProject.value) return [
+    { label: '專案列表', page: 'reviewerOverview' },
+    { label: customSkillProject.value.name || customSkillProject.value.title, icon: 'project', page: 'reviewer' },
+    { label: '自訂技能' }
+  ]
+  if (page === 'skills') return [{ label: '技能管理' }]
   if (page === 'speakers') return [{ label: '聲紋管理' }]
   if (page === 'tasks') return [{ label: '任務管理' }]
   if (page === 'sessions') return [{ label: '會話紀錄' }]
@@ -420,6 +442,20 @@ function openProjectSupplements(project) {
   currentPage.value = 'projectSupplements'
 }
 
+function openCustomSkillProject(project) {
+  customSkillProject.value = project
+  customSkillReportSkillSlug.value = ''
+  customSkillReportFilename.value = ''
+  currentPage.value = 'customSkillReport'
+}
+
+function handleOpenSkillReport({ skillSlug, projectSlug, projectName, filename }) {
+  customSkillProject.value = { slug: projectSlug, name: projectName }
+  customSkillReportSkillSlug.value = skillSlug
+  customSkillReportFilename.value = filename
+  currentPage.value = 'customSkillReport'
+}
+
 function handleTechAnalysisReady({ sessionKey, prompt, newSession }) {
   if (newSession) {
     chat.newSession()
@@ -432,6 +468,16 @@ function handleTechAnalysisReady({ sessionKey, prompt, newSession }) {
 
 function handleNavigate(page) {
   currentPage.value = page
+}
+
+function handleSkillReady({ sessionKey, prompt, newSession }) {
+  if (newSession) {
+    chat.newSession()
+  } else {
+    chat.setSession(sessionKey)
+  }
+  chat.sendMessage(prompt)
+  chat.openPanel()
 }
 
 const chat = useChat()

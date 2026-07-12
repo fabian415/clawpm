@@ -49,6 +49,14 @@
         <span v-if="!collapsed">專有名詞</span>
       </div>
       <div
+        @click="$emit('navigate', 'skills')"
+        :class="{ 'bg-blue-600 text-white': currentPage === 'skills' }"
+        class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
+      >
+        <Wand2 class="w-5 h-5 shrink-0" />
+        <span v-if="!collapsed">技能管理</span>
+      </div>
+      <div
         @click="$emit('navigate', 'tasks')"
         :class="{ 'bg-blue-600 text-white': currentPage === 'tasks' }"
         class="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-slate-800 cursor-pointer transition-colors"
@@ -148,7 +156,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import {
   Terminal, LayoutDashboard, FileSearch, ChevronRight, ChevronLeft,
-  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container, History, ScrollText, BookMarked
+  Settings, Sun, Moon, Loader2, Mic, ListTodo, Users, Container, History, ScrollText, BookMarked, Wand2
 } from 'lucide-vue-next'
 
 defineProps({
