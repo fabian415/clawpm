@@ -1,0 +1,38 @@
+# Read the documentation before extending the defaults:
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  secret_key: "7bGEFQKj74slkmWtQ8I17LEeIVXo8IQ5"
+  image_proxy: true
+
+# SearXNG 預設只允許 html 輸出（JSON API 預設關閉，是它自己的反爬蟲/安全預設值）。
+# OpenClaw 的 searxng 外掛是用程式化呼叫（帶 format=json）打 /search，
+# 沒有這個設定會一律被 SearXNG 用 403 擋下，跟被 Google/Bing 擋無關。
+search:
+  formats:
+    - html
+    - json
+
+# 實測結果（2026-07-12，/stats 頁面，多次查詢取樣）：
+# - startpage：100% httpx.TimeoutException，每次都逾時、沒有貢獻任何結果 → 關閉
+# - brave：100% SearxEngineTooManyRequestsException（被限流封鎖）→ 關閉
+# - qwant：100% SearxEngineAccessDeniedException（主動拒絕）→ 關閉
+# - yahoo：100% httpx.RemoteProtocolError（連線被中斷，疑似反爬蟲）→ 關閉
+# 以上四個關閉後查詢更快（不用白等它們逾時/被拒絕），且不影響結果數量。
+# 補上的 bing（100% 可靠）、mojeek（部分可靠）增加結果多樣性，
+# 不只靠 google/duckduckgo 兩家；若未來發現又被擋，同樣可在此關閉。
+engines:
+  - name: startpage
+    disabled: true
+  - name: brave
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: yahoo
+    disabled: true
+  - name: mojeek
+    disabled: false
+  - name: bing
+    disabled: false
