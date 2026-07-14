@@ -339,7 +339,14 @@ def _round_pic(pic, val=4500):
     gd = av.makeelement(qn("a:gd"), {"name": "adj", "fmla": f"val {val}"})
     av.append(gd)
     geom.append(av)
-    spPr.append(geom)
+    # CT_ShapeProperties 的子元素順序是 schema 強制的(xfrm → prstGeom → fill → ln → effectLst)。
+    # 陰影(_soft_shadow)在圓角之前套用,若直接 append 到最後會排在 blipFill/effectLst 之後,
+    # 順序不合法——PowerPoint 會整個丟棄該圖片(LibreOffice 較寬容,預覽因此看起來正常)。
+    xfrm = spPr.find(qn("a:xfrm"))
+    if xfrm is not None:
+        xfrm.addnext(geom)
+    else:
+        spPr.insert(0, geom)
 
 
 def add_image_cover(slide, path, box_l, box_t, box_w, box_h):
