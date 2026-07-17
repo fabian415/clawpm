@@ -65,6 +65,7 @@ const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:
 const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
 const WHISPERX_BASE = `http://${process.env.LOCAL_SERVER_IP || '172.22.12.162'}:${process.env.LOCAL_SERVER_PORT || '8787'}`
 const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
+const BLOG_REWRITER_URL = process.env.BLOG_REWRITER_URL || 'http://localhost:8010'
 
 // Azure proxy — host reachable from inside the Docker container.
 // host.docker.internal is the Docker Desktop magic hostname (always resolves to the Windows/Mac host).
@@ -1938,6 +1939,19 @@ function recordFilePath(hostInsightsDir, slug, name) {
   return full
 }
 
+// Blog drafts live in project-insights/blog-{slug}/{YYYYMMDD}-{HHmmss}/
+// (a folder per run, since each run produces index.md + index.en.md + feature.png + meta.json)
+function blogDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `blog-${slug}`)
+}
+
+function blogRunDir(hostInsightsDir, slug, name) {
+  const dir = blogDir(hostInsightsDir, slug)
+  const full = path.join(dir, name)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
 function validDateFilename(s) {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 }
@@ -3073,6 +3087,268 @@ app.get('/api/tech/result', requireAuth, async (req, res) => {
   if (!hostPath) return res.status(403).json({ error: '無權限' })
 
   res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Blog Rewriter（技術分享文章 → 部落格文章，由 clawpm-blog-rewriter sidecar 改寫）──
+
+app.post('/api/blog/rewrite', requireAuth, async (req, res) => {
+  const { slug, techName } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(techName)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const techPath = techFilePath(hostInsightsDir, slug, techName)
+
+  if (!techPath || !fs.existsSync(techPath)) return res.status(404).json({ error: '找不到來源技術文章' })
+
+  let sourceText
+  try {
+    sourceText = fs.readFileSync(techPath, 'utf8')
+  } catch {
+    return res.status(500).json({ error: '讀取技術文章失敗' })
+  }
+
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const name = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const runDir = blogRunDir(hostInsightsDir, slug, name)
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(runDir, { recursive: true })
+  } catch {
+    return res.status(500).json({ error: '建立輸出資料夾失敗' })
+  }
+
+  res.json({ success: true, name })
+
+  // fire-and-forget：實際改寫由 blog-rewriter sidecar 處理（LLM 改寫+翻譯+分類+產圖，約 1–3 分鐘），
+  // 前端用 /api/blog/result 輪詢 index.md 是否已寫入來判斷完成，比照 /api/tech/analyze 的既有模式。
+  ;(async () => {
+    try {
+      const upstream = await fetch(`${BLOG_REWRITER_URL}/rewrite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_text: sourceText }),
+        // pipeline 本身內部已對封面圖產生設了逾時，這裡再設一層上限，避免 sidecar
+        // 卡住時前端無限輪詢卻永遠等不到 error.json
+        signal: AbortSignal.timeout(5 * 60 * 1000),
+      })
+      if (!upstream.ok) {
+        const detail = await upstream.text().catch(() => '')
+        throw new Error(`blog-rewriter 服務錯誤 (${upstream.status}): ${detail}`)
+      }
+      const data = await upstream.json()
+
+      if (data.feature_image_base64) {
+        fs.writeFileSync(path.join(runDir, 'feature.png'), Buffer.from(data.feature_image_base64, 'base64'))
+      }
+      // 內文引用的圖片：sidecar 沒有 workspace 存取權，只回傳 (原始路徑, 新檔名) 對照表。
+      // 技術分享文章裡的圖片絕大多數是相對於來源文章的本地路徑（project-insights/_assets/），
+      // 用複製的比較快也不會遇到外部服務要求登入的問題；只有真正的 http(s) 網址才需要下載。
+      for (const img of (data.image_map || [])) {
+        if (!img?.filename || img.filename.includes('..') || img.filename.includes('/') || img.filename.includes('\\')) continue
+        const destPath = path.join(runDir, img.filename)
+        const origPath = img.original_path || ''
+        try {
+          if (/^https?:\/\//i.test(origPath)) {
+            const imgRes = await fetch(origPath, { signal: AbortSignal.timeout(15000) })
+            if (imgRes.ok) {
+              fs.writeFileSync(destPath, Buffer.from(await imgRes.arrayBuffer()))
+            } else {
+              console.warn(`[blog] image download failed (${imgRes.status}): ${origPath}`)
+            }
+          } else {
+            const localSrc = path.resolve(path.dirname(techPath), origPath)
+            if (localSrc.startsWith(hostInsightsDir + path.sep) && fs.existsSync(localSrc)) {
+              fs.copyFileSync(localSrc, destPath)
+            } else {
+              console.warn(`[blog] local image not found or out of scope: ${origPath} -> ${localSrc}`)
+            }
+          }
+        } catch (err) {
+          console.warn(`[blog] failed to resolve image ${origPath}:`, err.message)
+        }
+      }
+      fs.writeFileSync(
+        path.join(runDir, 'meta.json'),
+        JSON.stringify({ ...(data.meta || {}), sourceTech: techName, createdAt: now.toISOString() }, null, 2),
+        'utf8'
+      )
+      // index.md 最後才寫，讓 /api/blog/result 用它的存在當作「轉換完成」的訊號
+      fs.writeFileSync(path.join(runDir, 'index.en.md'), data.content_en || '', 'utf8')
+      fs.writeFileSync(path.join(runDir, 'index.md'), data.content_zh || '', 'utf8')
+    } catch (err) {
+      console.error('[blog] rewrite error:', err.message)
+      try {
+        fs.writeFileSync(path.join(runDir, 'error.json'), JSON.stringify({ error: err.message }), 'utf8')
+      } catch {}
+    }
+  })()
+})
+
+app.get('/api/blog/list', requireAuth, async (req, res) => {
+  const { slug, techName } = req.query
+
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = blogDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ drafts: [] })
+
+  try {
+    const drafts = fs.readdirSync(dir)
+      .filter(name => /^\d{8}-\d{6}$/.test(name) && fs.statSync(path.join(dir, name)).isDirectory())
+      .map(name => {
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, name)).mtimeMs } catch {}
+        let sourceTech = null
+        try {
+          const meta = JSON.parse(fs.readFileSync(path.join(dir, name, 'meta.json'), 'utf8'))
+          sourceTech = meta.sourceTech || null
+        } catch {}
+        const ready = fs.existsSync(path.join(dir, name, 'index.md'))
+        let error = null
+        if (!ready && fs.existsSync(path.join(dir, name, 'error.json'))) {
+          try { error = JSON.parse(fs.readFileSync(path.join(dir, name, 'error.json'), 'utf8')).error } catch { error = '轉換失敗' }
+        }
+        return { name, displayDate, mtime, sourceTech, ready, error }
+      })
+      .filter(d => !techName || d.sourceTech === techName)
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ drafts })
+  } catch {
+    res.status(500).json({ error: '讀取部落格草稿清單失敗' })
+  }
+})
+
+app.get('/api/blog/result', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  const ready = fs.existsSync(path.join(runDir, 'index.md'))
+  let error = null
+  if (!ready && fs.existsSync(path.join(runDir, 'error.json'))) {
+    try { error = JSON.parse(fs.readFileSync(path.join(runDir, 'error.json'), 'utf8')).error } catch { error = '轉換失敗' }
+  }
+  res.json({ ready, error })
+})
+
+app.get('/api/blog/file', requireAuth, async (req, res) => {
+  const { slug, name, lang } = req.query
+  const safeLang = lang === 'en' ? 'en' : 'zh'
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+  const filePath = path.join(runDir, safeLang === 'en' ? 'index.en.md' : 'index.md')
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf8')
+    res.json({ content, name, lang: safeLang })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/blog/file', requireAuth, async (req, res) => {
+  const { slug, name, lang, content } = req.body ?? {}
+  const safeLang = lang === 'en' ? 'en' : 'zh'
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(runDir, { recursive: true })
+    fs.writeFileSync(path.join(runDir, safeLang === 'en' ? 'index.en.md' : 'index.md'), content, 'utf8')
+    res.json({ success: true, name, lang: safeLang })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/blog/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(runDir)) return res.status(404).json({ error: '草稿不存在' })
+
+  try {
+    fs.rmSync(runDir, { recursive: true, force: true })
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除失敗' })
+  }
+})
+
+app.get('/api/blog/asset', async (req, res) => {
+  const { slug, name, file, token } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+
+  let user
+  try {
+    const auth = req.headers.authorization ?? ''
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null
+    user = verifyToken(bearer || token)
+  } catch {
+    return res.status(401).json({ error: '未授權' })
+  }
+
+  const provisionUserId = await getProvisionUserId(user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  const hostPath = path.join(runDir, file)
+  if (!hostPath.startsWith(runDir + path.sep) || !fs.existsSync(hostPath)) {
+    return res.status(404).json({ error: '檔案不存在' })
+  }
+
+  const mimeByExt = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' }
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', mimeByExt[path.extname(hostPath).toLowerCase()] || 'application/octet-stream')
+    res.setHeader('Cache-Control', 'private, max-age=86400')
+    res.send(data)
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
 })
 
 // ── Skill Management ──────────────────────────────────────────────────────────
