@@ -11,7 +11,7 @@ import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import archiver from 'archiver'
 import { Client as FtpClient } from 'basic-ftp'
-import nodemailer from 'nodemailer'
+import sgMail from '@sendgrid/mail'
 import { runMigrations } from './src/migrate.js'
 import { query } from './src/db.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers, deleteAllTeamMembers } from './src/managers/UserManager.js'
@@ -1305,36 +1305,30 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
     return res.status(400).json({ error: '請填寫至少一位收件者' })
   }
 
-  const smtpHost = process.env.SMTP_HOST
-  const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10)
-  const smtpUser = process.env.SMTP_USER
-  const smtpPass = process.env.SMTP_PASS
+  const apiKey = process.env.SENDGRID_API_KEY
+  const senderEmail = process.env.SENDGRID_FROM_EMAIL
   const fromName = process.env.EMAIL_FROM_NAME || 'MemoSynth 會議助理'
 
-  if (!smtpHost || !smtpUser || !smtpPass) {
-    return res.status(500).json({ error: 'SMTP 尚未設定，請聯絡管理員填寫 .env 的 SMTP_* 參數' })
+  if (!apiKey || !senderEmail) {
+    return res.status(500).json({ error: 'SendGrid 尚未設定，請聯絡管理員填寫 .env 的 SENDGRID_API_KEY / SENDGRID_FROM_EMAIL 參數' })
   }
 
-  try {
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpPort === 465,
-      auth: { user: smtpUser, pass: smtpPass },
-    })
+  sgMail.setApiKey(apiKey)
 
+  try {
     const attachments = []
     if (transcriptContent) {
       attachments.push({
         filename: '逐字稿.md',
-        content: transcriptContent,
-        contentType: 'text/markdown; charset=utf-8',
+        content: Buffer.from(transcriptContent, 'utf8').toString('base64'),
+        type: 'text/markdown',
+        disposition: 'attachment',
       })
     }
 
-    await transporter.sendMail({
-      from: `"${fromName}" <${smtpUser}>`,
-      to: recipients.join(', '),
+    await sgMail.send({
+      to: recipients,
+      from: { email: senderEmail, name: fromName },
       subject: subject || '會議記錄',
       html: content || '',
       attachments,
@@ -1342,8 +1336,9 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
 
     res.json({ success: true })
   } catch (err) {
-    console.error('[send-meeting-email] error:', err.message)
-    res.status(500).json({ error: `郵件發送失敗：${err.message}` })
+    const detail = err.response?.body?.errors ? JSON.stringify(err.response.body.errors) : err.message
+    console.error('[send-meeting-email] error:', detail)
+    res.status(500).json({ error: `郵件發送失敗：${detail}` })
   }
 })
 

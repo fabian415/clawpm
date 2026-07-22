@@ -12,6 +12,7 @@ DATE: 2026-07-22
 
 [補強功能]
 - 將 Whisper 轉錄模型換成 Azure MAI-Transcribe-1.5
+- 將郵件發送從個人 Gmail 改成 SendGrid，支援群組發信
 
 [錯誤修正]
 - 解決任務管理中上一步導致日期倒退的問題

@@ -18,8 +18,8 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
-    "nodemailer": "^6.9.16",
     "pg": "^8.13.3",
+    "@sendgrid/mail": "^8.1.4",
     "simple-git": "^3.36.0",
     "ws": "^8.20.0"
   },
