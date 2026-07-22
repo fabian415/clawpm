@@ -9,6 +9,8 @@ RUN npm run build
 # Stage 2: Backend runtime
 FROM node:22-alpine
 WORKDIR /app
+# git: 供部落格發布功能 clone/push 外部 Azure DevOps repo 用
+RUN apk add --no-cache git
 COPY backend/package*.json ./
 RUN npm ci --omit=dev
 COPY backend/ .

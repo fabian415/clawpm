@@ -65,6 +65,9 @@
                 <span class="truncate">部落格草稿</span>
                 <Loader2 v-if="!b.ready && !b.error" class="w-3 h-3 animate-spin shrink-0 text-amber-500" />
                 <AlertCircle v-else-if="b.error" class="w-3 h-3 shrink-0 text-red-500" />
+                <span v-if="b.published" class="flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400 shrink-0" title="已發布">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>已發布
+                </span>
               </div>
               <div class="text-[10px] text-slate-400 mt-0.5 font-mono pl-4.5">{{ b.displayDate }}</div>
             </button>
@@ -158,6 +161,23 @@
               </button>
               <button @click="exportFile" class="bg-slate-200 dark:bg-slate-800 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors">
                 <Download class="w-3.5 h-3.5" /> 匯出
+              </button>
+              <button
+                v-if="docType === 'blog' && activeBlogName"
+                @click="activeBlogDraft?.published ? unpublishBlog() : publishBlog()"
+                :disabled="isPublishing || !activeBlogDraft?.ready"
+                :class="[
+                  (isPublishing || !activeBlogDraft?.ready) ? 'opacity-50 cursor-not-allowed' : '',
+                  activeBlogDraft?.published
+                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700'
+                    : 'bg-emerald-600 text-white hover:bg-emerald-700',
+                ]"
+                class="px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
+                :title="activeBlogDraft?.published ? '從部落格下架這篇文章' : '發布這篇文章到部落格'"
+              >
+                <Loader2 v-if="isPublishing" class="w-3.5 h-3.5 animate-spin" />
+                <Globe v-else class="w-3.5 h-3.5" />
+                {{ activeBlogDraft?.published ? '取消發布' : '發布' }}
               </button>
               <button @click="confirmDelete" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
                 <Trash2 class="w-3.5 h-3.5" /> 刪除
@@ -266,7 +286,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Trash2, Loader2,
-  PanelLeft, RefreshCw, Check, Code2, Newspaper, ArrowLeft, AlertCircle
+  PanelLeft, RefreshCw, Check, Code2, Newspaper, ArrowLeft, AlertCircle, Globe
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -304,6 +324,9 @@ const blogContent = ref('')
 const blogOriginalContent = ref('')
 const isConvertingBlog = ref(false)
 let blogPollTimer = null
+const isPublishing = ref(false)
+
+const activeBlogDraft = computed(() => blogDrafts.value.find(d => d.name === activeBlogName.value) || null)
 
 const activeContent = computed({
   get: () => docType.value === 'blog' ? blogContent.value : fileContent.value,
@@ -664,6 +687,52 @@ function startBlogPolling(name) {
       }
     } catch {}
   }, 3000)
+}
+
+async function publishBlog() {
+  if (!activeBlogName.value || isPublishing.value) return
+  if (!confirm('確定要發布這篇部落格文章嗎？')) return
+  isPublishing.value = true
+  try {
+    const res = await fetch('/api/blog/publish', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: props.projectSlug, name: activeBlogName.value }),
+    })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      throw new Error(d.error || '發布失敗')
+    }
+    await fetchBlogDrafts(currentName.value)
+  } catch (err) {
+    console.error('[blog] publish error:', err.message)
+    alert(`發布失敗：${err.message}`)
+  } finally {
+    isPublishing.value = false
+  }
+}
+
+async function unpublishBlog() {
+  if (!activeBlogName.value || isPublishing.value) return
+  if (!confirm('確定要取消發布這篇部落格文章嗎？線上頁面將會被移除。')) return
+  isPublishing.value = true
+  try {
+    const res = await fetch('/api/blog/unpublish', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: props.projectSlug, name: activeBlogName.value }),
+    })
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      throw new Error(d.error || '取消發布失敗')
+    }
+    await fetchBlogDrafts(currentName.value)
+  } catch (err) {
+    console.error('[blog] unpublish error:', err.message)
+    alert(`取消發布失敗：${err.message}`)
+  } finally {
+    isPublishing.value = false
+  }
 }
 
 function handleKeydown(e) {

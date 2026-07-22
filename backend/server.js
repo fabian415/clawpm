@@ -51,6 +51,7 @@ import {
   slugValid as skillSlugValid, isProtectedSkill, parseFrontmatter,
   createDraftId, readDraft, deleteDraft, draftContainerPath,
 } from './src/managers/SkillManager.js'
+import { publishDraft as publishBlogDraft, unpublishDraft as unpublishBlogDraft } from './src/managers/BlogPublisher.js'
 
 dotenv.config()
 
@@ -2111,6 +2112,7 @@ async function localizeKmsImages(content, assetsDir) {
 
   fs.mkdirSync(assetsDir, { recursive: true })
   const replacements = new Map()
+  const manifestUpdates = {}
   for (const src of srcs) {
     const url = src.startsWith('/') ? `https://ess-kms.edgecenter.io${src}` : src
     try {
@@ -2128,8 +2130,18 @@ async function localizeKmsImages(content, assetsDir) {
       const filename = `${createHash('sha1').update(src).digest('hex').slice(0, 8)}-${base}`
       fs.writeFileSync(path.join(assetsDir, filename), buf)
       replacements.set(src, `../_assets/${filename}`)
+      // hash 是單向的，之後（例如部落格發布）要換回原始 KMS 路徑得靠這份 manifest 查回 src。
+      manifestUpdates[filename] = src
     } catch (err) {
       dbgErr('[link-image] 下載例外', url, err?.message)
+    }
+  }
+  if (Object.keys(manifestUpdates).length > 0) {
+    const manifestPath = path.join(assetsDir, 'manifest.json')
+    const manifest = readJsonSafe(manifestPath) || {}
+    Object.assign(manifest, manifestUpdates)
+    try { fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8') } catch (err) {
+      dbgErr('[link-image] manifest 寫入失敗', err?.message)
     }
   }
   if (replacements.size === 0) return { content, changed: false }
@@ -3148,6 +3160,10 @@ app.post('/api/blog/rewrite', requireAuth, async (req, res) => {
       // 內文引用的圖片：sidecar 沒有 workspace 存取權，只回傳 (原始路徑, 新檔名) 對照表。
       // 技術分享文章裡的圖片絕大多數是相對於來源文章的本地路徑（project-insights/_assets/），
       // 用複製的比較快也不會遇到外部服務要求登入的問題；只有真正的 http(s) 網址才需要下載。
+      // 本地路徑的圖片若查得到 _assets/manifest.json 記錄的原始 KMS 來源，記進 imageOrigins，
+      // 供發布到 Hugo repo 時把圖片路徑換回原始 KMS 路徑（而不是把下載下來的複本一起帶過去）。
+      const assetsManifest = readJsonSafe(path.join(assetsDirFor(hostInsightsDir), 'manifest.json')) || {}
+      const imageOrigins = {}
       for (const img of (data.image_map || [])) {
         if (!img?.filename || img.filename.includes('..') || img.filename.includes('/') || img.filename.includes('\\')) continue
         const destPath = path.join(runDir, img.filename)
@@ -3164,6 +3180,8 @@ app.post('/api/blog/rewrite', requireAuth, async (req, res) => {
             const localSrc = path.resolve(path.dirname(techPath), origPath)
             if (localSrc.startsWith(hostInsightsDir + path.sep) && fs.existsSync(localSrc)) {
               fs.copyFileSync(localSrc, destPath)
+              const kmsOrigin = assetsManifest[path.basename(localSrc)]
+              if (kmsOrigin) imageOrigins[img.filename] = kmsOrigin
             } else {
               console.warn(`[blog] local image not found or out of scope: ${origPath} -> ${localSrc}`)
             }
@@ -3174,7 +3192,12 @@ app.post('/api/blog/rewrite', requireAuth, async (req, res) => {
       }
       fs.writeFileSync(
         path.join(runDir, 'meta.json'),
-        JSON.stringify({ ...(data.meta || {}), sourceTech: techName, createdAt: now.toISOString() }, null, 2),
+        JSON.stringify({
+          ...(data.meta || {}),
+          sourceTech: techName,
+          createdAt: now.toISOString(),
+          ...(Object.keys(imageOrigins).length > 0 ? { imageOrigins } : {}),
+        }, null, 2),
         'utf8'
       )
       // index.md 最後才寫，讓 /api/blog/result 用它的存在當作「轉換完成」的訊號
@@ -3210,16 +3233,20 @@ app.get('/api/blog/list', requireAuth, async (req, res) => {
         let mtime = 0
         try { mtime = fs.statSync(path.join(dir, name)).mtimeMs } catch {}
         let sourceTech = null
+        let published = false
+        let publishedAt = null
         try {
           const meta = JSON.parse(fs.readFileSync(path.join(dir, name, 'meta.json'), 'utf8'))
           sourceTech = meta.sourceTech || null
+          published = meta.published === true
+          publishedAt = meta.publishedAt || null
         } catch {}
         const ready = fs.existsSync(path.join(dir, name, 'index.md'))
         let error = null
         if (!ready && fs.existsSync(path.join(dir, name, 'error.json'))) {
           try { error = JSON.parse(fs.readFileSync(path.join(dir, name, 'error.json'), 'utf8')).error } catch { error = '轉換失敗' }
         }
-        return { name, displayDate, mtime, sourceTech, ready, error }
+        return { name, displayDate, mtime, sourceTech, ready, error, published, publishedAt }
       })
       .filter(d => !techName || d.sourceTech === techName)
       .sort((a, b) => b.mtime - a.mtime)
@@ -3311,6 +3338,115 @@ app.delete('/api/blog/file', requireAuth, async (req, res) => {
   } catch {
     res.status(500).json({ error: '刪除失敗' })
   }
+})
+
+// 把 index.md/index.en.md 裡 `![alt](檔名)` 的圖片，換成 imageOrigins 記錄的原始 KMS 路徑
+// （沒有記錄的維持原檔名，例如 feature.png 這類非 KMS 來源的圖片，發布時照舊把檔案帶過去）。
+function applyImageOrigins(content, imageOrigins) {
+  if (!content || !imageOrigins || Object.keys(imageOrigins).length === 0) return content
+  return content.replace(/!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g, (whole, alt, src, title) =>
+    imageOrigins[src] ? `![${alt}](${imageOrigins[src]}${title || ''})` : whole)
+}
+
+app.post('/api/blog/publish', requireAuth, async (req, res) => {
+  const { slug, name } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(path.join(runDir, 'index.md'))) return res.status(404).json({ error: '草稿尚未完成，無法發布' })
+
+  let meta
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'))
+  } catch {
+    return res.status(500).json({ error: '讀取 meta.json 失敗' })
+  }
+
+  const postFolder = meta.publishedFolder || `${name}-${slug}`
+  const imageOrigins = meta.imageOrigins || {}
+
+  const files = {}
+  try {
+    const contentZh = fs.readFileSync(path.join(runDir, 'index.md'), 'utf8')
+    files['index.md'] = applyImageOrigins(contentZh, imageOrigins)
+    if (fs.existsSync(path.join(runDir, 'index.en.md'))) {
+      const contentEn = fs.readFileSync(path.join(runDir, 'index.en.md'), 'utf8')
+      files['index.en.md'] = applyImageOrigins(contentEn, imageOrigins)
+    }
+    files['meta.json'] = JSON.stringify(meta, null, 2)
+    // 只帶「沒有 KMS 來源紀錄」的圖片檔案（例如 feature.png）；有紀錄的已在上面換成原始路徑，不用複製。
+    for (const entry of fs.readdirSync(runDir)) {
+      if (entry === 'index.md' || entry === 'index.en.md' || entry === 'meta.json' || entry === 'error.json') continue
+      if (imageOrigins[entry]) continue
+      const entryPath = path.join(runDir, entry)
+      if (fs.statSync(entryPath).isFile()) files[entry] = fs.readFileSync(entryPath)
+    }
+  } catch {
+    return res.status(500).json({ error: '讀取草稿內容失敗' })
+  }
+
+  try {
+    await publishBlogDraft({ postFolder, files })
+  } catch (err) {
+    console.error('[blog] publish error:', err.message)
+    return res.status(500).json({ error: `發布失敗：${err.message}` })
+  }
+
+  const publishedAt = new Date().toISOString()
+  meta.published = true
+  meta.publishedAt = publishedAt
+  meta.publishedFolder = postFolder
+  try {
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8')
+  } catch (err) {
+    console.error('[blog] failed to persist published state:', err.message)
+  }
+
+  res.json({ success: true, publishedFolder: postFolder, publishedAt })
+})
+
+app.post('/api/blog/unpublish', requireAuth, async (req, res) => {
+  const { slug, name } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  let meta
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'))
+  } catch {
+    return res.status(500).json({ error: '讀取 meta.json 失敗' })
+  }
+  if (meta.published !== true || !meta.publishedFolder) {
+    return res.status(400).json({ error: '這篇草稿尚未發布' })
+  }
+
+  try {
+    await unpublishBlogDraft({ postFolder: meta.publishedFolder })
+  } catch (err) {
+    console.error('[blog] unpublish error:', err.message)
+    return res.status(500).json({ error: `取消發布失敗：${err.message}` })
+  }
+
+  meta.published = false
+  meta.unpublishedAt = new Date().toISOString()
+  try {
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8')
+  } catch (err) {
+    console.error('[blog] failed to persist unpublished state:', err.message)
+  }
+
+  res.json({ success: true })
 })
 
 app.get('/api/blog/asset', async (req, res) => {

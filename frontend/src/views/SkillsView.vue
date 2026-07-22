@@ -7,7 +7,7 @@
       </div>
       <div class="flex items-center gap-2">
         <button
-          v-if="skills.length > 0"
+          v-if="visibleSkills.length > 0"
           @click="showRunModal = true; runPresetSlug = ''"
           class="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 px-4 py-2.5 rounded-xl font-bold flex items-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
         >
@@ -33,13 +33,13 @@
       <Loader2 class="w-6 h-6 animate-spin" />
     </div>
 
-    <div v-else-if="skills.length === 0" class="text-center py-20 text-slate-400">
+    <div v-else-if="visibleSkills.length === 0" class="text-center py-20 text-slate-400">
       尚無技能
     </div>
 
     <div v-else class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div
-        v-for="s in skills" :key="s.slug"
+        v-for="s in visibleSkills" :key="s.slug"
         class="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 flex flex-col gap-3"
       >
         <div class="flex items-start justify-between gap-2">
@@ -103,7 +103,7 @@
 
     <RunSkillModal
       :show="showRunModal"
-      :skills="skills"
+      :skills="visibleSkills"
       :preset-skill-slug="runPresetSlug"
       @close="showRunModal = false"
       @skill-ready="payload => $emit('skill-ready', payload)"
@@ -132,7 +132,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Plus, Play, Pencil, Copy, Trash2, Sparkles, FileText, Loader2, ShieldCheck } from 'lucide-vue-next'
 import SkillEditorModal from '../components/SkillEditorModal.vue'
 import CloneSkillModal from '../components/CloneSkillModal.vue'
@@ -152,7 +152,16 @@ const vClickOutside = {
   },
 }
 
+const HIDDEN_SKILL_SLUGS = new Set([
+  'meeting-proper-noun-extractor',
+  'meeting-transcription',
+  'presentation-generator',
+  'project-insight-synthesizer',
+  'skill-creator',
+])
+
 const skills = ref([])
+const visibleSkills = computed(() => skills.value.filter(s => !HIDDEN_SKILL_SLUGS.has(s.slug)))
 const isLoading = ref(false)
 const showAddMenu = ref(false)
 
