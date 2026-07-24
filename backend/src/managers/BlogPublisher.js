@@ -43,6 +43,10 @@ async function withFreshClone(fn) {
     const git = simpleGit({ timeout: { block: 120000 } }).env('GIT_TERMINAL_PROMPT', '0')
     await git.clone(authUrl(), dir, ['--depth', '1', '--branch', branch(), '--single-branch'])
     const repoGit = simpleGit(dir).env('GIT_TERMINAL_PROMPT', '0')
+    // 每次都是全新 clone，不會繼承任何全域 git 設定，commit 前得自己指定作者身分，
+    // 否則 git 會丟出「Author identity unknown」。
+    await repoGit.addConfig('user.name', process.env.AZURE_DEVOPS_AUTHOR_NAME || 'ClawPM Bot')
+    await repoGit.addConfig('user.email', process.env.AZURE_DEVOPS_AUTHOR_EMAIL || 'clawpm-bot@noreply.local')
     return await fn(repoGit, dir)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
