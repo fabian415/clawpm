@@ -49,6 +49,49 @@ WHISPER_MODELS = [
 ]
 DEFAULT_WHISPER_MODEL = "large-v3"
 
+# ---- 轉錄引擎 ----
+# whisperx      ：本地 WhisperX + Pyannote（支援語者分離、聲紋比對）
+# azure         ：Azure MAI-Transcribe（雲端；不支援語者分離；原生 wav/mp3/flac，
+#                 m4a/webm 會自動以 ffmpeg 轉檔；< 300 MB）
+# azure_diarize ：Azure MAI-Transcribe 轉錄文字 + wav2vec2 強制對齊重建時間戳
+#                 + Pyannote 語者分離（實驗性；原生 wav/mp3/flac，
+#                 m4a/webm 會自動以 ffmpeg 轉檔；< 300 MB）
+ENGINES = ["whisperx", "azure", "azure_diarize"]
+DEFAULT_ENGINE = "whisperx"
+
+# 使用哪一個引擎由伺服器端 .env 決定（TRANSCRIBE_ENGINE），不對外開放給 API 呼叫者選擇。
+ACTIVE_ENGINE = os.environ.get("TRANSCRIBE_ENGINE", DEFAULT_ENGINE).strip().lower()
+if ACTIVE_ENGINE not in ENGINES:
+    print(
+        f"警告：TRANSCRIBE_ENGINE={ACTIVE_ENGINE!r} 不是有效引擎（可選 {', '.join(ENGINES)}），"
+        f"改用預設 {DEFAULT_ENGINE}。",
+        file=sys.stderr,
+    )
+    ACTIVE_ENGINE = DEFAULT_ENGINE
+
+AZURE_MODELS = ["mai-transcribe-1.5", "mai-transcribe-1"]
+DEFAULT_AZURE_MODEL = "mai-transcribe-1.5"
+# azure 引擎的模型同樣由伺服器端決定（AZURE_MODEL），忽略呼叫者傳入的 model
+AZURE_MODEL = os.environ.get("AZURE_MODEL", DEFAULT_AZURE_MODEL).strip()
+if AZURE_MODEL not in AZURE_MODELS:
+    print(
+        f"警告：AZURE_MODEL={AZURE_MODEL!r} 不是有效的 Azure 模型（可選 {', '.join(AZURE_MODELS)}），"
+        f"改用預設 {DEFAULT_AZURE_MODEL}。",
+        file=sys.stderr,
+    )
+    AZURE_MODEL = DEFAULT_AZURE_MODEL
+# azure 引擎固定 verbatim 風格與 zh 語言（不對外開放調整）
+AZURE_FIXED_STYLE = "verbatim"
+AZURE_FIXED_LANG = "zh"
+AZURE_ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac"}
+# Azure 原生不支援的格式，會先用 ffmpeg 轉成 wav 再送出（見 _convert_to_wav_for_azure）
+AZURE_CONVERT_EXTENSIONS = {".m4a", ".webm"}
+AZURE_MAX_FILE_MB = 300
+
+# Azure 端點與金鑰
+AZURE_SPEECH_ENDPOINT = os.environ.get("AZURE_SPEECH_ENDPOINT", "")
+AZURE_SPEECH_KEY = os.environ.get("AZURE_SPEECH_KEY", "")
+
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", "/app/uploads"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "/app/outputs"))
 SPEAKER_DIR = Path(os.environ.get("SPEAKER_DIR", "/app/speaker_profiles"))
@@ -115,6 +158,20 @@ class JobRecord(BaseModel):
     audio_filename: str = Field(
         description="原始音訊檔名",
         examples=["meeting-2026-03-11.mp3"],
+    )
+    engine: str = Field(
+        default=DEFAULT_ENGINE,
+        description=(
+            "轉錄引擎：whisperx（本地，含語者分離）、"
+            "azure（MAI-Transcribe，無語者分離）或 "
+            "azure_diarize（MAI-Transcribe + 強制對齊重建時間戳 + 語者分離，實驗性）"
+        ),
+        examples=["whisperx"],
+    )
+    style: Optional[str] = Field(
+        default=None,
+        description="Azure 轉錄風格（azure / azure_diarize 固定為 verbatim；whisperx 引擎為 null）。唯讀，不接受輸入",
+        examples=["verbatim"],
     )
     language: str = Field(
         description="指定的語言代碼",
@@ -228,6 +285,15 @@ class HealthResponse(BaseModel):
     )
     hf_token_set: bool = Field(description="HF_TOKEN 是否已設定")
     punct_backend: str = Field(description="標點補強後端（funasr / deepmulti / none / auto）")
+    active_engine: str = Field(
+        default=DEFAULT_ENGINE,
+        description="伺服器目前使用的轉錄引擎（由 TRANSCRIBE_ENGINE 決定）",
+        examples=["whisperx"],
+    )
+    azure_configured: bool = Field(
+        default=False,
+        description="是否已設定 Azure 端點與金鑰（可使用 azure 引擎）",
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -299,6 +365,8 @@ def init_jobs_db():
                 started_at TEXT,
                 audio_filename TEXT NOT NULL,
                 audio_path TEXT,
+                engine TEXT NOT NULL DEFAULT 'whisperx',
+                style TEXT,
                 language TEXT NOT NULL,
                 device TEXT NOT NULL,
                 model TEXT NOT NULL DEFAULT 'large-v3',
@@ -319,6 +387,10 @@ def init_jobs_db():
             conn.execute("ALTER TABLE jobs ADD COLUMN model TEXT NOT NULL DEFAULT 'large-v3'")
         if "team" not in columns:
             conn.execute("ALTER TABLE jobs ADD COLUMN team TEXT")
+        if "engine" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN engine TEXT NOT NULL DEFAULT 'whisperx'")
+        if "style" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN style TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)")
 
 
@@ -374,6 +446,8 @@ def _row_to_job(row: sqlite3.Row) -> JobRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         audio_filename=row["audio_filename"],
+        engine=row["engine"] if "engine" in keys else DEFAULT_ENGINE,
+        style=row["style"] if "style" in keys else None,
         language=row["language"],
         device=row["device"],
         model=row["model"] if "model" in keys else DEFAULT_WHISPER_MODEL,
@@ -396,6 +470,8 @@ def _record_values(record: JobRecord, audio_path: Optional[Path] = None) -> dict
         "updated_at": record.updated_at,
         "audio_filename": record.audio_filename,
         "audio_path": str(audio_path) if audio_path else None,
+        "engine": record.engine,
+        "style": record.style,
         "language": record.language,
         "device": record.device,
         "model": record.model,
@@ -416,12 +492,12 @@ def enqueue_job(record: JobRecord, audio_path: Path):
             """
             INSERT INTO jobs (
                 job_id, status, created_at, updated_at, audio_filename, audio_path,
-                language, device, model, num_speakers, add_punctuation, terms, team, duration_seconds,
+                engine, style, language, device, model, num_speakers, add_punctuation, terms, team, duration_seconds,
                 num_speakers_detected, output_path, error
             )
             VALUES (
                 :job_id, :status, :created_at, :updated_at, :audio_filename, :audio_path,
-                :language, :device, :model, :num_speakers, :add_punctuation, :terms, :team, :duration_seconds,
+                :engine, :style, :language, :device, :model, :num_speakers, :add_punctuation, :terms, :team, :duration_seconds,
                 :num_speakers_detected, :output_path, :error
             )
             """,
@@ -442,6 +518,8 @@ def save_job(record: JobRecord):
                 updated_at = :updated_at,
                 started_at = COALESCE(started_at, :started_at),
                 audio_filename = :audio_filename,
+                engine = :engine,
+                style = :style,
                 language = :language,
                 device = :device,
                 model = :model,
@@ -637,6 +715,18 @@ def _parse_md_metadata(transcript_path: Path) -> tuple:
     return duration_seconds, num_speakers
 
 
+def _convert_to_wav_for_azure(src: Path) -> Path:
+    """azure / azure_diarize 不支援 m4a / webm，先用 ffmpeg 轉成 wav（容器已內建 ffmpeg）。"""
+    import subprocess
+
+    dst = src.parent / f"{src.stem}.wav"
+    cmd = ["ffmpeg", "-y", "-i", str(src), "-vn", "-ar", "16000", "-ac", "1", str(dst)]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not dst.exists():
+        raise RuntimeError(f"ffmpeg 轉檔失敗（returncode={result.returncode}）：{result.stderr[-2000:]}")
+    return dst
+
+
 def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
     """以獨立 subprocess 執行轉錄，結束後 GPU 記憶體完全釋放。"""
     import subprocess
@@ -645,30 +735,86 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
     record.updated_at = _now_iso()
     save_job(record)
 
-    script_path = Path(__file__).parent / "transcribe_diarize.py"
     # subprocess 輸出到 OUTPUT_DIR/job_id，
-    # transcribe_diarize.py 會在其下建立 <stem>/<stem>_逐字稿.md
+    # 三支腳本皆會在其下建立 <stem>/<stem>_逐字稿.md（輸出路徑約定一致）
     out_base = OUTPUT_DIR / job_id
     out_base.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        sys.executable, str(script_path),
-        str(audio_path),
-        "--output-dir", str(out_base),
-        "--lang", record.language,
-        "--device", record.device,
-        "--model", record.model,
-    ]
-    if record.num_speakers:
-        cmd += ["--num-speakers", str(record.num_speakers)]
-    if record.terms:
-        cmd += ["--terms", _terms_to_csv(record.terms)]
-    if not record.add_punctuation:
-        cmd.append("--no-punctuation")
-    if record.team:
-        team_dir = SPEAKER_DIR / record.team
-        if team_dir.exists() and any(team_dir.glob("*.json")):
-            cmd += ["--speaker-dir", str(team_dir)]
+    original_audio_path = audio_path
+    if record.engine in ("azure", "azure_diarize") and audio_path.suffix.lower() in AZURE_CONVERT_EXTENSIONS:
+        try:
+            print(f"[{job_id}] 轉檔 {audio_path.name} → wav（azure 引擎不支援 {audio_path.suffix}）", flush=True)
+            audio_path = _convert_to_wav_for_azure(audio_path)
+        except Exception as e:
+            record.status = JobStatus.FAILED
+            record.error = str(e)
+            record.updated_at = _now_iso()
+            save_job(record)
+            original_audio_path.unlink(missing_ok=True)
+            return
+
+    if record.engine == "azure":
+        # Azure MAI-Transcribe：無語者分離、無 device/team/標點步驟
+        script_path = Path(__file__).parent / "transcribe_azure.py"
+        cmd = [
+            sys.executable, str(script_path),
+            str(audio_path),
+            "--output-dir", str(out_base),
+            "--lang", record.language,
+            "--model", record.model,
+            "--style", record.style or "default",
+        ]
+        if record.terms:
+            cmd += ["--terms", _terms_to_csv(record.terms)]
+        if AZURE_SPEECH_ENDPOINT:
+            cmd += ["--endpoint", AZURE_SPEECH_ENDPOINT]
+        if AZURE_SPEECH_KEY:
+            cmd += ["--key", AZURE_SPEECH_KEY]
+    elif record.engine == "azure_diarize":
+        # Azure MAI-Transcribe 轉錄文字 + 強制對齊重建時間戳 + Pyannote 語者分離
+        script_path = Path(__file__).parent / "transcribe_azure_diarize.py"
+        cmd = [
+            sys.executable, str(script_path),
+            str(audio_path),
+            "--output-dir", str(out_base),
+            "--lang", record.language,
+            "--model", record.model,
+            "--style", record.style or "verbatim",
+            "--device", record.device,
+        ]
+        if record.num_speakers:
+            cmd += ["--num-speakers", str(record.num_speakers)]
+        if record.terms:
+            cmd += ["--terms", _terms_to_csv(record.terms)]
+        if AZURE_SPEECH_ENDPOINT:
+            cmd += ["--endpoint", AZURE_SPEECH_ENDPOINT]
+        if AZURE_SPEECH_KEY:
+            cmd += ["--key", AZURE_SPEECH_KEY]
+        if record.team:
+            team_dir = SPEAKER_DIR / record.team
+            if team_dir.exists() and any(team_dir.glob("*.json")):
+                cmd += ["--speaker-dir", str(team_dir)]
+    else:
+        # WhisperX：本地轉錄 + 詞對齊 + 語者分離 + 聲紋比對 + 標點補強
+        script_path = Path(__file__).parent / "transcribe_diarize.py"
+        cmd = [
+            sys.executable, str(script_path),
+            str(audio_path),
+            "--output-dir", str(out_base),
+            "--lang", record.language,
+            "--device", record.device,
+            "--model", record.model,
+        ]
+        if record.num_speakers:
+            cmd += ["--num-speakers", str(record.num_speakers)]
+        if record.terms:
+            cmd += ["--terms", _terms_to_csv(record.terms)]
+        if not record.add_punctuation:
+            cmd.append("--no-punctuation")
+        if record.team:
+            team_dir = SPEAKER_DIR / record.team
+            if team_dir.exists() and any(team_dir.glob("*.json")):
+                cmd += ["--speaker-dir", str(team_dir)]
 
     log_path = out_base / "subprocess.log"
 
@@ -732,7 +878,7 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
             last_lines = log_path.read_text(encoding="utf-8", errors="replace")[-1000:]
             raise RuntimeError(f"subprocess 退出碼 {proc.returncode}\n{last_lines}")
 
-        # transcribe_diarize.py 輸出路徑：<out_base>/<stem>/<stem>_逐字稿.md
+        # 三支腳本輸出路徑約定一致：<out_base>/<stem>/<stem>_逐字稿.md
         transcript_path = out_base / audio_path.stem / f"{audio_path.stem}_逐字稿.md"
         if not transcript_path.exists():
             raise RuntimeError(f"找不到輸出檔案：{transcript_path}")
@@ -760,9 +906,14 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
             _active_procs.pop(job_id, None)
             _pending_cancels.discard(job_id)
         try:
-            audio_path.unlink(missing_ok=True)
+            original_audio_path.unlink(missing_ok=True)
         except Exception:
             pass
+        if audio_path != original_audio_path:
+            try:
+                audio_path.unlink(missing_ok=True)
+            except Exception:
+                pass
         save_job(record)
 
 
@@ -872,6 +1023,8 @@ def health():
         pass
     info["hf_token_set"] = bool(os.environ.get("HF_TOKEN"))
     info["punct_backend"] = os.environ.get("PUNCT_BACKEND", "auto")
+    info["active_engine"] = ACTIVE_ENGINE
+    info["azure_configured"] = bool(AZURE_SPEECH_ENDPOINT and AZURE_SPEECH_KEY)
     return info
 
 
@@ -904,7 +1057,19 @@ def get_terms_limit():
     description="""
 上傳音訊檔案後，服務立即回傳 `job_id`（HTTP 202），轉錄在背景非同步執行。
 
-**支援格式**：mp3、mp4、wav、m4a、ogg、flac、webm、aac
+**轉錄引擎**：由伺服器端 `.env` 的 `TRANSCRIBE_ENGINE` 決定（不由 API 呼叫者選擇）。
+可用 `GET /health` 的 `active_engine` 查詢目前引擎。
+- `whisperx`：本地 WhisperX + Pyannote，支援語者分離、聲紋比對、標點補強。
+- `azure`：Azure MAI-Transcribe，雲端轉錄。**不支援語者分離**，原生接受 wav / mp3 / flac，
+  m4a / webm 會先由伺服器自動以 ffmpeg 轉成 wav 再送出；轉檔前檔案需 < 300 MB；
+  固定使用 `verbatim`（保留口語贅字）與中文 `zh`，並自動簡轉繁。
+- `azure_diarize`：Azure MAI-Transcribe 轉錄文字 + wav2vec2 強制對齊重建時間戳 + Pyannote 語者分離。
+  **實驗性**，時間戳為重建而非原始值；原生接受 wav / mp3 / flac，
+  m4a / webm 會先自動轉成 wav；轉檔前檔案需 < 300 MB；
+  固定使用 `verbatim` 與中文 `zh`，並自動簡轉繁；支援 `num_speakers` / `team`（聲紋比對）。
+
+**支援格式**：whisperx → mp3、mp4、wav、m4a、ogg、flac、webm、aac；
+azure / azure_diarize → wav、mp3、flac（原生）+ m4a、webm（自動轉檔）
 
 **注意**：由於 GPU 記憶體限制，同一時間只處理一個任務，多個請求會依序排隊執行。
 """,
@@ -922,15 +1087,19 @@ def get_terms_limit():
 async def transcribe(
     audio: UploadFile = File(
         ...,
-        description="音訊檔（mp3 / wav / m4a / mp4 / ogg / flac / webm / aac）",
+        description=(
+            "音訊檔（mp3 / wav / m4a / mp4 / ogg / flac / webm / aac）。"
+            "azure / azure_diarize 引擎原生支援 wav / mp3 / flac，"
+            "m4a / webm 會自動轉檔為 wav 再送出；轉檔前檔案需 < 300 MB"
+        ),
     ),
     lang: str = Form(
         default="zh",
-        description="語言代碼。常用值：`zh`（繁/簡中）、`en`（英）、`ja`（日）、`auto`（自動偵測）",
+        description="語言代碼。常用值：`zh`（繁/簡中）、`en`（英）、`ja`（日）、`auto`（自動偵測）。azure 引擎固定為 `zh`，此參數不生效",
     ),
     device: str = Form(
         default="auto",
-        description="運算裝置。`auto` 會自動選擇 cuda > mps > cpu",
+        description="運算裝置。`auto` 會自動選擇 cuda > mps > cpu。僅 whisperx 引擎有效",
     ),
     num_speakers: Optional[int] = Form(
         default=None,
@@ -946,27 +1115,60 @@ async def transcribe(
         default=None,
         description="本次轉錄任務使用的專有名詞，多個詞以逗點分隔，可不填。例如：WhisperX, NVIDIA, Openclaw",
     ),
-    model: str = Form(
-        default=DEFAULT_WHISPER_MODEL,
-        description=f"Whisper 模型名稱（預設：{DEFAULT_WHISPER_MODEL}）。可選：{', '.join(WHISPER_MODELS)}",
+    model: Optional[str] = Form(
+        default=None,
+        description=(
+            f"Whisper 模型名稱（不填採預設 {DEFAULT_WHISPER_MODEL}）。"
+            f"可選：{', '.join(WHISPER_MODELS)}。"
+            f"（azure 引擎的模型由伺服器端 AZURE_MODEL 決定，此參數不生效）"
+        ),
     ),
     team: Optional[str] = Form(
         default=None,
         description="聲紋庫群組名稱（英文，含英數字、底線、連字號）。不填則不使用聲紋比對。例如：engineering",
     ),
 ):
-    if model not in WHISPER_MODELS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"不支援的模型：{model}。可選：{', '.join(WHISPER_MODELS)}",
-        )
+    # 引擎由伺服器端 .env（TRANSCRIBE_ENGINE）決定，不由呼叫者指定
+    engine = ACTIVE_ENGINE
 
     suffix = Path(audio.filename or "").suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"不支援的檔案格式：{suffix or '（無副檔名）'}。支援：{', '.join(sorted(ALLOWED_EXTENSIONS))}",
-        )
+
+    if engine in ("azure", "azure_diarize"):
+        # 模型由伺服器端 .env（AZURE_MODEL）決定，忽略呼叫者傳入的 model
+        model = AZURE_MODEL
+        if not AZURE_SPEECH_ENDPOINT or not AZURE_SPEECH_KEY:
+            raise HTTPException(
+                status_code=400,
+                detail=f"服務端未設定 Azure 端點或金鑰（AZURE_SPEECH_ENDPOINT / AZURE_SPEECH_KEY），無法使用 {engine} 引擎。",
+            )
+        if engine == "azure_diarize" and not os.environ.get("HF_TOKEN"):
+            raise HTTPException(
+                status_code=400,
+                detail="服務端未設定 HF_TOKEN，無法使用 azure_diarize 引擎（語者分離需要）。",
+            )
+        if suffix not in AZURE_ALLOWED_EXTENSIONS and suffix not in AZURE_CONVERT_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{engine} 引擎不支援的檔案格式：{suffix or '（無副檔名）'}。"
+                    f"支援：{', '.join(sorted(AZURE_ALLOWED_EXTENSIONS | AZURE_CONVERT_EXTENSIONS))}"
+                    f"（{', '.join(sorted(AZURE_CONVERT_EXTENSIONS))} 會先自動轉檔為 wav）"
+                ),
+            )
+        effective_max_mb = min(MAX_FILE_MB, AZURE_MAX_FILE_MB)
+    else:
+        model = model or DEFAULT_WHISPER_MODEL
+        if model not in WHISPER_MODELS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"whisperx 引擎不支援的模型：{model}。可選：{', '.join(WHISPER_MODELS)}",
+            )
+        if suffix not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支援的檔案格式：{suffix or '（無副檔名）'}。支援：{', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            )
+        effective_max_mb = MAX_FILE_MB
 
     parsed_terms = _validate_terms_csv(terms)
     if team:
@@ -977,7 +1179,7 @@ async def transcribe(
 
     chunk_size = 1024 * 1024
     total = 0
-    max_bytes = MAX_FILE_MB * 1024 * 1024
+    max_bytes = effective_max_mb * 1024 * 1024
     with open(upload_path, "wb") as f:
         while chunk := await audio.read(chunk_size):
             total += len(chunk)
@@ -985,7 +1187,7 @@ async def transcribe(
                 upload_path.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=413,
-                    detail=f"檔案超過上限 {MAX_FILE_MB} MB。",
+                    detail=f"檔案超過上限 {effective_max_mb} MB。",
                 )
             f.write(chunk)
 
@@ -999,7 +1201,10 @@ async def transcribe(
         created_at=_now_iso(),
         updated_at=_now_iso(),
         audio_filename=audio.filename or upload_path.name,
-        language=lang,
+        engine=engine,
+        # azure / azure_diarize 引擎固定 style=verbatim、lang=zh（不對外開放調整）
+        style=AZURE_FIXED_STYLE if engine in ("azure", "azure_diarize") else None,
+        language=AZURE_FIXED_LANG if engine in ("azure", "azure_diarize") else lang,
         device=device,
         model=model,
         num_speakers=num_speakers,

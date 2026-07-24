@@ -17,3 +17,28 @@ body { font-family: 'Inter', sans-serif; }
 }
 
 .animate-loading { animation: loading 2s ease-in-out infinite; }
+
+.tip-wrap { display: inline-flex; }
+.toolbar-tip {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #fff;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 50;
+}
+.tip-wrap:hover .toolbar-tip {
+  opacity: 1;
+  visibility: visible;
+}

@@ -67,20 +67,32 @@
       <!-- Toolbar -->
       <div class="h-14 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 bg-slate-50 dark:bg-slate-900 shrink-0">
         <div class="flex items-center gap-1">
-          <button @click="sidebarOpen = !sidebarOpen" :class="sidebarOpen ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all" title="切換專案清單">
-            <PanelLeft class="w-4 h-4" />
-          </button>
+          <span class="relative tip-wrap">
+            <button @click="sidebarOpen = !sidebarOpen" :class="sidebarOpen ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all">
+              <PanelLeft class="w-4 h-4" />
+            </button>
+            <span class="toolbar-tip">切換專案清單</span>
+          </span>
           <template v-if="currentSlug !== '__overview__'">
             <div class="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1"></div>
-            <button @click="mode = 'split'" :class="mode === 'split' ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all" title="分割檢視">
-              <Columns2 class="w-4 h-4" />
-            </button>
-            <button @click="mode = 'edit'" :class="mode === 'edit' ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all" title="編輯模式">
-              <PenTool class="w-4 h-4" />
-            </button>
-            <button @click="mode = 'preview'" :class="mode === 'preview' ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all" title="預覽模式">
-              <Eye class="w-4 h-4" />
-            </button>
+            <span class="relative tip-wrap">
+              <button @click="mode = 'split'" :class="mode === 'split' ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all">
+                <Columns2 class="w-4 h-4" />
+              </button>
+              <span class="toolbar-tip">分割檢視</span>
+            </span>
+            <span class="relative tip-wrap">
+              <button @click="mode = 'edit'" :class="mode === 'edit' ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all">
+                <PenTool class="w-4 h-4" />
+              </button>
+              <span class="toolbar-tip">編輯模式</span>
+            </span>
+            <span class="relative tip-wrap">
+              <button @click="mode = 'preview'" :class="mode === 'preview' ? 'bg-white dark:bg-slate-700 shadow-sm' : ''" class="p-1.5 rounded-md hover:bg-white dark:hover:bg-slate-700 transition-all">
+                <Eye class="w-4 h-4" />
+              </button>
+              <span class="toolbar-tip">預覽模式</span>
+            </span>
           </template>
         </div>
 
@@ -103,61 +115,113 @@
               </span>
             </div>
             <div class="flex gap-1">
-              <button
-                @click="saveFile"
-                :disabled="!currentSlug || isSaving || !isDirty"
-                :class="!currentSlug || !isDirty ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-700'"
-                class="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
-              >
-                <Loader2 v-if="isSaving" class="w-3.5 h-3.5 animate-spin" />
-                <Save v-else class="w-3.5 h-3.5" />
-                儲存
-              </button>
-              <button @click="exportFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : ''" class="bg-slate-200 dark:bg-slate-800 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5">
-                <Download class="w-3.5 h-3.5" /> 匯出
-              </button>
-              <button @click="copyContent" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : ''" class="bg-slate-200 dark:bg-slate-800 px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5">
-                <Copy class="w-3.5 h-3.5" /> 複製
-              </button>
-              <button
-                @click="emit('swot-project', { slug: currentSlug, name: currentTitle || currentSlug })"
-                :disabled="!currentSlug"
-                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-emerald-700'"
-                class="bg-emerald-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
-                title="針對此專案執行 SWOT 分析"
-              >
-                <BarChart2 class="w-3.5 h-3.5" /> SWOT
-              </button>
-              <button
-                @click="emit('market-project', { slug: currentSlug, name: currentTitle || currentSlug })"
-                :disabled="!currentSlug"
-                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-violet-700'"
-                class="bg-violet-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
-                title="針對此專案執行市場行銷分析"
-              >
-                <TrendingUp class="w-3.5 h-3.5" /> 市場行銷
-              </button>
-              <button
-                @click="emit('tech-project', { slug: currentSlug, name: currentTitle || currentSlug })"
-                :disabled="!currentSlug"
-                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-700'"
-                class="bg-blue-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
-                title="針對此專案產出技術分享文章"
-              >
-                <Code2 class="w-3.5 h-3.5" /> 技術分享
-              </button>
-              <button
-                @click="emit('record-project', { slug: currentSlug, name: currentTitle || currentSlug })"
-                :disabled="!currentSlug"
-                :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-orange-700'"
-                class="bg-orange-500 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors"
-                title="查看此專案的會議記錄"
-              >
-                <BookOpen class="w-3.5 h-3.5" /> 會議記錄
-              </button>
-              <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-1.5 transition-colors">
-                <Trash2 class="w-3.5 h-3.5" /> 刪除
-              </button>
+              <span class="relative tip-wrap">
+                <button
+                  @click="saveFile"
+                  :disabled="!currentSlug || isSaving || !isDirty"
+                  :class="!currentSlug || !isDirty ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-700'"
+                  class="bg-blue-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <Loader2 v-if="isSaving" class="w-3.5 h-3.5 animate-spin" />
+                  <Save v-else class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">儲存</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button @click="exportFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : ''" class="bg-slate-200 dark:bg-slate-800 p-1.5 rounded-md text-sm font-bold flex items-center">
+                  <Download class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">匯出</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button @click="copyContent" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : ''" class="bg-slate-200 dark:bg-slate-800 p-1.5 rounded-md text-sm font-bold flex items-center">
+                  <Copy class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">複製</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('swot-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-emerald-700'"
+                  class="bg-emerald-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <BarChart2 class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">SWOT 分析</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('market-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-violet-700'"
+                  class="bg-violet-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <TrendingUp class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">市場行銷分析</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('tech-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-700'"
+                  class="bg-blue-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <Code2 class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">技術分享</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('presentation-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-indigo-700'"
+                  class="bg-indigo-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <Presentation class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">簡報生成</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('record-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-orange-700'"
+                  class="bg-orange-500 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <BookOpen class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">會議記錄</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('supplement-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-teal-700'"
+                  class="bg-teal-500 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <Paperclip class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">補充資料</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button
+                  @click="emit('custom-skill-project', { slug: currentSlug, name: currentTitle || currentSlug })"
+                  :disabled="!currentSlug"
+                  :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-pink-700'"
+                  class="bg-pink-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors"
+                >
+                  <Wand2 class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">自訂技能</span>
+              </span>
+              <span class="relative tip-wrap">
+                <button @click="deleteFile" :disabled="!currentSlug" :class="!currentSlug ? 'opacity-40 cursor-not-allowed' : 'hover:bg-red-700'" class="bg-red-600 text-white p-1.5 rounded-md text-sm font-bold flex items-center transition-colors">
+                  <Trash2 class="w-3.5 h-3.5" />
+                </button>
+                <span class="toolbar-tip">刪除</span>
+              </span>
             </div>
           </template>
           <!-- Overview toolbar: just a refresh button -->
@@ -266,11 +330,32 @@
                         <Code2 class="w-3.5 h-3.5" /> 技術分享
                       </button>
                       <button
+                        @click="emit('presentation-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="簡報生成"
+                      >
+                        <Presentation class="w-3.5 h-3.5" /> 簡報生成
+                      </button>
+                      <button
                         @click="emit('record-project', { slug: p.slug, name: p.name })"
                         class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/20 rounded-md transition-colors whitespace-nowrap"
                         title="會議記錄"
                       >
                         <BookOpen class="w-3.5 h-3.5" /> 會議記錄
+                      </button>
+                      <button
+                        @click="emit('supplement-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="補充資料"
+                      >
+                        <Paperclip class="w-3.5 h-3.5" /> 補充資料
+                      </button>
+                      <button
+                        @click="emit('custom-skill-project', { slug: p.slug, name: p.name })"
+                        class="flex items-center gap-1 px-2 py-1 text-xs font-medium text-pink-600 dark:text-pink-400 hover:bg-pink-50 dark:hover:bg-pink-900/20 rounded-md transition-colors whitespace-nowrap"
+                        title="自訂技能"
+                      >
+                        <Wand2 class="w-3.5 h-3.5" /> 自訂技能
                       </button>
                     </div>
                   </td>
@@ -371,14 +456,14 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import {
   Columns2, PenTool, Eye, Save, Download, Copy, Loader2, FileText,
   PanelLeft, RefreshCw, Check, LayoutDashboard, Trash2, BarChart2, TrendingUp, Code2, BookOpen,
-  Info, X, Sparkles
+  Info, X, Sparkles, Paperclip, Presentation, Wand2
 } from 'lucide-vue-next'
 
 const props = defineProps({
   initialSlug: { type: String, default: null }
 })
 
-const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'record-project', 'project-change'])
+const emit = defineEmits(['swot-project', 'market-project', 'tech-project', 'presentation-project', 'record-project', 'supplement-project', 'custom-skill-project', 'project-change'])
 
 const mode = ref('preview')
 const sidebarOpen = ref(true)

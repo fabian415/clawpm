@@ -6,12 +6,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import { createServer } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { WebSocketServer } from 'ws'
 import multer from 'multer'
 import archiver from 'archiver'
 import { Client as FtpClient } from 'basic-ftp'
-import nodemailer from 'nodemailer'
+import sgMail from '@sendgrid/mail'
 import { runMigrations } from './src/migrate.js'
 import { query } from './src/db.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers, deleteAllTeamMembers } from './src/managers/UserManager.js'
@@ -46,6 +46,12 @@ import {
   deleteContainerConfig,
 } from './src/containers/DevicePairer.js'
 import { getUserPaths } from './src/containers/WorkspaceManager.js'
+import {
+  listSkills, readSkill, createSkill, updateSkill, deleteSkill, cloneSkill,
+  slugValid as skillSlugValid, isProtectedSkill, parseFrontmatter,
+  createDraftId, readDraft, deleteDraft, draftContainerPath,
+} from './src/managers/SkillManager.js'
+import { publishDraft as publishBlogDraft, unpublishDraft as unpublishBlogDraft } from './src/managers/BlogPublisher.js'
 
 dotenv.config()
 
@@ -60,12 +66,19 @@ const OPENCLAW_IMAGE = process.env.OPENCLAW_IMAGE || 'ghcr.io/openclaw/openclaw:
 const MAX_TERMS = parseInt(process.env.MAX_TERMS || '30', 10)
 const WHISPERX_BASE = `http://${process.env.LOCAL_SERVER_IP || '172.22.12.162'}:${process.env.LOCAL_SERVER_PORT || '8787'}`
 const WHISPERX_API_KEY = process.env.LOCAL_API_KEY || ''
+const BLOG_REWRITER_URL = process.env.BLOG_REWRITER_URL || 'http://localhost:8010'
 
 // Azure proxy — host reachable from inside the Docker container.
 // host.docker.internal is the Docker Desktop magic hostname (always resolves to the Windows/Mac host).
 // Override with CLAWPM_PROXY_HOST if your Docker setup uses a different bridge IP.
 const CLAWPM_PROXY_HOST = process.env.CLAWPM_PROXY_HOST || 'host.docker.internal'
 const AZURE_API_VERSION = process.env.AZURE_API_VERSION || '2025-04-01-preview'
+
+// ess-kms 知識庫 GraphQL（供補充文件連結萃取 → 抓頁面內容用）。token 只放在後端，
+// 不傳進容器；容器內腳本只負責從文件萃取 URL，實際抓取由後端完成。
+const ESS_KMS_GRAPHQL_ENDPOINT = process.env.ESS_KMS_GRAPHQL_ENDPOINT || 'https://ess-kms.edgecenter.io/graphql'
+const ESS_KMS_GRAPHQL_TOKEN = process.env.ESS_KMS_GRAPHQL_TOKEN || ''
+const ESS_KMS_LOCALE = process.env.ESS_KMS_LOCALE || 'en'
 const AZURE_CONFIGS_DIR = path.resolve('./data/azure_configs')
 let RUNNING_PORT = INITIAL_PORT  // updated once the server binds
 
@@ -1292,36 +1305,30 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
     return res.status(400).json({ error: '請填寫至少一位收件者' })
   }
 
-  const smtpHost = process.env.SMTP_HOST
-  const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10)
-  const smtpUser = process.env.SMTP_USER
-  const smtpPass = process.env.SMTP_PASS
+  const apiKey = process.env.SENDGRID_API_KEY
+  const senderEmail = process.env.SENDGRID_FROM_EMAIL
   const fromName = process.env.EMAIL_FROM_NAME || 'MemoSynth 會議助理'
 
-  if (!smtpHost || !smtpUser || !smtpPass) {
-    return res.status(500).json({ error: 'SMTP 尚未設定，請聯絡管理員填寫 .env 的 SMTP_* 參數' })
+  if (!apiKey || !senderEmail) {
+    return res.status(500).json({ error: 'SendGrid 尚未設定，請聯絡管理員填寫 .env 的 SENDGRID_API_KEY / SENDGRID_FROM_EMAIL 參數' })
   }
 
-  try {
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpPort === 465,
-      auth: { user: smtpUser, pass: smtpPass },
-    })
+  sgMail.setApiKey(apiKey)
 
+  try {
     const attachments = []
     if (transcriptContent) {
       attachments.push({
         filename: '逐字稿.md',
-        content: transcriptContent,
-        contentType: 'text/markdown; charset=utf-8',
+        content: Buffer.from(transcriptContent, 'utf8').toString('base64'),
+        type: 'text/markdown',
+        disposition: 'attachment',
       })
     }
 
-    await transporter.sendMail({
-      from: `"${fromName}" <${smtpUser}>`,
-      to: recipients.join(', '),
+    await sgMail.send({
+      to: recipients,
+      from: { email: senderEmail, name: fromName },
       subject: subject || '會議記錄',
       html: content || '',
       attachments,
@@ -1329,8 +1336,9 @@ app.post('/api/workflow/send-meeting-email', requireAuth, async (req, res) => {
 
     res.json({ success: true })
   } catch (err) {
-    console.error('[send-meeting-email] error:', err.message)
-    res.status(500).json({ error: `郵件發送失敗：${err.message}` })
+    const detail = err.response?.body?.errors ? JSON.stringify(err.response.body.errors) : err.message
+    console.error('[send-meeting-email] error:', detail)
+    res.status(500).json({ error: `郵件發送失敗：${detail}` })
   }
 })
 
@@ -1359,6 +1367,7 @@ app.put('/api/settings', requireAuth, (req, res) => {
 
 const CONTAINER_INSIGHTS_DIR = `${CONTAINER_WORKSPACE}/project-insights`
 const IMAGE_EXTRACT_SCRIPT = `${CONTAINER_WORKSPACE}/skills/project-insight-synthesizer/scripts/extract_supplementary_images.py`
+const LINK_EXTRACT_SCRIPT = `${CONTAINER_WORKSPACE}/skills/project-insight-synthesizer/scripts/extract_supplementary_links.py`
 const IMAGE_SOURCE_EXTS = new Set(['.pptx', '.xlsx', '.pdf'])
 
 // Convert FTP-relative doc paths (as stored when uploaded) into container-visible absolute paths.
@@ -1607,6 +1616,8 @@ app.get('/api/project-insights/export', requireAuth, async (req, res) => {
     ['swot', swotDir],
     ['market', marketDir],
     ['tech', techDir],
+    ['supplements', supplementsDir],
+    ['pptx', pptxDir],
   ]
   for (const [label, dirFn] of subDirs) {
     const dir = dirFn(hostInsightsDir, slug)
@@ -1924,6 +1935,19 @@ function recordFilePath(hostInsightsDir, slug, name) {
   return full
 }
 
+// Blog drafts live in project-insights/blog-{slug}/{YYYYMMDD}-{HHmmss}/
+// (a folder per run, since each run produces index.md + index.en.md + feature.png + meta.json)
+function blogDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `blog-${slug}`)
+}
+
+function blogRunDir(hostInsightsDir, slug, name) {
+  const dir = blogDir(hostInsightsDir, slug)
+  const full = path.join(dir, name)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
 function validDateFilename(s) {
   return typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
 }
@@ -1952,6 +1976,246 @@ function suggestionsPathFor(hostInsightsDir, meetingDate) {
 
 function assignmentsPathFor(hostInsightsDir, meetingDate) {
   return path.join(assetsDirFor(hostInsightsDir), `assignments-${meetingDate}.json`)
+}
+
+// 圖片 manifest 也綁定會議日期，避免舊會議留下的 manifest.json 在 2 小時新鮮度視窗內被誤讀成這次會議的。
+function imageManifestPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `manifest-${meetingDate}.json`)
+}
+
+// ── 補充文件 ess-kms 連結分發 ────────────────────────────────────────────────
+// 容器內的 extract_supplementary_links.py 只把 URL 萃取進 links-manifest-{date}.json；
+// 後端負責用 GraphQL 抓每頁 title+content、給 AI 分類建議，並在使用者確認後把
+// Markdown 寫進 supplements-{slug}/。檔名綁日期，避免舊會議的 manifest 在新鮮度視窗內被誤用。
+function linksManifestPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `links-manifest-${meetingDate}.json`)
+}
+
+function linkReviewCachePathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `link-review-${meetingDate}.json`)
+}
+
+function linkAssignmentsPathFor(hostInsightsDir, meetingDate) {
+  return path.join(assetsDirFor(hostInsightsDir), `link-assignments-${meetingDate}.json`)
+}
+
+function supplementsDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `supplements-${slug}`)
+}
+
+function supplementFilePath(hostInsightsDir, slug, name) {
+  const dir = supplementsDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+// ── 簡報(.pptx)產出 ─────────────────────────────────────────────────────────
+// 由 presentation-generator skill 產出,存在 project-insights/pptx-{slug}/{timestamp}.pptx，
+// 同資料夾另有 {timestamp}.spec.json(deck spec)與 {timestamp}/page-NN.png(預覽縮圖)。
+function pptxDir(hostInsightsDir, slug) {
+  return path.join(hostInsightsDir, `pptx-${slug}`)
+}
+
+function pptxFilePath(hostInsightsDir, slug, name) {
+  const dir = pptxDir(hostInsightsDir, slug)
+  const safeFile = name.endsWith('.pptx') ? name : `${name}.pptx`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+// 補充資料檔名是頁面標題淨化後的結果（可含中文），只擋路徑穿越，不像會議記錄限定日期格式。
+function validSupplementName(s) {
+  return typeof s === 'string' && s.length > 0 && s.length < 300
+    && !s.includes('..') && !s.includes('/') && !s.includes('\\')
+}
+
+// 把頁面 title 淨化成安全檔名（去掉路徑分隔與控制字元），並確保在目標資料夾中唯一。
+function sanitizeTitleToFilename(title, dir) {
+  let base = String(title || '').trim()
+    .replace(/[\\/:*?"<>|]/g, '-')   // 檔名保留字元
+    .replace(/[\x00-\x1f]/g, '')      // 控制字元
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+/, '')              // 別讓檔名以點開頭
+    .slice(0, 120)
+    .trim()
+  if (!base) base = 'untitled'
+  let candidate = `${base}.md`
+  let n = 2
+  while (fs.existsSync(path.join(dir, candidate))) {
+    candidate = `${base}-${n}.md`
+    n++
+  }
+  return candidate
+}
+
+// 把 manifest 裡的一筆連結（可能是裸 path、含 locale 前綴的 path、或完整 URL）正規化成
+// { path, locale, url, sourceFile, location }。Wiki.js 的 URL 結構是 /{locale}/{path}，而
+// GraphQL singleByPath 需要「去掉 locale 的 path」+ 另外傳 locale，所以要把首段 locale 拆出來。
+function normalizeKmsLink(entry) {
+  // 優先用已萃取好的裸 path；沒有才退回 url（url 的 pathname 會含 /{locale}/ 前綴）。
+  const raw = String((entry && (entry.path || entry.url)) || '').trim()
+  if (!raw) return null
+  let pathname
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw)
+      if (u.hostname.toLowerCase() !== 'ess-kms.edgecenter.io') return null
+      pathname = u.pathname
+    } catch { return null }
+  } else {
+    pathname = raw
+  }
+  let segs = pathname.split('/').filter(Boolean)
+  if (segs.length === 0) return null
+  let locale = (entry && entry.locale) || ESS_KMS_LOCALE
+  // Wiki.js URL 結構是 /{locale}/{path}。只在「首段確實是 locale」時才拆：
+  // 有給 entry.locale → 首段等於它才拆（裸 path 通常已不含 locale，就不會誤砍真實段落）；
+  // 沒給 locale → 首段長得像 locale（en、zh、zh-tw…）就當作 locale 拆掉。
+  if (entry?.locale) {
+    if (segs[0].toLowerCase() === String(entry.locale).toLowerCase()) segs = segs.slice(1)
+  } else if (/^[a-z]{2}(-[a-z]{2})?$/i.test(segs[0])) {
+    locale = segs[0].toLowerCase()
+    segs = segs.slice(1)
+  }
+  if (segs.length === 0) return null
+  const pagePath = segs.join('/')
+  return {
+    path: pagePath,
+    locale,
+    url: (entry && entry.url) || `https://ess-kms.edgecenter.io/${locale}/${pagePath}`,
+    sourceFile: (entry && entry.sourceFile) || '補充文件',
+    location: (entry && entry.location) || '',
+  }
+}
+
+// 下載 ess-kms 頁面內容裡引用的圖片（多為 /xdept/public/... 之類的站內相對路徑）到 _assets/，
+// 並把 Markdown 裡的圖片路徑改成本地可服務的 ../_assets/<file>。回傳 { content, changed }。
+async function localizeKmsImages(content, assetsDir) {
+  if (!content) return { content, changed: false }
+  const imgRe = /!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g
+  const srcs = new Set()
+  let m
+  while ((m = imgRe.exec(content)) !== null) {
+    const src = m[2]
+    // 只處理 ess-kms 站內圖片：以 / 開頭的相對路徑，或指向 ess-kms 的絕對 URL。
+    if (src.startsWith('/') || /^https?:\/\/ess-kms\.edgecenter\.io\//i.test(src)) srcs.add(src)
+  }
+  if (srcs.size === 0) return { content, changed: false }
+
+  fs.mkdirSync(assetsDir, { recursive: true })
+  const replacements = new Map()
+  const manifestUpdates = {}
+  for (const src of srcs) {
+    const url = src.startsWith('/') ? `https://ess-kms.edgecenter.io${src}` : src
+    try {
+      // /xdept/public/... 這類圖是公開的，帶 Bearer token 反而會被擋（403）。所以先不帶 token 抓，
+      // 失敗才退回帶 token（少數受保護的圖才需要）。
+      let res = await fetch(url)
+      if (!res.ok && ESS_KMS_GRAPHQL_TOKEN) {
+        res = await fetch(url, { headers: { Authorization: `Bearer ${ESS_KMS_GRAPHQL_TOKEN}` } })
+      }
+      if (!res.ok) { dbgErr('[link-image] 下載失敗', res.status, url); continue }
+      const buf = Buffer.from(await res.arrayBuffer())
+      let base = decodeURIComponent(url.split('/').pop().split('?')[0] || 'image')
+        .replace(/[\\/:*?"<>|]/g, '-').replace(/[\x00-\x1f]/g, '').slice(0, 100) || 'image'
+      // 用來源路徑 hash 當前綴，確保不同頁面同名圖不衝突、同一張圖重覆執行時冪等。
+      const filename = `${createHash('sha1').update(src).digest('hex').slice(0, 8)}-${base}`
+      fs.writeFileSync(path.join(assetsDir, filename), buf)
+      replacements.set(src, `../_assets/${filename}`)
+      // hash 是單向的，之後（例如部落格發布）要換回原始 KMS 路徑得靠這份 manifest 查回 src。
+      manifestUpdates[filename] = src
+    } catch (err) {
+      dbgErr('[link-image] 下載例外', url, err?.message)
+    }
+  }
+  if (Object.keys(manifestUpdates).length > 0) {
+    const manifestPath = path.join(assetsDir, 'manifest.json')
+    const manifest = readJsonSafe(manifestPath) || {}
+    Object.assign(manifest, manifestUpdates)
+    try { fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8') } catch (err) {
+      dbgErr('[link-image] manifest 寫入失敗', err?.message)
+    }
+  }
+  if (replacements.size === 0) return { content, changed: false }
+
+  const localized = content.replace(imgRe, (whole, alt, src, title) =>
+    replacements.has(src) ? `![${alt}](${replacements.get(src)}${title || ''})` : whole)
+  return { content: localized, changed: localized !== content }
+}
+
+// 用 GraphQL pages.singleByPath 抓回單一頁面的 title + content。失敗回 null。
+async function fetchKmsPage(pagePath, locale = ESS_KMS_LOCALE) {
+  if (!ESS_KMS_GRAPHQL_TOKEN) {
+    dbgErr('[link-review] 未設定 ESS_KMS_GRAPHQL_TOKEN，跳過抓取', pagePath)
+    return null
+  }
+  const query = `query ($path: String!, $locale: String!) {
+    pages { singleByPath(path: $path, locale: $locale) { id title content createdAt updatedAt } }
+  }`
+  try {
+    const res = await fetch(ESS_KMS_GRAPHQL_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ESS_KMS_GRAPHQL_TOKEN}`,
+      },
+      body: JSON.stringify({ query, variables: { path: pagePath, locale: locale || ESS_KMS_LOCALE } }),
+    })
+    if (!res.ok) {
+      dbgErr('[link-review] GraphQL HTTP', res.status, pagePath)
+      return null
+    }
+    const data = await res.json()
+    const page = data?.data?.pages?.singleByPath
+    if (!page) return null
+    return {
+      id: page.id ?? null,
+      title: (page.title || '').trim() || pagePath,
+      content: page.content || '',
+      updatedAt: page.updatedAt || null,
+    }
+  } catch (err) {
+    dbgErr('[link-review] GraphQL fetch failed', pagePath, err?.message)
+    return null
+  }
+}
+
+// 一次性請 LLM 依 title+content 對照專案清單給出 suggestedSlug。失敗回空建議（不阻斷流程）。
+async function suggestLinkProject(provisionUserId, title, content, projects) {
+  if (!Array.isArray(projects) || projects.length === 0) return { suggestedSlug: null, reason: '無可用專案清單' }
+  const projectList = projects
+    .map(p => `- ${p.name}（${p.slug}）${p.description ? `：${p.description}` : '（尚無描述）'}`)
+    .join('\n')
+  const prompt = [
+    `以下是一篇從會議補充文件連結抓回的知識庫頁面。請判斷它最應該歸屬到哪一個既有專案。`,
+    ``,
+    `已知專案清單：`,
+    projectList,
+    ``,
+    `頁面標題：${title}`,
+    `頁面內容（節錄）：`,
+    (content || '').slice(0, 4000),
+    ``,
+    `請對照專案的名稱與描述，找出語意最吻合的專案。若沒有任何專案合理對應，suggestedSlug 給 null。`,
+    `只回覆 JSON，格式為：{"suggestedSlug": "{清單中的 slug 或 null}", "reason": "{一句話說明理由}"}`,
+    `不要有其他文字、不要用 markdown 程式碼區塊包住。`,
+  ].join('\n')
+  try {
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('link-suggest')
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, prompt)
+    const raw = (lastMsg.content || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+    const parsed = JSON.parse(raw)
+    const slug = parsed?.suggestedSlug && projects.some(p => p.slug === parsed.suggestedSlug)
+      ? parsed.suggestedSlug : null
+    return { suggestedSlug: slug, reason: typeof parsed?.reason === 'string' ? parsed.reason : '' }
+  } catch (err) {
+    dbgErr('[link-review] suggest failed', err?.message)
+    return { suggestedSlug: null, reason: '' }
+  }
 }
 
 // 在記錄檔案的「## 相關圖片」區段裡新增或更新某張圖片的 bullet（用圖片檔名當識別key）。
@@ -2143,6 +2407,380 @@ app.get('/api/swot/result', requireAuth, async (req, res) => {
   if (!hostPath) return res.status(403).json({ error: '無權限' })
 
   res.json({ ready: fs.existsSync(hostPath) })
+})
+
+// ── Presentation Generator（.pptx 簡報產出）──────────────────────────────────
+
+const CONTAINER_SKILL_PPTX = `${CONTAINER_WORKSPACE}/skills/presentation-generator`
+
+const PPTX_ACCENTS = ['green', 'blue', 'gold', 'pink', 'sand', 'green2']
+
+function randomAccentOrder() {
+  const a = [...PPTX_ACCENTS]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a.slice(0, 5)
+}
+
+function newTimestamp() {
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
+// ── Phase 1：探索（做市場/技術研究 + 依專案動態產出要反問使用者的問題）─────────
+app.post('/api/presentation/plan/start', requireAuth, async (req, res) => {
+  const { projectSlug, projectName, note } = req.body ?? {}
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  const userNote = (typeof note === 'string' && note.trim()) ? note.trim() : ''
+
+  const planId = newTimestamp()
+  const today = new Date().toISOString().slice(0, 10)
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const pptxFolderContainer = `${CONTAINER_INSIGHTS_DIR}/pptx-${projectSlug}`
+  const discoveryPath = `${pptxFolderContainer}/${planId}.discovery.json`
+  const sessionKey = makeScopedSessionKey('presentation')
+
+  const parts = [
+    `請使用 presentation-generator skill 的 **discovery 模式**，為「${displayName}」專案的簡報做前置研究與提問（這個階段不要生成 pptx）。`,
+    '',
+    `專案 slug：${projectSlug}`,
+    `專案名稱：${displayName}`,
+    `日期：${today}`,
+    ...(userNote ? ['', `使用者的額外方向說明（請在研究與設計問題時納入考量）：「${userNote}」`] : []),
+    '',
+    '資料來源（請完整讀取）：',
+    `- 專案知識庫主檔：${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`,
+    `- 逐次會議記錄資料夾：${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}/（若存在，讀取其中所有 .md）`,
+    `- 補充資料資料夾：${CONTAINER_INSIGHTS_DIR}/supplements-${projectSlug}/（若存在，讀取其中所有 .md）`,
+    `- 既有 SWOT 分析資料夾：${CONTAINER_INSIGHTS_DIR}/swot-${projectSlug}/（若存在，用 Glob 列出其中的 {timestamp}.md，只讀檔名時間戳記最新的一份）`,
+    `- 既有市場行銷分析資料夾：${CONTAINER_INSIGHTS_DIR}/market-${projectSlug}/（若存在，同樣只讀最新一份）`,
+    `- 既有技術分享分析資料夾：${CONTAINER_INSIGHTS_DIR}/tech-${projectSlug}/（若存在，同樣只讀最新一份）`,
+    `- 圖片資產目錄：${CONTAINER_INSIGHTS_DIR}/_assets/`,
+    '',
+    '請依 SKILL.md 的 Mode A 執行：',
+    '1. 完整讀取專案內容，掌握現狀、數據、成果、目標客戶線索；同時讀取上面既有的 SWOT/市場/技術分析報告最新版（若存在），重複利用其中已驗證的洞察與來源標記，不要重做一次相同分析',
+    '2. 用 Glob 列出 _assets/ 實際存在的圖片並建立圖片語意清單（file/desc/topic）',
+    '3. 先確認既有報告是否已涵蓋市場規模/競品/趨勢/技術背景，缺的部分再用 web 搜尋做**深入**研究補齊，逐條記錄來源 URL',
+    '4. 依這個專案的實際狀況，動態設計 3–5 個要反問使用者的關鍵問題（single/multi/open，選項要貼合本專案）',
+    `5. 依 references/discovery-schema.md 寫出完整 discovery.json 到：${discoveryPath}`,
+    `   （planId 請填 "${planId}"；請先建立資料夾 ${pptxFolderContainer}/ 若尚未存在）`,
+    '',
+    '完成後回報：研究到的主要洞察（含來源）、設計了哪些問題。這個階段**不要**產生 pptx。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), planId })
+})
+
+app.get('/api/presentation/plan/result', requireAuth, async (req, res) => {
+  const { slug, planId } = req.query
+  if (!validSlug(slug) || !validTimestamp(planId)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+  const discoveryHostPath = path.join(dir, `${planId}.discovery.json`)
+  if (!discoveryHostPath.startsWith(dir + path.sep) || !fs.existsSync(discoveryHostPath)) {
+    return res.json({ ready: false })
+  }
+  const discovery = readJsonSafe(discoveryHostPath)
+  if (!discovery) return res.json({ ready: false })
+  res.json({ ready: true, discovery })
+})
+
+const PPTX_STYLES = ['professional', 'vivid', 'minimal', 'warm']
+
+function validRevision(v) {
+  const n = Number(v)
+  return Number.isInteger(n) && n >= 1 && n <= 20
+}
+
+// ── Phase 2：故事大綱（先寫目的、設計逐頁大綱、自我檢視，交給使用者確認或依回饋重做）──
+// outline 檔用 revision 編號（{planId}.outline.v{N}.json），每次呼叫（含重新設計）都是
+// 新檔案，避免「使用者要求重寫、但輪詢讀到舊檔」的競態，也保留每一版的歷史方便除錯。
+app.post('/api/presentation/outline/start', requireAuth, async (req, res) => {
+  const { projectSlug, projectName, planId, answers, style, feedback, previousRevision } = req.body ?? {}
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (!validTimestamp(planId)) return res.status(400).json({ error: '缺少有效的 planId（請先完成規劃階段）' })
+  const deckStyle = PPTX_STYLES.includes(style) ? style : 'professional'
+  const revision = validRevision(previousRevision) ? Number(previousRevision) + 1 : 1
+  const isRefine = revision > 1
+
+  const today = new Date().toISOString().slice(0, 10)
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const pptxFolderContainer = `${CONTAINER_INSIGHTS_DIR}/pptx-${projectSlug}`
+  const discoveryPath = `${pptxFolderContainer}/${planId}.discovery.json`
+  const outlinePath = `${pptxFolderContainer}/${planId}.outline.v${revision}.json`
+  const previousOutlinePath = `${pptxFolderContainer}/${planId}.outline.v${revision - 1}.json`
+  const sessionKey = makeScopedSessionKey('presentation')
+
+  let answersBlock = '（使用者未提供額外回答，請依 discovery.json 的問題以合理預設進行）'
+  try {
+    if (answers && typeof answers === 'object') answersBlock = JSON.stringify(answers, null, 2)
+  } catch {}
+  const feedbackText = (typeof feedback === 'string' && feedback.trim()) ? feedback.trim() : ''
+
+  const parts = [
+    `請使用 presentation-generator skill 的 **outline 模式**，為「${displayName}」專案${isRefine ? '重新設計' : '設計'}故事大綱（這個階段不要生成 pptx，只寫 outline.json）。`,
+    '',
+    `專案 slug：${projectSlug}`,
+    `專案名稱：${displayName}`,
+    `日期：${today}`,
+    `視覺風格（供你安排語氣參考）：${deckStyle}`,
+    '',
+    `研究檔（discovery.json）：${discoveryPath}（請先讀取，取得研究摘要、圖片語意清單）`,
+    '',
+    '使用者對規劃問題的回答（key 為問題 id，對照 discovery.json 的 questions）：',
+    '```json',
+    answersBlock,
+    '```',
+    '',
+    ...(isRefine ? [
+      `**這是重新設計（第 ${revision} 版）**：請先讀取上一版大綱：${previousOutlinePath}`,
+      `使用者對上一版的回饋：「${feedbackText || '（使用者未填寫具體文字，僅按下重新設計）'}」`,
+      '請針對回饋具體修正故事線與每頁目的，不是換個說法敷衍過去；若回饋指出「太像流水帳」，',
+      '就要實際刪減/合併目的薄弱的頁面，換成更有畫面感的頁型。',
+      '',
+    ] : []),
+    '請依 SKILL.md 的 Mode B 執行：',
+    '1. 消化 discovery.json 與使用者回答' + (isRefine ? '、上一版大綱與使用者回饋' : '') + '，定出受眾/核心訊息/強調重點/頁數',
+    '2. **先寫整份簡報的 deck_purpose（完整目的）**，再逐頁「先寫 purpose、再寫 one_liner」',
+    '3. 封面固定用 type=cover，目的固定（建立位階與野心），不要另外設計封面呈現方式',
+    '4. 自我檢視：是否為一篇完整、連貫、有記憶點的故事？有沒有目的薄弱的流水帳頁面？誠實填 self_check，不通過就修正到通過',
+    `5. 依 references/outline-schema.md 寫出完整 outline.json 到：${outlinePath}`,
+    `   （planId 填 "${planId}"，revision 填 ${revision}${isRefine ? `，based_on_feedback 填使用者的回饋文字` : ''}；請先建立資料夾 ${pptxFolderContainer}/ 若尚未存在）`,
+    '',
+    '完成後回報：deck_purpose、核心訊息、逐頁大綱摘要（一頁一句話＋目的一句話）、self_check 結果。',
+    '**這個階段絕對不要**寫 deck spec、呼叫 deck_builder 或產生 pptx——大綱要先給使用者確認。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), planId, revision })
+})
+
+app.get('/api/presentation/outline/result', requireAuth, async (req, res) => {
+  const { slug, planId, revision } = req.query
+  if (!validSlug(slug) || !validTimestamp(planId) || !validRevision(revision)) {
+    return res.status(400).json({ error: '無效的參數' })
+  }
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+  const outlineHostPath = path.join(dir, `${planId}.outline.v${revision}.json`)
+  if (!outlineHostPath.startsWith(dir + path.sep) || !fs.existsSync(outlineHostPath)) {
+    return res.json({ ready: false })
+  }
+  const outline = readJsonSafe(outlineHostPath)
+  if (!outline) return res.json({ ready: false })
+  res.json({ ready: true, outline })
+})
+
+// ── Phase 3：build（只在使用者已確認某一版大綱後才觸發，依大綱生成 pptx）──────────
+app.post('/api/presentation/generate', requireAuth, async (req, res) => {
+  const { projectSlug, projectName, planId, revision, style } = req.body ?? {}
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (!validTimestamp(planId)) return res.status(400).json({ error: '缺少有效的 planId（請先完成規劃階段）' })
+  if (!validRevision(revision)) return res.status(400).json({ error: '缺少已確認的故事大綱版本（請先完成大綱確認）' })
+  const deckStyle = PPTX_STYLES.includes(style) ? style : 'professional'
+
+  const today = new Date().toISOString().slice(0, 10)
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const pptxFolderContainer = `${CONTAINER_INSIGHTS_DIR}/pptx-${projectSlug}`
+  // 沿用 planId 當最終簡報的 timestamp，讓 discovery / outline / spec / pptx / 預覽同名成組
+  const outputPptx = `${pptxFolderContainer}/${planId}.pptx`
+  const specPath = `${pptxFolderContainer}/${planId}.spec.json`
+  const discoveryPath = `${pptxFolderContainer}/${planId}.discovery.json`
+  const outlinePath = `${pptxFolderContainer}/${planId}.outline.v${revision}.json`
+  const previewDir = `${pptxFolderContainer}/${planId}`
+  const sessionKey = makeScopedSessionKey('presentation')
+  const layoutSeed = Math.floor(Math.random() * 10000)
+
+  const parts = [
+    `請使用 presentation-generator skill 的 **build 模式**，依「已核准的故事大綱」為「${displayName}」專案產出 PowerPoint 簡報（.pptx）。`,
+    '',
+    `專案 slug：${projectSlug}`,
+    `專案名稱：${displayName}`,
+    `日期：${today}`,
+    '',
+    `研究檔（discovery.json）：${discoveryPath}`,
+    `**已核准的故事大綱（outline.json，第 ${revision} 版）：${outlinePath}**`,
+    '請先讀取這份大綱，逐頁依其 purpose 與 one_liner 撰寫內容，不要偏離已核准的目的重新發揮。',
+    '',
+    '本次版面變化設定（很重要:每次都要做出不同的 layout,避免每份簡報長得一樣）：',
+    `- **視覺風格（使用者指定）：meta.style 請設為 "${deckStyle}"**（professional / vivid / minimal / warm）。`,
+    `- 請在 meta 設 layoutSeed:${layoutSeed}（讓版面變體的預設每次不同）。`,
+    '- **主動變換每頁的版面變體**（見 deck-spec-schema.md「版面變體」）:',
+    '    · bullets 可用 variant: list（條列）/ cards（卡片）,並用 imageSide: left/right 換圖片位置',
+    '    · stats 可用 variant: row（單排）/ grid（2×2）;two_column 可用 variant: panels / divider',
+    '    · 適時改用 process / big_number / quote / hero_image / image_full 等不同頁型呈現',
+    '- 封面固定用 type=cover，只給 title/domain/team/date，不要加 variant 或任何賽事字樣。',
+    '- 多數內容頁**不要**設 accent（留空會自動吃 style 主色,整份才一致）。',
+    '',
+    '產出設定：',
+    `- 圖片解析根目錄（--assets-root）：${CONTAINER_INSIGHTS_DIR}`,
+    `- 模板（--template）：${CONTAINER_SKILL_PPTX}/references/template.pptx`,
+    `- deck spec 輸出：${specPath}`,
+    `- pptx 輸出（--out）：${outputPptx}`,
+    `- 預覽縮圖輸出資料夾：${previewDir}/`,
+    '',
+    '請依 SKILL.md 的 Mode C 執行：',
+    '1. 讀取已核准的 outline.json，逐頁取用 purpose 與 one_liner',
+    '2. 語意配對圖片:只在圖片真正支撐該頁訊息時才放，圖說寫清楚它證明什麼;配不上就不放',
+    '3. 決定本次版面組合(layoutSeed + 混搭頁型與變體),避免與過往雷同',
+    `4. 依 references/deck-spec-schema.md 寫出完整 spec 到 ${specPath}（外部數字句末附來源,倒數第二頁放 sources）`,
+    '5. 執行 scripts/deck_builder.py 產 pptx;missing_images 非空就修正重跑',
+    '6. 執行 scripts/render_preview.py 產預覽',
+    '7. 回報:pptx 頁數、逐頁如何對應大綱目的、用了哪些 _assets 圖(用在哪頁與原因)、引用了哪些來源、這次的版面/配色變化',
+    '',
+    '務必:忠於已核准的大綱、圖片語意到位不硬塞、外部引用附連結、只用真實存在的 _assets 圖。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: planId, timestamp: today })
+})
+
+app.get('/api/presentation/result', requireAuth, async (req, res) => {
+  const { slug, filename } = req.query
+  if (!validSlug(slug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const hostPath = pptxFilePath(hostInsightsDir, slug, filename)
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  const ready = fs.existsSync(hostPath)
+  let pages = 0
+  if (ready) {
+    const previewDir = path.join(pptxDir(hostInsightsDir, slug), filename)
+    try {
+      pages = fs.readdirSync(previewDir).filter(f => /^page-\d+\.png$/.test(f)).length
+    } catch {}
+  }
+  res.json({ ready, pages })
+})
+
+app.get('/api/presentation/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+  if (!fs.existsSync(dir)) return res.json({ decks: [] })
+
+  try {
+    const decks = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.pptx$/.test(f))
+      .map(f => {
+        const name = f.replace(/\.pptx$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        let pages = 0
+        try { pages = fs.readdirSync(path.join(dir, name)).filter(x => /^page-\d+\.png$/.test(x)).length } catch {}
+        return { name, displayDate, mtime, pages }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+    res.json({ decks })
+  } catch {
+    res.status(500).json({ error: '讀取簡報清單失敗' })
+  }
+})
+
+app.get('/api/presentation/download', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const hostPath = pptxFilePath(hostInsightsDir, slug, name)
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    res.setHeader('Content-Disposition', `attachment; filename="${slug}-${name}.pptx"`)
+    res.send(data)
+  } catch (err) {
+    console.error('[presentation] download error:', err.message)
+    res.status(500).json({ error: '下載失敗' })
+  }
+})
+
+// 預覽 PNG:img 標籤無法帶 Authorization header，改用 query token 驗證(同 /asset 端點作法)。
+app.get('/api/presentation/preview', async (req, res) => {
+  const { slug, name, page, token } = req.query
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  const pageNum = String(page || '').padStart(2, '0')
+  if (!/^\d{2}$/.test(pageNum)) return res.status(400).json({ error: '無效的頁碼' })
+
+  let user
+  try {
+    const auth = req.headers.authorization ?? ''
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null
+    user = verifyToken(bearer || token)
+  } catch {
+    return res.status(401).json({ error: '未授權' })
+  }
+
+  const provisionUserId = await getProvisionUserId(user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const previewDir = path.join(pptxDir(hostInsightsDir, slug), name)
+  const hostPath = path.join(previewDir, `page-${pageNum}.png`)
+  if (!hostPath.startsWith(previewDir + path.sep) || !fs.existsSync(hostPath)) {
+    return res.status(404).json({ error: '預覽不存在' })
+  }
+
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', 'image/png')
+    res.setHeader('Cache-Control', 'private, max-age=86400')
+    res.send(data)
+  } catch {
+    res.status(500).json({ error: '讀取預覽失敗' })
+  }
+})
+
+app.delete('/api/presentation/delete', requireAuth, async (req, res) => {
+  const { slug, name } = req.body ?? {}
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const dir = pptxDir(hostInsightsDir, slug)
+
+  // 一份簡報 = {name}.pptx + {name}.spec.json + {name}.discovery.json + 每一版
+  // {name}.outline.v{N}.json + {name}/(預覽縮圖資料夾)。逐一刪除,並確保每個目標路徑
+  // 都仍在 pptx-{slug} 資料夾內(擋路徑穿越)。
+  const targets = [
+    path.join(dir, `${name}.pptx`),
+    path.join(dir, `${name}.spec.json`),
+    path.join(dir, `${name}.discovery.json`),
+    path.join(dir, name),
+  ]
+  try {
+    for (let rev = 1; rev <= 20; rev++) {
+      targets.push(path.join(dir, `${name}.outline.v${rev}.json`))
+    }
+    for (const t of targets) {
+      if (!t.startsWith(dir + path.sep)) continue
+      if (fs.existsSync(t)) fs.rmSync(t, { recursive: true, force: true })
+    }
+    res.json({ success: true })
+  } catch (err) {
+    console.error('[presentation] delete error:', err.message)
+    res.status(500).json({ error: '刪除失敗' })
+  }
 })
 
 // ── Market Analyzer ───────────────────────────────────────────────────────────
@@ -2458,6 +3096,745 @@ app.get('/api/tech/result', requireAuth, async (req, res) => {
   res.json({ ready: fs.existsSync(hostPath) })
 })
 
+// ── Blog Rewriter（技術分享文章 → 部落格文章，由 clawpm-blog-rewriter sidecar 改寫）──
+
+app.post('/api/blog/rewrite', requireAuth, async (req, res) => {
+  const { slug, techName } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(techName)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const techPath = techFilePath(hostInsightsDir, slug, techName)
+
+  if (!techPath || !fs.existsSync(techPath)) return res.status(404).json({ error: '找不到來源技術文章' })
+
+  let sourceText
+  try {
+    sourceText = fs.readFileSync(techPath, 'utf8')
+  } catch {
+    return res.status(500).json({ error: '讀取技術文章失敗' })
+  }
+
+  const now = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  const name = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+  const runDir = blogRunDir(hostInsightsDir, slug, name)
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(runDir, { recursive: true })
+  } catch {
+    return res.status(500).json({ error: '建立輸出資料夾失敗' })
+  }
+
+  res.json({ success: true, name })
+
+  // fire-and-forget：實際改寫由 blog-rewriter sidecar 處理（LLM 改寫+翻譯+分類+產圖，約 1–3 分鐘），
+  // 前端用 /api/blog/result 輪詢 index.md 是否已寫入來判斷完成，比照 /api/tech/analyze 的既有模式。
+  ;(async () => {
+    try {
+      const upstream = await fetch(`${BLOG_REWRITER_URL}/rewrite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source_text: sourceText }),
+        // pipeline 本身內部已對封面圖產生設了逾時，這裡再設一層上限，避免 sidecar
+        // 卡住時前端無限輪詢卻永遠等不到 error.json
+        signal: AbortSignal.timeout(5 * 60 * 1000),
+      })
+      if (!upstream.ok) {
+        const detail = await upstream.text().catch(() => '')
+        throw new Error(`blog-rewriter 服務錯誤 (${upstream.status}): ${detail}`)
+      }
+      const data = await upstream.json()
+
+      if (data.feature_image_base64) {
+        fs.writeFileSync(path.join(runDir, 'feature.png'), Buffer.from(data.feature_image_base64, 'base64'))
+      }
+      // 內文引用的圖片：sidecar 沒有 workspace 存取權，只回傳 (原始路徑, 新檔名) 對照表。
+      // 技術分享文章裡的圖片絕大多數是相對於來源文章的本地路徑（project-insights/_assets/），
+      // 用複製的比較快也不會遇到外部服務要求登入的問題；只有真正的 http(s) 網址才需要下載。
+      // 本地路徑的圖片若查得到 _assets/manifest.json 記錄的原始 KMS 來源，記進 imageOrigins，
+      // 供發布到 Hugo repo 時把圖片路徑換回原始 KMS 路徑（而不是把下載下來的複本一起帶過去）。
+      const assetsManifest = readJsonSafe(path.join(assetsDirFor(hostInsightsDir), 'manifest.json')) || {}
+      const imageOrigins = {}
+      for (const img of (data.image_map || [])) {
+        if (!img?.filename || img.filename.includes('..') || img.filename.includes('/') || img.filename.includes('\\')) continue
+        const destPath = path.join(runDir, img.filename)
+        const origPath = img.original_path || ''
+        try {
+          if (/^https?:\/\//i.test(origPath)) {
+            const imgRes = await fetch(origPath, { signal: AbortSignal.timeout(15000) })
+            if (imgRes.ok) {
+              fs.writeFileSync(destPath, Buffer.from(await imgRes.arrayBuffer()))
+            } else {
+              console.warn(`[blog] image download failed (${imgRes.status}): ${origPath}`)
+            }
+          } else {
+            const localSrc = path.resolve(path.dirname(techPath), origPath)
+            if (localSrc.startsWith(hostInsightsDir + path.sep) && fs.existsSync(localSrc)) {
+              fs.copyFileSync(localSrc, destPath)
+              const kmsOrigin = assetsManifest[path.basename(localSrc)]
+              if (kmsOrigin) imageOrigins[img.filename] = kmsOrigin
+            } else {
+              console.warn(`[blog] local image not found or out of scope: ${origPath} -> ${localSrc}`)
+            }
+          }
+        } catch (err) {
+          console.warn(`[blog] failed to resolve image ${origPath}:`, err.message)
+        }
+      }
+      fs.writeFileSync(
+        path.join(runDir, 'meta.json'),
+        JSON.stringify({
+          ...(data.meta || {}),
+          sourceTech: techName,
+          createdAt: now.toISOString(),
+          ...(Object.keys(imageOrigins).length > 0 ? { imageOrigins } : {}),
+        }, null, 2),
+        'utf8'
+      )
+      // index.md 最後才寫，讓 /api/blog/result 用它的存在當作「轉換完成」的訊號
+      fs.writeFileSync(path.join(runDir, 'index.en.md'), data.content_en || '', 'utf8')
+      fs.writeFileSync(path.join(runDir, 'index.md'), data.content_zh || '', 'utf8')
+    } catch (err) {
+      console.error('[blog] rewrite error:', err.message)
+      try {
+        fs.writeFileSync(path.join(runDir, 'error.json'), JSON.stringify({ error: err.message }), 'utf8')
+      } catch {}
+    }
+  })()
+})
+
+app.get('/api/blog/list', requireAuth, async (req, res) => {
+  const { slug, techName } = req.query
+
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = blogDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ drafts: [] })
+
+  try {
+    const drafts = fs.readdirSync(dir)
+      .filter(name => /^\d{8}-\d{6}$/.test(name) && fs.statSync(path.join(dir, name)).isDirectory())
+      .map(name => {
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)} ${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, name)).mtimeMs } catch {}
+        let sourceTech = null
+        let published = false
+        let publishedAt = null
+        try {
+          const meta = JSON.parse(fs.readFileSync(path.join(dir, name, 'meta.json'), 'utf8'))
+          sourceTech = meta.sourceTech || null
+          published = meta.published === true
+          publishedAt = meta.publishedAt || null
+        } catch {}
+        const ready = fs.existsSync(path.join(dir, name, 'index.md'))
+        let error = null
+        if (!ready && fs.existsSync(path.join(dir, name, 'error.json'))) {
+          try { error = JSON.parse(fs.readFileSync(path.join(dir, name, 'error.json'), 'utf8')).error } catch { error = '轉換失敗' }
+        }
+        return { name, displayDate, mtime, sourceTech, ready, error, published, publishedAt }
+      })
+      .filter(d => !techName || d.sourceTech === techName)
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ drafts })
+  } catch {
+    res.status(500).json({ error: '讀取部落格草稿清單失敗' })
+  }
+})
+
+app.get('/api/blog/result', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  const ready = fs.existsSync(path.join(runDir, 'index.md'))
+  let error = null
+  if (!ready && fs.existsSync(path.join(runDir, 'error.json'))) {
+    try { error = JSON.parse(fs.readFileSync(path.join(runDir, 'error.json'), 'utf8')).error } catch { error = '轉換失敗' }
+  }
+  res.json({ ready, error })
+})
+
+app.get('/api/blog/file', requireAuth, async (req, res) => {
+  const { slug, name, lang } = req.query
+  const safeLang = lang === 'en' ? 'en' : 'zh'
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+  const filePath = path.join(runDir, safeLang === 'en' ? 'index.en.md' : 'index.md')
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf8')
+    res.json({ content, name, lang: safeLang })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/blog/file', requireAuth, async (req, res) => {
+  const { slug, name, lang, content } = req.body ?? {}
+  const safeLang = lang === 'en' ? 'en' : 'zh'
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(runDir, { recursive: true })
+    fs.writeFileSync(path.join(runDir, safeLang === 'en' ? 'index.en.md' : 'index.md'), content, 'utf8')
+    res.json({ success: true, name, lang: safeLang })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/blog/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(runDir)) return res.status(404).json({ error: '草稿不存在' })
+
+  try {
+    fs.rmSync(runDir, { recursive: true, force: true })
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除失敗' })
+  }
+})
+
+// 把 index.md/index.en.md 裡 `![alt](檔名)` 的圖片，換成 imageOrigins 記錄的原始 KMS 路徑
+// （沒有記錄的維持原檔名，例如 feature.png 這類非 KMS 來源的圖片，發布時照舊把檔案帶過去）。
+function applyImageOrigins(content, imageOrigins) {
+  if (!content || !imageOrigins || Object.keys(imageOrigins).length === 0) return content
+  return content.replace(/!\[([^\]]*)\]\(([^)\s]+)(\s+"[^"]*")?\)/g, (whole, alt, src, title) =>
+    imageOrigins[src] ? `![${alt}](${imageOrigins[src]}${title || ''})` : whole)
+}
+
+app.post('/api/blog/publish', requireAuth, async (req, res) => {
+  const { slug, name } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(path.join(runDir, 'index.md'))) return res.status(404).json({ error: '草稿尚未完成，無法發布' })
+
+  let meta
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'))
+  } catch {
+    return res.status(500).json({ error: '讀取 meta.json 失敗' })
+  }
+
+  const postFolder = meta.publishedFolder || `${name}-${slug}`
+  const imageOrigins = meta.imageOrigins || {}
+
+  const files = {}
+  try {
+    const contentZh = fs.readFileSync(path.join(runDir, 'index.md'), 'utf8')
+    files['index.md'] = applyImageOrigins(contentZh, imageOrigins)
+    if (fs.existsSync(path.join(runDir, 'index.en.md'))) {
+      const contentEn = fs.readFileSync(path.join(runDir, 'index.en.md'), 'utf8')
+      files['index.en.md'] = applyImageOrigins(contentEn, imageOrigins)
+    }
+    files['meta.json'] = JSON.stringify(meta, null, 2)
+    // 只帶「沒有 KMS 來源紀錄」的圖片檔案（例如 feature.png）；有紀錄的已在上面換成原始路徑，不用複製。
+    for (const entry of fs.readdirSync(runDir)) {
+      if (entry === 'index.md' || entry === 'index.en.md' || entry === 'meta.json' || entry === 'error.json') continue
+      if (imageOrigins[entry]) continue
+      const entryPath = path.join(runDir, entry)
+      if (fs.statSync(entryPath).isFile()) files[entry] = fs.readFileSync(entryPath)
+    }
+  } catch {
+    return res.status(500).json({ error: '讀取草稿內容失敗' })
+  }
+
+  try {
+    await publishBlogDraft({ postFolder, files })
+  } catch (err) {
+    console.error('[blog] publish error:', err.message)
+    return res.status(500).json({ error: `發布失敗：${err.message}` })
+  }
+
+  const publishedAt = new Date().toISOString()
+  meta.published = true
+  meta.publishedAt = publishedAt
+  meta.publishedFolder = postFolder
+  try {
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8')
+  } catch (err) {
+    console.error('[blog] failed to persist published state:', err.message)
+  }
+
+  res.json({ success: true, publishedFolder: postFolder, publishedAt })
+})
+
+app.post('/api/blog/unpublish', requireAuth, async (req, res) => {
+  const { slug, name } = req.body ?? {}
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  let meta
+  try {
+    meta = JSON.parse(fs.readFileSync(path.join(runDir, 'meta.json'), 'utf8'))
+  } catch {
+    return res.status(500).json({ error: '讀取 meta.json 失敗' })
+  }
+  if (meta.published !== true || !meta.publishedFolder) {
+    return res.status(400).json({ error: '這篇草稿尚未發布' })
+  }
+
+  try {
+    await unpublishBlogDraft({ postFolder: meta.publishedFolder })
+  } catch (err) {
+    console.error('[blog] unpublish error:', err.message)
+    return res.status(500).json({ error: `取消發布失敗：${err.message}` })
+  }
+
+  meta.published = false
+  meta.unpublishedAt = new Date().toISOString()
+  try {
+    fs.writeFileSync(path.join(runDir, 'meta.json'), JSON.stringify(meta, null, 2), 'utf8')
+  } catch (err) {
+    console.error('[blog] failed to persist unpublished state:', err.message)
+  }
+
+  res.json({ success: true })
+})
+
+app.get('/api/blog/asset', async (req, res) => {
+  const { slug, name, file, token } = req.query
+
+  if (!validSlug(slug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
+    return res.status(400).json({ error: '無效的檔案名稱' })
+  }
+
+  let user
+  try {
+    const auth = req.headers.authorization ?? ''
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null
+    user = verifyToken(bearer || token)
+  } catch {
+    return res.status(401).json({ error: '未授權' })
+  }
+
+  const provisionUserId = await getProvisionUserId(user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const runDir = blogRunDir(path.join(paths.workspace, 'project-insights'), slug, name)
+  if (!runDir) return res.status(403).json({ error: '無權限' })
+
+  const hostPath = path.join(runDir, file)
+  if (!hostPath.startsWith(runDir + path.sep) || !fs.existsSync(hostPath)) {
+    return res.status(404).json({ error: '檔案不存在' })
+  }
+
+  const mimeByExt = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp' }
+  try {
+    const data = fs.readFileSync(hostPath)
+    res.setHeader('Content-Type', mimeByExt[path.extname(hostPath).toLowerCase()] || 'application/octet-stream')
+    res.setHeader('Cache-Control', 'private, max-age=86400')
+    res.send(data)
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+// ── Skill Management ──────────────────────────────────────────────────────────
+// 系統範本技能（SKILL_NAMES，見 WorkspaceManager.js）唯讀，僅能複製為自訂技能。
+// 自訂技能可自由編輯／刪除／發動；技能資料夾本身即唯一真相來源，不另建中繼資料。
+
+function skillRunDir(hostInsightsDir, skillSlug, projectSlug) {
+  return path.join(hostInsightsDir, `custom-${skillSlug}-${projectSlug}`)
+}
+
+function skillRunFilePath(hostInsightsDir, skillSlug, projectSlug, name) {
+  const dir = skillRunDir(hostInsightsDir, skillSlug, projectSlug)
+  const safeFile = name.endsWith('.md') ? name : `${name}.md`
+  const full = path.join(dir, safeFile)
+  if (!full.startsWith(dir + path.sep)) return null
+  return full
+}
+
+app.get('/api/skills', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  res.json({ skills: listSkills(paths) })
+})
+
+app.get('/api/skills/:slug', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const skill = readSkill(paths, slug)
+  if (!skill) return res.status(404).json({ error: '技能不存在' })
+
+  res.json(skill)
+})
+
+app.post('/api/skills', requireAuth, requireAdmin, async (req, res) => {
+  const { slug, content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼（僅限小寫英數字與連字號）' })
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '技能內容不可為空' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    const result = createSkill(paths, slug, content)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.post('/api/skills/:slug/clone', requireAuth, requireAdmin, async (req, res) => {
+  const { slug } = req.params
+  const { newSlug, newName } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!skillSlugValid(newSlug)) return res.status(400).json({ error: '無效的新技能識別碼（僅限小寫英數字與連字號）' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    const result = cloneSkill(paths, slug, newSlug, newName)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// 依使用者的（可能簡短、不完整的）修改需求，請 AI 修正一份 SKILL.md 草稿並整份回傳。
+// 純運算、不寫檔——實際落地交由前端 diff 審閱後、使用者按「儲存」時走既有的建立/更新路由。
+app.post('/api/skills/revise', requireAuth, requireAdmin, async (req, res) => {
+  const { content, instruction } = req.body ?? {}
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '缺少目前的 SKILL.md 內容' })
+  if (typeof instruction !== 'string' || !instruction.trim()) return res.status(400).json({ error: '請描述想要的修改' })
+
+  const promptParts = [
+    '你是一位技能（Skill）文件編輯助手。以下是一份 SKILL.md 的目前內容，使用者提出了一個修改需求（可能簡短、不完整），請你依需求修改這份文件。',
+    '',
+    '【目前的 SKILL.md 內容】',
+    '```',
+    content,
+    '```',
+    '',
+    `【使用者的修改需求】\n${instruction.trim()}`,
+    '',
+    '【規則】',
+    '- 只修改與使用者需求相關的部分，其餘內容盡量保持原樣（包含未提及的 Workflow 步驟、輸出格式等段落）',
+    '- 必須保留合法的 --- frontmatter 區塊，且 name、description 欄位不可缺漏，除非使用者明確要求變更',
+    '- 不要輸出任何說明文字、前言或客套話，直接輸出修改後的完整 SKILL.md 內容，並以 ```markdown 包住整份內容',
+  ]
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const client = getClientForUser(provisionUserId)
+    const sessionKey = makeScopedSessionKey('skill-revise-' + Date.now())
+    const lastMsg = await sendAndStreamOrThrow(client, sessionKey, promptParts.join('\n'))
+    const revised = stripCodeFence(lastMsg.content)
+    if (!revised.trim()) return res.status(502).json({ error: 'AI 回覆為空，請重試' })
+    res.json({ success: true, content: revised })
+  } catch (err) {
+    console.error('[skills] revise error:', err.message)
+    res.status(500).json({ error: err.message || 'AI 修正失敗' })
+  }
+})
+
+app.put('/api/skills/:slug', requireAuth, requireAdmin, async (req, res) => {
+  const { slug } = req.params
+  const { content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (isProtectedSkill(slug)) return res.status(403).json({ error: '系統範本技能不可編輯，請先複製為自訂技能' })
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: '技能內容不可為空' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    const result = updateSkill(paths, slug, content)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.delete('/api/skills/:slug', requireAuth, requireAdmin, async (req, res) => {
+  const { slug } = req.params
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (isProtectedSkill(slug)) return res.status(403).json({ error: '系統範本技能不可刪除' })
+
+  try {
+    const provisionUserId = await getProvisionUserId(req.user.userId)
+    const paths = getUserPaths(provisionUserId)
+    deleteSkill(paths, slug)
+    res.json({ success: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+// ── Skill Management：AI 產生技能草稿 ────────────────────────────────────────
+
+app.post('/api/skills/generate', requireAuth, requireAdmin, async (req, res) => {
+  const { description } = req.body ?? {}
+  if (typeof description !== 'string' || !description.trim()) {
+    return res.status(400).json({ error: '請描述想要的技能' })
+  }
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const draftId = createDraftId(paths)
+  const sessionKey = makeScopedSessionKey('skill-creator')
+  const draftContainerFullPath = `${CONTAINER_WORKSPACE}/${draftContainerPath(draftId)}`
+
+  const parts = [
+    '請使用 skill-creator 技能，依照以下需求草擬一個新技能的 SKILL.md 草稿。',
+    '',
+    `需求描述：${description.trim()}`,
+    '',
+    `草稿輸出路徑：${draftContainerFullPath}`,
+    '（這是 workspace 底下的暫存路徑，不在 skills/ 目錄下；請只寫這一個檔案，不要建立或修改 skills/ 底下任何正式技能資料夾）',
+    '',
+    '請依 skill-creator 的 Workflow 完整執行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), draftId })
+})
+
+app.get('/api/skills/drafts/:draftId', requireAuth, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  res.json(readDraft(paths, req.params.draftId))
+})
+
+app.post('/api/skills/drafts/:draftId/save', requireAuth, requireAdmin, async (req, res) => {
+  const { draftId } = req.params
+  const { slug, content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼（僅限小寫英數字與連字號）' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const draft = readDraft(paths, draftId)
+  if (!draft.ready) return res.status(404).json({ error: '草稿不存在或尚未產生完成' })
+
+  // Allow the user to tweak the draft in the review step before saving; falls back to the AI-written draft as-is.
+  const finalContent = (typeof content === 'string' && content.trim()) ? content : draft.content
+
+  try {
+    const result = createSkill(paths, slug, finalContent)
+    deleteDraft(paths, draftId)
+    res.json({ success: true, ...result })
+  } catch (err) {
+    res.status(400).json({ error: err.message })
+  }
+})
+
+app.delete('/api/skills/drafts/:draftId', requireAuth, requireAdmin, async (req, res) => {
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  deleteDraft(paths, req.params.draftId)
+  res.json({ success: true })
+})
+
+// ── Skill Management：通用發動（針對特定專案執行任一技能）────────────────────
+
+app.post('/api/skills/:slug/run', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, projectName, instruction } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const skill = readSkill(paths, slug)
+  if (!skill) return res.status(404).json({ error: '技能不存在' })
+
+  const fm = parseFrontmatter(skill.content) || {}
+  const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
+  const userInstruction = (typeof instruction === 'string' && instruction.trim()) ? instruction.trim() : ''
+
+  const timestamp = newTimestamp()
+  const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
+  const recordFolderContainerPath = `${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}`
+  const docFolderContainerPath = `${CONTAINER_WORKSPACE}/ftp_data/doc`
+  const runFolderContainer = `${CONTAINER_INSIGHTS_DIR}/custom-${slug}-${projectSlug}`
+  const containerOutputPath = `${runFolderContainer}/${timestamp}.md`
+  const sessionKey = makeScopedSessionKey(`skill-${slug}`)
+
+  const parts = [
+    `請使用 skills/${slug}（${fm.name || slug}）技能，針對「${displayName}」專案執行以下任務。`,
+    '',
+    `技能說明：${fm.description || '（無）'}`,
+    '',
+    `專案洞察來源檔案（若存在）：${projectContainerPath}`,
+    `專案會議記錄資料夾（若存在，請列出並讀取其中所有 .md 檔案）：${recordFolderContainerPath}/`,
+    `專案文件資料夾（若存在且與任務相關，請一併參考）：${docFolderContainerPath}/`,
+    '',
+    userInstruction ? `使用者補充指令：${userInstruction}` : '使用者未提供補充指令，請依此技能 SKILL.md 定義的預設行為執行。',
+    '',
+    '請依你的 SKILL.md 定義完整執行工作流程。',
+    `完成後，請將最終輸出寫入：${containerOutputPath}（若資料夾不存在，請先建立 ${runFolderContainer}/）`,
+    '',
+    '最後檢查所有的 Markdown 檔案寫入時，\\n 要取代成斷行。',
+  ]
+
+  res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: timestamp })
+})
+
+app.get('/api/skills/:slug/runs', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = skillRunDir(path.join(paths.workspace, 'project-insights'), slug, projectSlug)
+
+  if (!fs.existsSync(dir)) return res.json({ reports: [] })
+
+  try {
+    const reports = fs.readdirSync(dir)
+      .filter(f => /^\d{8}-\d{6}\.md$/.test(f))
+      .map((f) => {
+        const name = f.replace(/\.md$/, '')
+        const d = name.slice(0, 8)
+        const t = name.slice(9)
+        const displayDate = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)} ${t.slice(0, 2)}:${t.slice(2, 4)}:${t.slice(4, 6)}`
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, displayDate, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ reports })
+  } catch {
+    res.status(500).json({ error: '讀取執行紀錄清單失敗' })
+  }
+})
+
+app.get('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, name } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    const content = fs.readFileSync(hostPath, 'utf8')
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, name, content } = req.body ?? {}
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, name } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
+  }
+})
+
+app.get('/api/skills/:slug/runs/result', requireAuth, async (req, res) => {
+  const { slug } = req.params
+  const { projectSlug, filename } = req.query
+  if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
+  if (!validSlug(projectSlug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = skillRunFilePath(path.join(paths.workspace, 'project-insights'), slug, projectSlug, filename)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  res.json({ ready: fs.existsSync(hostPath) })
+})
+
 // ── Meeting Record Distribution ───────────────────────────────────────────────
 
 app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, res) => {
@@ -2539,6 +3916,7 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
   if (imageSourcePaths.length > 0) {
     const assetsDir = `${CONTAINER_INSIGHTS_DIR}/_assets`
     const suggestionsPath = `${assetsDir}/suggestions-${meetingDate}.json`
+    const imageManifestPath = `${assetsDir}/manifest-${meetingDate}.json`
     parts.push(
       ``,
       `## 補充文件圖片萃取與「建議」分類（不要自己決定插入哪個專案，也不要修改任何 record-*.md）`,
@@ -2550,8 +3928,8 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
       ...outputEntries.map(e => `- ${e.name}（${e.slug}）${e.description ? `：${e.description}` : '（尚無描述）'}`),
       ``,
       `圖片最終要分到哪個專案，由使用者在前端介面手動確認，你只需要負責萃取與給建議，不要自己寫入任何專案的記錄檔案：`,
-      `1. 執行：python3 ${IMAGE_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir}`,
-      `2. 讀取產生的 ${assetsDir}/manifest.json，並用 Read 工具逐一實際開啟、親眼檢視每一張圖片本身的畫面內容，把圖片裡的關鍵文字、術語、表格欄位都看清楚（不要只看大概構圖，更不能只憑 manifest 裡的文字欄位猜測內容）`,
+      `1. 執行：python3 ${IMAGE_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir} --manifest ${imageManifestPath}`,
+      `2. 讀取產生的 ${imageManifestPath}，並用 Read 工具逐一實際開啟、親眼檢視每一張圖片本身的畫面內容，把圖片裡的關鍵文字、術語、表格欄位都看清楚（不要只看大概構圖，更不能只憑 manifest 裡的文字欄位猜測內容）`,
       `3. 對 manifest 裡「每一張」圖片，先判斷這張圖片本身的類型（例如：數據折線圖／長條圖、UI 截圖、流程圖、架構圖、表格…），再依照圖片裡實際看到的內容給出建議（找不到合理對應時 suggestedSlug 給 null，不要硬猜）：`,
       `   - 對照圖片中出現的具體名詞（工具名、程式庫名、API、模組名、版本號、品牌／產品名等）與上方「已知專案清單」`,
       `   - manifest 裡的 sourceFile/location/captionHint 都只是文件結構上的輔助線索，不能當作判斷依據。captionHint 尤其要小心：它只是該投影片或該頁文件裡離圖片最近的一段文字（例如投影片標題、頁面第一行字），**不是圖片內容的描述**，常常跟圖片實際畫面完全無關，絕對不能直接拿來當 suggestedCaption 或用來判斷 suggestedSlug`,
@@ -2563,6 +3941,17 @@ app.post('/api/meeting-record/prepare-distribution', requireAuth, async (req, re
       `   {"images": [{"file": "{manifest 中的 file 檔名}", "suggestedSlug": "{已知專案清單中的 slug 或 null}", "suggestedCaption": "{一句話說明這張圖在說什麼}", "reason": "{為什麼建議這個專案，或為什麼判斷不相關}"}, ...]}`,
       `   陣列必須包含 manifest 裡的每一張圖片，數量要對得上，不可以省略`,
       `5. 完成後告知使用者：補充文件已萃取出幾張圖片、建議寫好了，請到前端「圖片分類確認」面板逐一確認後才會真正寫入專案記錄`,
+    )
+
+    parts.push(
+      ``,
+      `## 補充文件 ess-kms 連結萃取（只萃取連結，不要抓內容、不要分類、不要寫任何檔案）`,
+      ``,
+      `上述補充文件內文可能夾帶 https://ess-kms.edgecenter.io/{path} 形式的知識庫連結。你只需要把這些連結萃取出來：`,
+      `1. 執行：python3 ${LINK_EXTRACT_SCRIPT} ${imageSourcePaths.map(p => `"${p}"`).join(' ')} --output-dir ${assetsDir} --manifest ${assetsDir}/links-manifest-${meetingDate}.json`,
+      `2. 這支腳本會產生 ${assetsDir}/links-manifest-${meetingDate}.json（列出所有 ess-kms 連結的 path）`,
+      `3. 你「不需要」也「不可以」自己去抓這些連結的頁面內容、判斷專案歸屬或寫入任何專案記錄——頁面內容抓取與分類建議一律由後端負責`,
+      `4. 完成後告知使用者：補充文件已萃取出幾條 ess-kms 連結，請到前端「連結分類確認」面板逐一確認後才會真正寫入專案`,
     )
   }
 
@@ -2618,7 +4007,7 @@ app.get('/api/meeting-record/image-review', requireAuth, async (req, res) => {
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
-  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifestPath = imageManifestPathFor(hostInsightsDir, meetingDate)
 
   const manifest = readJsonSafe(manifestPath)
   const generatedAt = manifest?.generatedAt ? new Date(manifest.generatedAt).getTime() : 0
@@ -2664,7 +4053,7 @@ app.post('/api/meeting-record/image-review/confirm', requireAuth, async (req, re
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
-  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifestPath = imageManifestPathFor(hostInsightsDir, meetingDate)
   const manifest = readJsonSafe(manifestPath)
   const imgMeta = manifest?.images?.find(i => i.file === file)
   if (!imgMeta) return res.status(404).json({ error: '找不到對應的圖片（manifest 已變更或過期）' })
@@ -2720,15 +4109,16 @@ app.post('/api/meeting-record/image-review/confirm', requireAuth, async (req, re
 // 給使用者在前端快速測試：對單一一張圖片，直接請 agent 用 Read 工具親眼檢視並回報一句話描述，
 // 不寫入任何 suggestions/assignments 檔案，純粹用來驗證目前這個環境的模型是否真的能讀到圖片畫面內容。
 app.post('/api/meeting-record/image-review/test-caption', requireAuth, async (req, res) => {
-  const { file } = req.body ?? {}
+  const { file, meetingDate } = req.body ?? {}
   if (!file || typeof file !== 'string' || file.includes('..') || file.includes('/') || file.includes('\\')) {
     return res.status(400).json({ error: '無效的檔案名稱' })
   }
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
   const hostInsightsDir = path.join(paths.workspace, 'project-insights')
-  const manifestPath = path.join(assetsDirFor(hostInsightsDir), 'manifest.json')
+  const manifestPath = imageManifestPathFor(hostInsightsDir, meetingDate)
   const manifest = readJsonSafe(manifestPath)
   const imgMeta = manifest?.images?.find(i => i.file === file)
   if (!imgMeta) return res.status(404).json({ error: '找不到對應的圖片（manifest 已變更或過期）' })
@@ -2749,6 +4139,296 @@ app.post('/api/meeting-record/image-review/test-caption', requireAuth, async (re
     res.json({ success: true, caption })
   } catch (err) {
     res.status(502).json({ error: err.message || 'AI 測試判讀失敗' })
+  }
+})
+
+// ── 補充文件 ess-kms 連結分發 ────────────────────────────────────────────────
+// 讀 links-manifest.json（agent 萃取的 URL 清單），逐條 GraphQL 抓 title+content 並請 LLM
+// 給專案建議，結果快取到 link-review-{date}.json；再合併使用者的 link-assignments-{date}.json。
+app.get('/api/meeting-record/link-review', requireAuth, async (req, res) => {
+  const { meetingDate } = req.query
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const manifestPath = linksManifestPathFor(hostInsightsDir, meetingDate)
+
+  const manifest = readJsonSafe(manifestPath)
+  // agent 有時沒寫 generatedAt，改用檔案 mtime 當新鮮度依據（manifest 每次分發都會重寫）。
+  let manifestStamp = manifest?.generatedAt ? new Date(manifest.generatedAt).getTime() : 0
+  if (!manifestStamp) {
+    try { manifestStamp = fs.statSync(manifestPath).mtimeMs } catch {}
+  }
+  const fresh = !!manifestStamp && (Date.now() - manifestStamp <= IMAGE_REVIEW_FRESHNESS_MS)
+
+  // 正規化每筆連結（處理 path 塞完整 URL、含 locale 前綴、缺欄位等變異），依 path 去重。
+  const normalized = []
+  const seenPaths = new Set()
+  for (const entry of (manifest?.links || [])) {
+    const link = normalizeKmsLink(entry)
+    if (!link || seenPaths.has(link.path)) continue
+    seenPaths.add(link.path)
+    normalized.push(link)
+  }
+
+  if (!fresh || normalized.length === 0) {
+    return res.json({ fresh, links: [], allConfirmed: true })
+  }
+
+  // 快取：只要 manifest 沒換新（stamp 相同），就沿用已抓好的 title/content/建議，避免每次輪詢都重打 GraphQL 與 LLM。
+  // 前綴 cache 版本號：修了 normalize/localize 邏輯後，讓舊的錯誤快取自動失效重建。
+  const cacheKey = `v3-${manifestStamp}`
+  const cachePath = linkReviewCachePathFor(hostInsightsDir, meetingDate)
+  let cache = readJsonSafe(cachePath)
+  if (!cache || cache.cacheKey !== cacheKey) {
+    const projectsData = readJsonSafe(path.join(hostInsightsDir, 'reviewer', 'projects.json'))
+    const projects = (projectsData?.projects || [])
+      .filter(p => p.name && (p.slug || p.id))
+      .map(p => ({ name: p.name, slug: p.slug || p.id, description: p.description || '' }))
+
+    const assetsDir = assetsDirFor(hostInsightsDir)
+    const items = []
+    for (const link of normalized) {
+      const page = await fetchKmsPage(link.path, link.locale)
+      if (!page) {
+        items.push({
+          path: link.path, url: link.url, sourceFile: link.sourceFile, location: link.location,
+          title: link.path, content: '', excerpt: '', suggestedSlug: null,
+          reason: ESS_KMS_GRAPHQL_TOKEN
+            ? '無法透過 GraphQL 取得此頁面內容（可能是路徑錯誤或權限不足）'
+            : '後端未設定 ESS_KMS_GRAPHQL_TOKEN，無法抓取頁面內容',
+          fetchError: true,
+        })
+        continue
+      }
+      // 抓內容當下就把站內圖片下載到 _assets/ 並改寫路徑，讓「確認前」的預覽也看得到圖。
+      const content = (await localizeKmsImages(page.content, assetsDir)).content
+      const suggestion = await suggestLinkProject(provisionUserId, page.title, content, projects)
+      items.push({
+        path: link.path, url: link.url, sourceFile: link.sourceFile, location: link.location,
+        title: page.title, content,
+        excerpt: content.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\s+/g, ' ').trim().slice(0, 200),
+        suggestedSlug: suggestion.suggestedSlug, reason: suggestion.reason, fetchError: false,
+      })
+    }
+    cache = { cacheKey, fetchedAt: new Date().toISOString(), items }
+    writeJsonSafe(cachePath, cache)
+  }
+
+  const assignments = readJsonSafe(linkAssignmentsPathFor(hostInsightsDir, meetingDate)) || {}
+  const links = (cache.items || []).map(item => {
+    const assignment = assignments[item.path]
+    return {
+      path: item.path,
+      url: item.url,
+      sourceFile: item.sourceFile,
+      location: item.location,
+      title: item.title,
+      excerpt: item.excerpt,
+      suggestedSlug: item.suggestedSlug ?? null,
+      reason: item.reason ?? '',
+      fetchError: !!item.fetchError,
+      currentSlug: assignment?.slug ?? null,
+      skipped: !!assignment?.skipped,
+      confirmed: !!assignment,
+    }
+  })
+
+  res.json({ fresh, links, allConfirmed: links.every(l => l.confirmed) })
+})
+
+// 回傳單條連結抓回的完整 Markdown 內容，供前端預覽。
+app.get('/api/meeting-record/link-review/preview', requireAuth, async (req, res) => {
+  const { meetingDate, path: pagePath } = req.query
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+  if (!pagePath || typeof pagePath !== 'string') return res.status(400).json({ error: '缺少 path 參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const cache = readJsonSafe(linkReviewCachePathFor(hostInsightsDir, meetingDate))
+  const item = (cache?.items || []).find(i => i.path === pagePath)
+  if (!item) return res.status(404).json({ error: '找不到對應的連結（快取已變更或過期）' })
+
+  // 直接在後端把本地化圖片路徑（../_assets/<file>）改寫成帶 token 的 asset 端點，讓任何前端
+  // （不論版本）都能直接顯示圖片，不需前端再做一次替換。<img> 無法帶 Authorization header，
+  // 所以走 ?token= query（同 asset 端點既有設計）。
+  const bearer = (req.headers.authorization || '').startsWith('Bearer ')
+    ? req.headers.authorization.slice(7) : ''
+  const rewriteAssetPaths = (md) => (md || '').replace(
+    /!\[([^\]]*)\]\((?:\.\.\/)?_assets\/([^)\s]+)\)/g,
+    (_, alt, file) => `![${alt}](/api/project-insights/asset?file=${encodeURIComponent(file)}&token=${encodeURIComponent(bearer)})`,
+  )
+
+  // 已分類的連結：直接回傳已寫入 supplements 的檔案（圖片已下載、路徑已本地化），預覽即可看到圖。
+  const assignment = (readJsonSafe(linkAssignmentsPathFor(hostInsightsDir, meetingDate)) || {})[pagePath]
+  if (assignment?.slug && assignment?.file) {
+    const filePath = supplementFilePath(hostInsightsDir, assignment.slug, assignment.file)
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        return res.json({ title: item.title, content: rewriteAssetPaths(fs.readFileSync(filePath, 'utf8')), url: item.url, localized: true })
+      } catch {}
+    }
+  }
+
+  res.json({ title: item.title, content: rewriteAssetPaths(item.content), url: item.url, localized: false })
+})
+
+app.post('/api/meeting-record/link-review/confirm', requireAuth, async (req, res) => {
+  const { meetingDate, path: pagePath, slug, skip } = req.body ?? {}
+
+  if (!validDateFilename(meetingDate)) return res.status(400).json({ error: '無效的日期格式' })
+  if (!pagePath || typeof pagePath !== 'string') return res.status(400).json({ error: '無效的連結路徑' })
+  if (!skip && !validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostInsightsDir = path.join(paths.workspace, 'project-insights')
+  const cache = readJsonSafe(linkReviewCachePathFor(hostInsightsDir, meetingDate))
+  const item = (cache?.items || []).find(i => i.path === pagePath)
+  if (!item) return res.status(404).json({ error: '找不到對應的連結（快取已變更或過期）' })
+
+  const assignmentsPath = linkAssignmentsPathFor(hostInsightsDir, meetingDate)
+  const assignments = readJsonSafe(assignmentsPath) || {}
+  const previous = assignments[pagePath]
+
+  // 重指派：先刪掉先前寫進舊專案 supplements 資料夾的那份檔案，避免同一頁殘留在兩個專案。
+  if (previous?.slug && previous.file && previous.slug !== (skip ? null : slug)) {
+    const oldFile = path.join(supplementsDir(hostInsightsDir, previous.slug), previous.file)
+    if (oldFile.startsWith(supplementsDir(hostInsightsDir, previous.slug) + path.sep) && fs.existsSync(oldFile)) {
+      try { fs.unlinkSync(oldFile) } catch {}
+    }
+  }
+
+  if (skip) {
+    assignments[pagePath] = { slug: null, file: null, skipped: true, confirmedAt: new Date().toISOString() }
+    writeJsonSafe(assignmentsPath, assignments)
+    return res.json({ success: true, path: pagePath, slug: null, skipped: true })
+  }
+
+  if (item.fetchError || !item.content) {
+    return res.status(400).json({ error: '此連結沒有可寫入的內容（抓取失敗）' })
+  }
+
+  const dir = supplementsDir(hostInsightsDir, slug)
+  fs.mkdirSync(dir, { recursive: true })
+
+  // 重指派回同一專案時沿用舊檔名覆寫，否則產生新的唯一檔名。
+  const filename = (previous?.slug === slug && previous?.file)
+    ? previous.file
+    : sanitizeTitleToFilename(item.title, dir)
+  const filePath = path.join(dir, filename)
+  if (!filePath.startsWith(dir + path.sep)) return res.status(400).json({ error: '無效的檔名' })
+
+  const header = [
+    `# ${item.title}`,
+    ``,
+    `> 來源：${item.url}`,
+    `> 補充文件連結，會議日期：${meetingDate}`,
+    ``,
+  ].join('\n')
+  let body = (item.content || '').replace(/\\n/g, '\n')
+  // 把內文引用的 ess-kms 站內圖片（/xdept/public/... 等）下載到 _assets/ 並改寫成本地路徑。
+  body = (await localizeKmsImages(body, assetsDirFor(hostInsightsDir))).content
+  fs.writeFileSync(filePath, `${header}${body}\n`, 'utf8')
+
+  assignments[pagePath] = { slug, file: filename, skipped: false, confirmedAt: new Date().toISOString() }
+  writeJsonSafe(assignmentsPath, assignments)
+
+  res.json({ success: true, path: pagePath, slug, file: filename, skipped: false })
+})
+
+// ── 專案補充資料（supplements-{slug}/，由 ess-kms 連結分發寫入） ──────────────
+app.get('/api/project-supplements/list', requireAuth, async (req, res) => {
+  const { slug } = req.query
+  if (!validSlug(slug)) return res.status(400).json({ error: '無效的專案識別碼' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const dir = supplementsDir(path.join(paths.workspace, 'project-insights'), slug)
+
+  if (!fs.existsSync(dir)) return res.json({ records: [] })
+
+  try {
+    const records = fs.readdirSync(dir)
+      .filter(f => f.endsWith('.md'))
+      .map(f => {
+        const name = f.replace(/\.md$/, '')
+        let mtime = 0
+        try { mtime = fs.statSync(path.join(dir, f)).mtimeMs } catch {}
+        return { name, mtime }
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+
+    res.json({ records })
+  } catch {
+    res.status(500).json({ error: '讀取補充資料清單失敗' })
+  }
+})
+
+app.get('/api/project-supplements/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+  if (!validSlug(slug) || !validSupplementName(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = supplementFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    let content = fs.readFileSync(hostPath, 'utf8')
+    // 修復既有檔案：若內文還有未下載的 ess-kms 站內圖片，下載到 _assets/ 並改寫路徑後回寫檔案。
+    const assetsDir = assetsDirFor(path.join(paths.workspace, 'project-insights'))
+    const localized = await localizeKmsImages(content, assetsDir)
+    if (localized.changed) {
+      content = localized.content
+      try { fs.writeFileSync(hostPath, content, 'utf8') } catch {}
+    }
+    res.json({ content, name })
+  } catch {
+    res.status(500).json({ error: '讀取檔案失敗' })
+  }
+})
+
+app.patch('/api/project-supplements/file', requireAuth, async (req, res) => {
+  const { slug, name, content } = req.body ?? {}
+  if (!validSlug(slug) || !validSupplementName(name)) return res.status(400).json({ error: '無效的參數' })
+  if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = supplementFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+
+  try {
+    fs.mkdirSync(path.dirname(hostPath), { recursive: true })
+    fs.writeFileSync(hostPath, content, 'utf8')
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '儲存檔案失敗' })
+  }
+})
+
+app.delete('/api/project-supplements/file', requireAuth, async (req, res) => {
+  const { slug, name } = req.query
+  if (!validSlug(slug) || !validSupplementName(name)) return res.status(400).json({ error: '無效的參數' })
+
+  const provisionUserId = await getProvisionUserId(req.user.userId)
+  const paths = getUserPaths(provisionUserId)
+  const hostPath = supplementFilePath(path.join(paths.workspace, 'project-insights'), slug, name)
+
+  if (!hostPath) return res.status(403).json({ error: '無權限' })
+  if (!fs.existsSync(hostPath)) return res.status(404).json({ error: '檔案不存在' })
+
+  try {
+    fs.unlinkSync(hostPath)
+    res.json({ success: true, name })
+  } catch {
+    res.status(500).json({ error: '刪除檔案失敗' })
   }
 })
 

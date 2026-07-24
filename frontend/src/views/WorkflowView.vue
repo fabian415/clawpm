@@ -822,6 +822,68 @@
           </div>
         </div>
 
+        <!-- Link classification review (mandatory when supplementary docs had ess-kms links) -->
+        <div v-if="linkReviewLinks.length > 0" class="bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-900/40 rounded-2xl overflow-hidden">
+          <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2">
+            <h4 class="font-bold flex items-center gap-2">
+              <Link2 class="w-4 h-4 text-amber-500" />
+              連結分類確認 ({{ linkReviewLinks.length - unconfirmedLinkCount }} / {{ linkReviewLinks.length }})
+            </h4>
+            <div class="flex items-center gap-3">
+              <span v-if="unconfirmedLinkCount > 0" class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                還有 {{ unconfirmedLinkCount }} 條待確認，請手動選擇分類
+              </span>
+              <span v-else class="text-xs font-medium text-emerald-600 dark:text-emerald-400">全部已確認</span>
+              <button @click="loadLinkReview({ poll: true, manual: true })" :disabled="linkReviewRefreshing"
+                title="AI 建議仍在生成中？點此重新檢查"
+                class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-2 py-1 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50 flex items-center gap-1">
+                <RefreshCw :class="['w-3.5 h-3.5', linkReviewRefreshing && 'animate-spin']" />
+                重新整理建議
+              </button>
+            </div>
+          </div>
+          <div class="divide-y divide-slate-100 dark:divide-slate-800">
+            <div v-for="link in linkReviewLinks" :key="link.path" class="px-6 py-4">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-sm font-medium truncate">{{ link.title }}</p>
+                  <p class="text-xs text-slate-400 truncate">來源：{{ link.sourceFile }}（{{ link.location }}）</p>
+                  <a :href="link.url" target="_blank" rel="noopener" class="text-xs text-blue-500 hover:underline break-all">{{ link.url }}</a>
+                </div>
+                <button v-if="!link.fetchError" @click="previewLink(link)" title="預覽抓回的內容"
+                  class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-2.5 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap shrink-0">
+                  預覽內容
+                </button>
+              </div>
+              <p v-if="link.excerpt" class="text-xs text-slate-500 mt-1.5 line-clamp-2">{{ link.excerpt }}</p>
+              <p v-if="link.fetchError" class="text-xs text-red-500 mt-1.5">{{ link.reason || '無法抓取此連結的頁面內容' }}</p>
+
+              <template v-if="link.confirmed">
+                <p class="text-sm mt-2">
+                  <span v-if="link.skipped" class="text-slate-500">已標記為不相關</span>
+                  <span v-else class="text-emerald-600 dark:text-emerald-400 font-medium">已分類至「{{ projectName(link.currentSlug) }}」</span>
+                </p>
+                <button @click="link.confirmed = false" class="text-xs text-blue-600 hover:underline mt-1">重新指派</button>
+              </template>
+              <template v-else>
+                <p v-if="!link.fetchError && (link.suggestedSlug || link.reason)" class="text-xs text-slate-400 mt-2 mb-1.5">
+                  AI 建議：{{ link.suggestedSlug ? projectName(link.suggestedSlug) : '無對應專案' }}<span v-if="link.reason">（{{ link.reason }}）</span>
+                </p>
+                <div class="flex flex-wrap gap-2 items-start mt-1">
+                  <select v-if="!link.fetchError" v-model="link.selectedSlug" @change="link.touched = true" class="text-sm border border-slate-200 dark:border-slate-700 dark:bg-slate-800 rounded-lg px-2 py-1.5">
+                    <option value="" disabled>選擇專案...</option>
+                    <option v-for="p in insightsProjects" :key="p.slug || p.id" :value="p.slug || p.id">{{ p.name || p.title || p.slug || p.id }}</option>
+                  </select>
+                  <button v-if="!link.fetchError" @click="confirmLinkAssignment(link)" :disabled="link.saving"
+                    class="text-xs font-medium bg-blue-600 text-white px-3 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-50">確認</button>
+                  <button @click="confirmLinkAssignment(link, { skip: true })" :disabled="link.saving"
+                    class="text-xs font-medium border border-slate-200 dark:border-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50">不相關</button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+
         <!-- Distributed list -->
         <div v-if="distributedRecords.length > 0" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
           <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
@@ -846,13 +908,13 @@
           </p>
         </div>
 
-        <p v-if="unconfirmedImageCount > 0" class="text-xs text-center text-amber-600 dark:text-amber-400">
-          請先完成上方圖片分類確認，再開啟專案列表
+        <p v-if="unconfirmedImageCount + unconfirmedLinkCount > 0" class="text-xs text-center text-amber-600 dark:text-amber-400">
+          請先完成上方圖片與連結分類確認，再開啟專案列表
         </p>
 
         <!-- Open project list -->
-        <button @click="$emit('navigate', 'reviewerOverview')" :disabled="unconfirmedImageCount > 0"
-          :class="unconfirmedImageCount > 0
+        <button @click="$emit('navigate', 'reviewerOverview')" :disabled="unconfirmedImageCount + unconfirmedLinkCount > 0"
+          :class="unconfirmedImageCount + unconfirmedLinkCount > 0
             ? 'w-full bg-slate-300 dark:bg-slate-700 text-white font-bold py-3 rounded-xl cursor-not-allowed flex items-center justify-center gap-2'
             : 'w-full bg-slate-900 dark:bg-white dark:text-slate-900 text-white font-bold py-3 rounded-xl hover:opacity-90 transition-all flex items-center justify-center gap-2'">
           開啟專案列表 <ExternalLink class="w-4 h-4" />
@@ -886,6 +948,22 @@
       <X class="w-7 h-7" />
     </button>
     <img :src="assetUrl(lightboxImage)" class="max-w-full max-h-full rounded-lg shadow-2xl" @click.stop />
+  </div>
+
+  <!-- Link content preview modal -->
+  <div v-if="linkPreview" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" @click.self="linkPreview = null">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col" @click.stop>
+      <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+        <h4 class="font-bold truncate">{{ linkPreview.title }}</h4>
+        <button @click="linkPreview = null" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 shrink-0">
+          <X class="w-5 h-5" />
+        </button>
+      </div>
+      <div class="px-6 py-4 overflow-y-auto">
+        <p v-if="linkPreview.loading" class="text-sm text-slate-400">載入中…</p>
+        <div v-else class="md-preview text-sm text-slate-700 dark:text-slate-300 leading-relaxed" v-html="renderLinkPreview(linkPreview.content)"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Review Diff Preview Modal -->
@@ -1107,7 +1185,7 @@ import { marked } from 'marked'
 import {
   Check, UploadCloud, FileText, File, X, Brain, Plus, Sparkles,
   ExternalLink, ArrowLeft, ArrowRight, Loader2, AlertCircle, Mail, Send, Calendar,
-  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy, Image as ImageIcon, ZoomIn, RefreshCw
+  Download, Eye, FolderOpen, BookMarked, Pencil, BookCopy, Image as ImageIcon, ZoomIn, RefreshCw, Link2
 } from 'lucide-vue-next'
 
 const props = defineProps({ projects: Array, initialTask: Object, team: String })
@@ -1118,6 +1196,17 @@ const previewModal = reactive({ show: false, title: '', content: '', filename: '
 
 function renderMarkdown(content) {
   return marked.parse(content || '')
+}
+
+// 連結預覽：已分類的連結內文會用 ../_assets/<file> 引用已下載的圖片，渲染前先把這些相對路徑
+// 改寫成帶 token 的 asset 端點，圖片才顯示得出來。
+function renderLinkPreview(content) {
+  const token = localStorage.getItem('clawpm_token') || ''
+  const md = (content || '').replace(
+    /!\[([^\]]*)\]\((?:\.\.\/)?_assets\/([^)\s]+)\)/g,
+    (_, alt, file) => `![${alt}](/api/project-insights/asset?file=${encodeURIComponent(file)}&token=${encodeURIComponent(token)})`,
+  )
+  return marked.parse(md)
 }
 
 function openPreview(title, content, filename) {
@@ -1416,6 +1505,14 @@ let imageReviewPollCount = 0
 // reasoning 模型逐張用 Read 工具看圖再分類，10 張圖片合計常超過 1-2 分鐘；
 // 40 次 ×5 秒 ≈ 3.3 分鐘，給足時間讓建議自動補上，避免面板卡在「還沒有建議」的空白狀態。
 const IMAGE_REVIEW_MAX_POLLS = 40
+
+// 補充文件 ess-kms 連結分發：後端逐條 GraphQL 抓內容＋LLM 建議，前端輪詢等建議補上。
+const linkReviewLinks = ref([])
+const linkReviewRefreshing = ref(false)
+const linkPreview = ref(null)
+let linkReviewPollTimer = null
+let linkReviewPollCount = 0
+const LINK_REVIEW_MAX_POLLS = 40
 
 function openFileDialog() {
   if (uploadProgress.value > 0 && !uploadDone.value && !uploadError.value) return
@@ -2327,6 +2424,7 @@ function startRecordDistPoll() {
     recordDistributing.value = false
     syncTask({ currentStep: 6, status: 'completed', autoAdvanceAt: null, stepStatuses: { 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'done', 6: 'done' }, data: { distributedRecords: distributedRecords.value } })
     loadImageReview({ poll: true })
+    loadLinkReview({ poll: true })
   }
 
   const poll = async () => {
@@ -2480,7 +2578,7 @@ async function testImageCaption(img) {
     const res = await fetch('/api/meeting-record/image-review/test-caption', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ file: img.file }),
+      body: JSON.stringify({ file: img.file, meetingDate: meetingDate.value }),
     })
     const data = await res.json()
     if (!res.ok || !data.success) throw new Error(data.error || 'AI 測試判讀失敗')
@@ -2495,6 +2593,96 @@ async function testImageCaption(img) {
 }
 
 const unconfirmedImageCount = computed(() => imageReviewImages.value.filter(i => !i.confirmed).length)
+
+async function loadLinkReview({ poll = false, manual = false } = {}) {
+  if (!meetingDate.value) return
+  clearTimeout(linkReviewPollTimer)
+  if (manual) linkReviewPollCount = 0
+  if (manual) linkReviewRefreshing.value = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/meeting-record/link-review?meetingDate=${encodeURIComponent(meetingDate.value)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await res.json()
+    if (!res.ok) return
+
+    const existingByPath = new Map(linkReviewLinks.value.map(l => [l.path, l]))
+    linkReviewLinks.value = (data.links || []).map(link => {
+      const prior = existingByPath.get(link.path)
+      // 不要覆蓋使用者已經手動選過、但還沒送出確認的選擇
+      if (prior?.touched && !link.confirmed) return prior
+      return {
+        ...link,
+        selectedSlug: link.currentSlug || link.suggestedSlug || '',
+        touched: false,
+        saving: false,
+      }
+    })
+
+    // 後端逐條抓 GraphQL＋LLM 建議需要時間，尚有連結沒建議時短時間內重試
+    if (poll && linkReviewPollCount < LINK_REVIEW_MAX_POLLS &&
+        (!data.fresh || linkReviewLinks.value.some(l => !l.confirmed && !l.fetchError && !l.suggestedSlug && !l.reason))) {
+      linkReviewPollCount++
+      linkReviewPollTimer = setTimeout(() => loadLinkReview({ poll: true }), 5000)
+    } else {
+      linkReviewPollCount = 0
+    }
+  } catch {
+  } finally {
+    linkReviewRefreshing.value = false
+  }
+}
+
+async function confirmLinkAssignment(link, { skip = false } = {}) {
+  if (link.saving) return
+  if (!skip && !link.selectedSlug) {
+    emit('toast', '請先選擇要分類到哪個專案', 'error')
+    return
+  }
+  link.saving = true
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch('/api/meeting-record/link-review/confirm', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        meetingDate: meetingDate.value,
+        path: link.path,
+        slug: skip ? null : link.selectedSlug,
+        skip,
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok || !data.success) throw new Error(data.error || '確認失敗')
+    link.confirmed = true
+    link.skipped = skip
+    link.currentSlug = data.slug
+    link.touched = false
+    emit('toast', skip ? '已標記為不相關' : '連結內容已分類並存入補充資料夾')
+  } catch (err) {
+    emit('toast', err.message || '確認失敗', 'error')
+  } finally {
+    link.saving = false
+  }
+}
+
+async function previewLink(link) {
+  linkPreview.value = { title: link.title, content: '', loading: true }
+  const token = localStorage.getItem('clawpm_token')
+  try {
+    const res = await fetch(`/api/meeting-record/link-review/preview?meetingDate=${encodeURIComponent(meetingDate.value)}&path=${encodeURIComponent(link.path)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || '讀取失敗')
+    linkPreview.value = { title: data.title, content: data.content, loading: false }
+  } catch (err) {
+    linkPreview.value = { title: link.title, content: `（讀取失敗：${err.message}）`, loading: false }
+  }
+}
+
+const unconfirmedLinkCount = computed(() => linkReviewLinks.value.filter(l => !l.confirmed).length)
 
 function projectName(slug) {
   const p = insightsProjects.value.find(p => (p.slug || p.id) === slug)
@@ -2568,7 +2756,7 @@ function restoreFromTask(task) {
   // Step 6 state
   distributedRecords.value = (task.data.distributedRecords || [])
   recordExpectedSlugs.value = (task.data.recordExpectedSlugs || [])
-  if (distributedRecords.value.length > 0) loadImageReview()
+  if (distributedRecords.value.length > 0) { loadImageReview(); loadLinkReview() }
 
   // Set current step
   step.value = task.currentStep || 1
@@ -2624,6 +2812,8 @@ onUnmounted(() => {
   clearTimeout(insightsPollTimer)
   clearTimeout(repairPollTimer)
   clearTimeout(recordDistPollTimer)
+  clearTimeout(imageReviewPollTimer)
+  clearTimeout(linkReviewPollTimer)
 })
 
 async function removeDoc(idx) {

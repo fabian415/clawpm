@@ -1,0 +1,47 @@
+可Branding → BrandingJudy然後 → Judy
+[0.0 → 65.5]
+Speaker 1今天我們會有一個小蝦來錄音一下然後這裡他會去做可能會有後面的一些總結剛好是用 Teams 錄啦所以這是公司的嗎待會可能 Fabian 會再講一下 update 一下先考一下不要那麼虛心試試看好那這邊的話稍微 update 一下目前就是早上跟 Louise 討論目前先定位在 robotic 這個 branding land 下面那 server 的話就叫做 simulation那 edge 的話就是叫做 inference 這一塊那只是說是後續我們再要跟有 PM 可以PM 是是不是PM 就 Judy 嘛
+[65.5 → 69.2]
+Louis跟 robot跟 robot 處理相關的
+[69.2 → 72.8]
+Speaker 2都是那個ASR 嗎
+[72.8 → 74.0]
+Speaker 1不只不只
+[74.0 → 95.5]
+Louis系統就他們也想要去做系統幾乎系統都可以你不要板子也有啊有些板子它也比較做 robot 相關的我知道最後都有些都會拉到 caddy 那裡沒錯但是有些 OEM OEM 的客戶不一定是直接就是 caddy
+[95.5 → 97.6]
+Speaker 2所以 vmd 還是 software vpn
+[97.6 → 100.6]
+Louisno no no hardware vpn
+[100.6 → 104.6]
+Sephiroth所以是那個 caddy 那邊
+[104.6 → 112.0]
+Louiscaddy 那邊一定全部都要那你說 arm Branding
+[112.0 → 118.0]
+Speaker 2BrandingBrandingBranding
+[118.0 → 112.7]
+LouisBrandingBrandingBrandingBrandingBrandingBrandingBrandingBrandingBrandingBranding所以是那個 caddy 那邊caddy 那邊一定全部都要啦那你說 arc 啊 aim 啊要不要要
+[112.7 → 117.7]
+Speaker 2要如果是 3.5 個 pm你說全部嗎
+[117.7 → 140.0]
+Louis有興趣的進來也不用理他對啊有興趣不是啦你想喔如果他下面寫了他跟 Nvidia 跟 Qualcomm 的這些 ecosystem 跟這些系統做一些研究BrandingBrandingBrandingBrandingBranding
+[140.0 → 146.0]
+Speaker 2BrandingBrandingBranding
+[146.0 → 226.3]
+SephirothBranding對啊有興趣你想喔如果他在那邊寫了他跟 NVIDIA 跟 Qualcomm 的這些 ecosystem 跟這些系統做一些連結那對他來講他們在跟這一邊的人討論的時候也講得出口了他現在如果有可以跟 omniverse對不對做一些連結不是我的意思是所以我要 hold 探討這個你要什麼我是負責找派哪一個 PD 要來進來的不是可能要發音如果他們要 pre 認這件事要不然要指這件事呢可能要發一個邀請函叫他們進來聽聽看他有興趣進來聽所以你可能請我要 prepare 一個你 prepare 一個整個 agenda然後給 Judy Judy 你再找相關的 PM 幫忙發一下然後就一個時間一個 meeting 就一起來講他會開始怎麼 feedback好那當然主要當然是 ASR main 團隊所以主要 PM 應該是 caddy 那邊了但是讓 Judy 去如果那些人我沒有問題對啊你只要把你的 network 藏起來因為現在 robot 屬於的是你對不對我是怕後來如果變成是我現在是誰沒有現在沒有人那應該會是你所以這裡的話目前我們先鎖定幾個平台啦就是 420 當然比較沒問題嘛就是在 expression 這一塊全部做那其他下面的我們有測過了先打綠色的 goal就是有�過 arc 啦我們手邊有的平台先測
+[226.3 → 229.3]
+Louis所以這也就不只是 a bar 配 a sub arc
+[229.3 → 236.6]
+Sephirotharc 啊 a b 啊這些都有這兩個目前手上沒有但應該理論上是可以的
+[236.6 → 244.3]
+Louis因為 simulation 不一定是跟simulation 那個平台不一定跟 normal 有關
+[244.3 → 296.8]
+Sephiroth就不是那個 data 那個意思大概是這一塊那這裡我們大概第一版的話先 for intel 跟 source 先做那先以 act 為主那另外一個是待會同學再講一下 simulation 這一塊就是在 real seem to real 這一塊的一些進展那 GI student 這一塊的話他們上禮拜五有新的版本那我們就把新的 205 的新的 middleware 整進去那它還有同步 release 一個 303這個是 for inference 的那稍微看一下這個 inference 稍微複雜一點那我們可能會跟後面的那個 uniAI 一起考量看怎麼把它整進去因為都是 for inference 的那我們可能盡量框架結構是要一樣的
+[296.8 → 301.3]
+LouisuniAI 不是我們 license 已經進來了嗎
+[301.3 → 302.9]
+Sephiroth好像還在談
+[302.9 → 305.8]
+Louis那我們最近你有在談這一問嗎
+[305.8 → 306.8]
+Sephiroth這個是 l 組

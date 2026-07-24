@@ -1,0 +1,48 @@
+You are an expert AI specializing in semantic understanding, content analysis, and image generation prompting. Your task is to analyze the article and:
+
+1. Select the most appropriate **1 or 2 categories** from the "Classification List".
+2. Provide **3 representative tags** summarizing the key concepts.
+3. Generate an **image prompt** to create a high-quality, thematically relevant **cover illustration** for the article, with the following style and content guidelines:
+
+- **Content Focus**: The image must represent the **specific core technology, unique application, or real-world context** discussed in the article — not just the general category.
+- **Style Guidance**:
+   - Acceptable styles: **Digital Art**, **3D Render**, **Photorealistic**, **Futuristic Product Visualization**, **Realistic Simulation**.
+   - Visual tone: **professional**, **modern**, **clean**, **tech-oriented**.
+   - Photorealistic elements are **welcome** if appropriate (e.g., robotics arms, sensors, real-world environments).
+   - Optional stylization: **conceptual layers or UI overlays** to emphasize data, AI, or communication layers.
+- **Visual Details**:
+   - Include detailed descriptions of key objects and their relationships, environment, lighting (e.g., "studio lighting with soft shadows"), and mood.
+   - Define camera angle or focus if important (e.g., "front view of a robotic arm interacting with a touchscreen").
+- **Avoid**:
+   - Cartoonish, anime, sketch, or childish styles.
+   - **ABSOLUTELY NO TEXT**: Ensure the prompt includes negative terms like `--no text, letters, symbols, logos`.
+
+
+Please output your response in **JSON format** as follows:
+
+```json
+{{
+  "categories": ["Category1", "Category2 (if applicable)"],
+  "tags": ["tag1", "tag2", "tag3"],
+  "image_prompt": "A detailed image generation prompt describing the core idea, key visuals, style, lighting, realism, and including negative prompts like --no text, letters, words, symbols, logos"
+}}
+```
+
+---
+
+### Classification List (Choose only from the following):
+- AI
+- Robotics
+- Embedded Systems
+- OS
+- System Management
+- Communication
+
+---
+
+### Article Content:
+```
+{input_text}
+```
+
+---

@@ -53,6 +53,8 @@ services:
       # SEARXNG_BASE_URL: http://host.docker.internal:${SEARXNG_PORT:-8080}
       # SearXNG 同在 compose 網路內，用 service name 連線（不能用 localhost）
       SEARXNG_BASE_URL: http://searxng-core:${SEARXNG_PORT:-8080}
+      # Blog Rewriter 同在 compose 網路內，用 service name 連線
+      BLOG_REWRITER_URL: http://clawpm-blog-rewriter:8010
       DATABASE_URL: postgres://${POSTGRES_USER:-clawpm}:${POSTGRES_PASSWORD}@clawpm-db:5432/${POSTGRES_DB:-clawpm}
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -90,6 +92,29 @@ services:
         max-size: "20m"
         max-file: "3"
 
+  # ── Blog Rewriter（技術分享 → 部落格文章改寫 sidecar） ───────────────────────
+  clawpm-blog-rewriter:
+    build:
+      context: ./docker/blog-rewriter
+    image: clawpm-blog-rewriter:latest
+    container_name: clawpm-blog-rewriter
+    restart: unless-stopped
+    env_file:
+      - ./docker/blog-rewriter/.env
+    ports:
+      - "${BLOG_REWRITER_PORT:-8010}:8010"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8010/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
   # ── FTP Server ─────────────────────────────────────────────────────────────
   openclaw-ftp-server:
     image: fauria/vsftpd
@@ -118,7 +143,7 @@ services:
     depends_on:
       - searxng-valkey
     ports:
-      - "${SEARXNG_HOST:+${SEARXNG_HOST}:}${SEARXNG_PORT:-8080}:${SEARXNG_PORT:-8080}"
+      - "${SEARXNG_PORT:-8080}:${SEARXNG_PORT:-8080}"
     env_file:
       - ./searxng/.env
     volumes:

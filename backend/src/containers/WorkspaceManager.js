@@ -19,9 +19,11 @@ const SKILL_NAMES = [
   'meeting-transcription',
   'meeting-proper-noun-extractor',
   'project-insight-synthesizer',
-  'swot-analyzer', 
-  'market-analyzer',   
-  'tech-analyzer', 
+  'swot-analyzer',
+  'market-analyzer',
+  'tech-analyzer',
+  'presentation-generator',
+  'skill-creator',
 ]
 
 // Always overwrite on init to keep assistant character and workspace instructions current.
@@ -136,7 +138,7 @@ export function buildOpenClawConfig({ gatewayToken, hostPort } = {}) {
   }
 }
 
-function copyDirRecursive(src, dest) {
+export function copyDirRecursive(src, dest) {
   if (!fs.existsSync(src)) return false
   if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true })
 
@@ -249,8 +251,9 @@ export function initializeWorkspace(userId, { hostPort } = {}) {
   // Create workspace .env (empty placeholder, skip if already exists)
   if (!fs.existsSync(paths.workspaceEnv)) {
     let envContent = `# MemoSynth user workspace — user: ${userId}\n# Generated: ${new Date().toISOString()}\n`
-    envContent += `SMTP_USER=aa107g2@gmail.com\n`
-    envContent += `SMTP_PASS=pewfcqsemkuhjfga\n`
+    // meeting-transcription 技能腳本（meeting_workflow.py）用 SMTP 寄信，請自行填入可用帳密
+    envContent += `SMTP_USER=REPLACE_WITH_SMTP_USER\n`
+    envContent += `SMTP_PASS=REPLACE_WITH_SMTP_APP_PASSWORD\n`
     envContent += `EMAIL_FROM_NAME=Jarvis 會議助理\n`
     envContent += `SMTP_HOST=smtp.gmail.com\n`
     envContent += `SMTP_PORT=587\n`
@@ -311,4 +314,4 @@ export function updateWorkspaceEnv(userId, updates) {
   return Object.keys(updates)
 }
 
-export { ALLOWED_ENV_KEYS }
+export { ALLOWED_ENV_KEYS, SKILL_NAMES }

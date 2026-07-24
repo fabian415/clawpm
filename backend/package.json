@@ -5,8 +5,8 @@
   "description": "ClawPM backend - OpenClaw Container Manager (M3)",
   "scripts": {
     "cli": "node cli-test.js",
-    "server": "node server.js",
-    "dev": "node --watch server.js"
+    "server": "cross-env NODE_EXTRA_CA_CERTS=./certs/advantech-ca-chain.pem node server.js",
+    "dev": "cross-env NODE_EXTRA_CA_CERTS=./certs/advantech-ca-chain.pem node --watch server.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -18,8 +18,12 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
-    "nodemailer": "^6.9.16",
     "pg": "^8.13.3",
+    "@sendgrid/mail": "^8.1.4",
+    "simple-git": "^3.36.0",
     "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0"
   }
 }
