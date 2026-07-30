@@ -134,7 +134,7 @@ def call_azure_transcribe(
     endpoint: str,
     api_key: str,
     definition: dict,
-    timeout: int = 600,
+    timeout: int = 180,
     connect_timeout: int = 30,
     max_retries: int = 3,
 ) -> dict:
@@ -321,8 +321,8 @@ def main():
         help="Azure Speech 金鑰（預設讀取環境變數 AZURE_SPEECH_KEY）",
     )
     parser.add_argument(
-        "--timeout", type=int, default=600,
-        help="HTTP 請求逾時秒數（預設：600）",
+        "--timeout", type=int, default=180,
+        help="HTTP 請求逾時秒數（預設：180）",
     )
     args = parser.parse_args()
 

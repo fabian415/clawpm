@@ -84,7 +84,7 @@ if AZURE_MODEL not in AZURE_MODELS:
 AZURE_FIXED_STYLE = "verbatim"
 AZURE_FIXED_LANG = "zh"
 AZURE_ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac"}
-# Azure 原生不支援的格式，會先用 ffmpeg 轉成 wav 再送出（見 _convert_to_wav_for_azure）
+# Azure 原生不支援的格式，會先用 ffmpeg 轉成 mp3 再送出（見 _convert_to_mp3_for_azure）
 AZURE_CONVERT_EXTENSIONS = {".m4a", ".webm"}
 AZURE_MAX_FILE_MB = 300
 
@@ -715,12 +715,23 @@ def _parse_md_metadata(transcript_path: Path) -> tuple:
     return duration_seconds, num_speakers
 
 
-def _convert_to_wav_for_azure(src: Path) -> Path:
-    """azure / azure_diarize 不支援 m4a / webm，先用 ffmpeg 轉成 wav（容器已內建 ffmpeg）。"""
+def _convert_to_mp3_for_azure(src: Path) -> Path:
+    """
+    azure / azure_diarize 不支援 m4a / webm，先用 ffmpeg 轉成 mp3（容器已內建 ffmpeg）。
+
+    轉成有損壓縮的 mp3 而非未壓縮 wav：未壓縮 16kHz mono wav 的 bitrate 高達
+    256kbps，長會議錄音轉出來動輒上百 MB，上傳到 Azure 時容易在網路較慢/不穩
+    的環境下觸發 socket 寫入逾時（write operation timed out）。mp3 64kbps 對
+    純語音辨識已足夠，檔案體積可縮小到 wav 的 1/4 左右，大幅降低上傳逾時機率。
+    """
     import subprocess
 
-    dst = src.parent / f"{src.stem}.wav"
-    cmd = ["ffmpeg", "-y", "-i", str(src), "-vn", "-ar", "16000", "-ac", "1", str(dst)]
+    dst = src.parent / f"{src.stem}.mp3"
+    cmd = [
+        "ffmpeg", "-y", "-i", str(src), "-vn",
+        "-ar", "16000", "-ac", "1", "-codec:a", "libmp3lame", "-b:a", "64k",
+        str(dst),
+    ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg 轉檔失敗（returncode={result.returncode}）：{result.stderr[-2000:]}")
@@ -743,8 +754,8 @@ def _run_transcription(job_id: str, audio_path: Path, record: JobRecord):
     original_audio_path = audio_path
     if record.engine in ("azure", "azure_diarize") and audio_path.suffix.lower() in AZURE_CONVERT_EXTENSIONS:
         try:
-            print(f"[{job_id}] 轉檔 {audio_path.name} → wav（azure 引擎不支援 {audio_path.suffix}）", flush=True)
-            audio_path = _convert_to_wav_for_azure(audio_path)
+            print(f"[{job_id}] 轉檔 {audio_path.name} → mp3（azure 引擎不支援 {audio_path.suffix}）", flush=True)
+            audio_path = _convert_to_mp3_for_azure(audio_path)
         except Exception as e:
             record.status = JobStatus.FAILED
             record.error = str(e)
@@ -1061,11 +1072,11 @@ def get_terms_limit():
 可用 `GET /health` 的 `active_engine` 查詢目前引擎。
 - `whisperx`：本地 WhisperX + Pyannote，支援語者分離、聲紋比對、標點補強。
 - `azure`：Azure MAI-Transcribe，雲端轉錄。**不支援語者分離**，原生接受 wav / mp3 / flac，
-  m4a / webm 會先由伺服器自動以 ffmpeg 轉成 wav 再送出；轉檔前檔案需 < 300 MB；
+  m4a / webm 會先由伺服器自動以 ffmpeg 轉成 mp3 再送出；轉檔前檔案需 < 300 MB；
   固定使用 `verbatim`（保留口語贅字）與中文 `zh`，並自動簡轉繁。
 - `azure_diarize`：Azure MAI-Transcribe 轉錄文字 + wav2vec2 強制對齊重建時間戳 + Pyannote 語者分離。
   **實驗性**，時間戳為重建而非原始值；原生接受 wav / mp3 / flac，
-  m4a / webm 會先自動轉成 wav；轉檔前檔案需 < 300 MB；
+  m4a / webm 會先自動轉成 mp3；轉檔前檔案需 < 300 MB；
   固定使用 `verbatim` 與中文 `zh`，並自動簡轉繁；支援 `num_speakers` / `team`（聲紋比對）。
 
 **支援格式**：whisperx → mp3、mp4、wav、m4a、ogg、flac、webm、aac；
@@ -1090,7 +1101,7 @@ async def transcribe(
         description=(
             "音訊檔（mp3 / wav / m4a / mp4 / ogg / flac / webm / aac）。"
             "azure / azure_diarize 引擎原生支援 wav / mp3 / flac，"
-            "m4a / webm 會自動轉檔為 wav 再送出；轉檔前檔案需 < 300 MB"
+            "m4a / webm 會自動轉檔為 mp3 再送出；轉檔前檔案需 < 300 MB"
         ),
     ),
     lang: str = Form(
@@ -1152,7 +1163,7 @@ async def transcribe(
                 detail=(
                     f"{engine} 引擎不支援的檔案格式：{suffix or '（無副檔名）'}。"
                     f"支援：{', '.join(sorted(AZURE_ALLOWED_EXTENSIONS | AZURE_CONVERT_EXTENSIONS))}"
-                    f"（{', '.join(sorted(AZURE_CONVERT_EXTENSIONS))} 會先自動轉檔為 wav）"
+                    f"（{', '.join(sorted(AZURE_CONVERT_EXTENSIONS))} 會先自動轉檔為 mp3）"
                 ),
             )
         effective_max_mb = min(MAX_FILE_MB, AZURE_MAX_FILE_MB)
