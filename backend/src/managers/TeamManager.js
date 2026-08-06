@@ -58,6 +58,15 @@ export async function resetTeamSetup(teamId) {
   return rows[0]
 }
 
+export async function updateNotificationEmails(teamId, notificationEmails) {
+  const { rows } = await query(
+    `UPDATE teams SET notification_emails = $2 WHERE id = $1 RETURNING *`,
+    [teamId, notificationEmails],
+  )
+  if (rows.length === 0) throw new Error('Team 不存在')
+  return rows[0]
+}
+
 export async function getWorkspaceFolder(teamId) {
   const team = await getTeam(teamId)
   return team?.setup_config?.workspaceFolder || team?.workspace_folder || null

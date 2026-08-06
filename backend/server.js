@@ -15,7 +15,7 @@ import sgMail from '@sendgrid/mail'
 import { runMigrations } from './src/migrate.js'
 import { query } from './src/db.js'
 import { registerTeam, login, verifyToken, getUserById, createMember, listMembers, deleteMember, setMemberRole, migrateUsers, deleteAllTeamMembers } from './src/managers/UserManager.js'
-import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder, deleteTeam } from './src/managers/TeamManager.js'
+import { listTeams, getTeam, completeTeamSetup, resetTeamSetup, getWorkspaceFolder, deleteTeam, updateNotificationEmails } from './src/managers/TeamManager.js'
 import {
   getClientForUser, disconnectClientForUser,
   getDefaultSessionKey, makeScopedSessionKey,
@@ -1351,16 +1351,31 @@ function readAppSettings() {
   try { return JSON.parse(fs.readFileSync(APP_SETTINGS_PATH, 'utf-8')) } catch { return {} }
 }
 
-app.get('/api/settings', requireAuth, (req, res) => {
-  res.json(readAppSettings())
+// notificationEmails is per-team (each team has its own default recipient list);
+// falls back to the legacy global file value for teams that haven't set their own yet.
+app.get('/api/settings', requireAuth, async (req, res) => {
+  const globalSettings = readAppSettings()
+  const team = req.user.teamId ? await getTeam(req.user.teamId) : null
+  res.json({
+    ...globalSettings,
+    notificationEmails: team?.notification_emails ?? globalSettings.notificationEmails ?? '',
+  })
 })
 
-app.put('/api/settings', requireAuth, (req, res) => {
+app.put('/api/settings', requireAuth, async (req, res) => {
+  const { notificationEmails, ...rest } = req.body ?? {}
+
+  if (notificationEmails !== undefined) {
+    if (!req.user.teamId) return res.status(400).json({ error: '無所屬團隊' })
+    await updateNotificationEmails(req.user.teamId, notificationEmails)
+  }
+
   const current = readAppSettings()
-  const updated = { ...current, ...req.body }
+  const updated = { ...current, ...rest }
   fs.mkdirSync(path.dirname(APP_SETTINGS_PATH), { recursive: true })
   fs.writeFileSync(APP_SETTINGS_PATH, JSON.stringify(updated, null, 2))
-  res.json(updated)
+
+  res.json({ ...updated, notificationEmails: notificationEmails ?? current.notificationEmails ?? '' })
 })
 
 // ── Project Insights (Step 5) ─────────────────────────────────────────────────
