@@ -442,7 +442,7 @@ app.post('/api/workflow/upload-media', requireAuth, (req, res, next) => {
 
 // ── Document upload via FTP ───────────────────────────────────────────────────
 
-const ALLOWED_DOC_EXTS = new Set(['.pdf', '.docx', '.txt', '.csv', '.xls', '.xlsx', '.pptx'])
+const ALLOWED_DOC_EXTS = new Set(['.pdf', '.docx', '.txt', '.csv', '.xls', '.xlsx', '.pptx', '.md'])
 
 const docUpload = multer({
   storage: multer.diskStorage({
@@ -456,7 +456,7 @@ const docUpload = multer({
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase()
     if (ALLOWED_DOC_EXTS.has(ext)) return cb(null, true)
-    cb(new Error('不支援的檔案格式，請上傳 PDF、Docx、TXT、CSV、XLS、XLSX 或 PPTX'))
+    cb(new Error('不支援的檔案格式，請上傳 PDF、Docx、TXT、CSV、XLS、XLSX、PPTX 或 Markdown'))
   },
 })
 
@@ -3502,7 +3502,14 @@ app.get('/api/blog/asset', async (req, res) => {
 // 自訂技能可自由編輯／刪除／發動；技能資料夾本身即唯一真相來源，不另建中繼資料。
 
 function skillRunDir(hostInsightsDir, skillSlug, projectSlug) {
-  return path.join(hostInsightsDir, `custom-${skillSlug}-${projectSlug}`)
+  const suffix = projectSlug ? `-${projectSlug}` : ''
+  return path.join(hostInsightsDir, `custom-${skillSlug}${suffix}`)
+}
+
+// projectSlug is optional for skill runs (未指定專案時允許為空字串);
+// 只有在有值時才需符合 validSlug 規則。
+function validOptionalProjectSlug(s) {
+  return s === undefined || s === '' || validSlug(s)
 }
 
 function skillRunFilePath(hostInsightsDir, skillSlug, projectSlug, name) {
@@ -3698,9 +3705,10 @@ app.delete('/api/skills/drafts/:draftId', requireAuth, requireAdmin, async (req,
 
 app.post('/api/skills/:slug/run', requireAuth, async (req, res) => {
   const { slug } = req.params
-  const { projectSlug, projectName, instruction } = req.body ?? {}
+  const { projectName, instruction } = req.body ?? {}
+  const projectSlug = (typeof req.body?.projectSlug === 'string') ? req.body.projectSlug.trim() : ''
   if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
-  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (!validOptionalProjectSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -3708,42 +3716,53 @@ app.post('/api/skills/:slug/run', requireAuth, async (req, res) => {
   if (!skill) return res.status(404).json({ error: '技能不存在' })
 
   const fm = parseFrontmatter(skill.content) || {}
+  const hasProject = !!projectSlug
   const displayName = (typeof projectName === 'string' && projectName.trim()) ? projectName.trim() : projectSlug
   const userInstruction = (typeof instruction === 'string' && instruction.trim()) ? instruction.trim() : ''
 
   const timestamp = newTimestamp()
-  const projectContainerPath = `${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`
-  const recordFolderContainerPath = `${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}`
   const docFolderContainerPath = `${CONTAINER_WORKSPACE}/ftp_data/doc`
-  const runFolderContainer = `${CONTAINER_INSIGHTS_DIR}/custom-${slug}-${projectSlug}`
+  const runFolderContainer = `${CONTAINER_INSIGHTS_DIR}/custom-${slug}${hasProject ? `-${projectSlug}` : ''}`
   const containerOutputPath = `${runFolderContainer}/${timestamp}.md`
   const sessionKey = makeScopedSessionKey(`skill-${slug}`)
 
-  const parts = [
-    `請使用 skills/${slug}（${fm.name || slug}）技能，針對「${displayName}」專案執行以下任務。`,
-    '',
-    `技能說明：${fm.description || '（無）'}`,
-    '',
-    `專案洞察來源檔案（若存在）：${projectContainerPath}`,
-    `專案會議記錄資料夾（若存在，請列出並讀取其中所有 .md 檔案）：${recordFolderContainerPath}/`,
-    `專案文件資料夾（若存在且與任務相關，請一併參考）：${docFolderContainerPath}/`,
-    '',
+  const parts = hasProject
+    ? [
+      `請使用 skills/${slug}（${fm.name || slug}）技能，針對「${displayName}」專案執行以下任務。`,
+      '',
+      `技能說明：${fm.description || '（無）'}`,
+      '',
+      `專案洞察來源檔案（若存在）：${CONTAINER_INSIGHTS_DIR}/${projectSlug}.md`,
+      `專案會議記錄資料夾（若存在，請列出並讀取其中所有 .md 檔案）：${CONTAINER_INSIGHTS_DIR}/record-${projectSlug}/`,
+      `專案文件資料夾（若存在且與任務相關，請一併參考）：${docFolderContainerPath}/`,
+      '',
+    ]
+    : [
+      `請使用 skills/${slug}（${fm.name || slug}）技能執行以下任務（未指定特定專案）。`,
+      '',
+      `技能說明：${fm.description || '（無）'}`,
+      '',
+      `文件資料夾（若存在且與任務相關，請一併參考）：${docFolderContainerPath}/`,
+      '',
+    ]
+
+  parts.push(
     userInstruction ? `使用者補充指令：${userInstruction}` : '使用者未提供補充指令，請依此技能 SKILL.md 定義的預設行為執行。',
     '',
     '請依你的 SKILL.md 定義完整執行工作流程。',
     `完成後，請將最終輸出寫入：${containerOutputPath}（若資料夾不存在，請先建立 ${runFolderContainer}/）`,
     '',
     '最後檢查所有的 Markdown 檔案寫入時，\\n 要取代成斷行。',
-  ]
+  )
 
   res.json({ success: true, sessionKey, prompt: parts.join('\n'), filename: timestamp })
 })
 
 app.get('/api/skills/:slug/runs', requireAuth, async (req, res) => {
   const { slug } = req.params
-  const { projectSlug } = req.query
+  const projectSlug = typeof req.query.projectSlug === 'string' ? req.query.projectSlug : ''
   if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
-  if (!validSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
+  if (!validOptionalProjectSlug(projectSlug)) return res.status(400).json({ error: '無效的專案識別碼' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -3773,9 +3792,10 @@ app.get('/api/skills/:slug/runs', requireAuth, async (req, res) => {
 
 app.get('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
   const { slug } = req.params
-  const { projectSlug, name } = req.query
+  const { name } = req.query
+  const projectSlug = typeof req.query.projectSlug === 'string' ? req.query.projectSlug : ''
   if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
-  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (!validOptionalProjectSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -3794,9 +3814,10 @@ app.get('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
 
 app.patch('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
   const { slug } = req.params
-  const { projectSlug, name, content } = req.body ?? {}
+  const { name, content } = req.body ?? {}
+  const projectSlug = (typeof req.body?.projectSlug === 'string') ? req.body.projectSlug : ''
   if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
-  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (!validOptionalProjectSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
   if (typeof content !== 'string') return res.status(400).json({ error: '缺少 content' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
@@ -3816,9 +3837,10 @@ app.patch('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
 
 app.delete('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
   const { slug } = req.params
-  const { projectSlug, name } = req.query
+  const { name } = req.query
+  const projectSlug = typeof req.query.projectSlug === 'string' ? req.query.projectSlug : ''
   if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
-  if (!validSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
+  if (!validOptionalProjectSlug(projectSlug) || !validTimestamp(name)) return res.status(400).json({ error: '無效的參數' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
@@ -3837,9 +3859,10 @@ app.delete('/api/skills/:slug/runs/file', requireAuth, async (req, res) => {
 
 app.get('/api/skills/:slug/runs/result', requireAuth, async (req, res) => {
   const { slug } = req.params
-  const { projectSlug, filename } = req.query
+  const { filename } = req.query
+  const projectSlug = typeof req.query.projectSlug === 'string' ? req.query.projectSlug : ''
   if (!skillSlugValid(slug)) return res.status(400).json({ error: '無效的技能識別碼' })
-  if (!validSlug(projectSlug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
+  if (!validOptionalProjectSlug(projectSlug) || !validTimestamp(filename)) return res.status(400).json({ error: '無效的參數' })
 
   const provisionUserId = await getProvisionUserId(req.user.userId)
   const paths = getUserPaths(provisionUserId)
