@@ -6,7 +6,7 @@
       <div class="flex items-center justify-between mb-6">
         <div>
           <h2 class="text-xl font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-            <Wand2 class="w-5 h-5 text-pink-500" /> 自訂技能 — {{ projectName || projectSlug }}
+            <Wand2 class="w-5 h-5 text-pink-500" /> 自訂技能 — {{ projectName || projectSlug || '不指定專案' }}
           </h2>
           <p class="text-sm text-slate-400 mt-1">選擇一個技能，檢視或產出這個專案的相關報告</p>
         </div>
@@ -222,7 +222,7 @@ import {
 } from 'lucide-vue-next'
 
 const props = defineProps({
-  projectSlug: { type: String, required: true },
+  projectSlug: { type: String, default: '' },
   projectName: { type: String, default: '' },
   initialSkillSlug: { type: String, default: '' },
   initialReportName: { type: String, default: '' },
@@ -371,7 +371,7 @@ function exportFile() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `custom-${selectedSkillSlug.value}-${props.projectSlug}-${currentName.value}.md`
+  a.download = `custom-${selectedSkillSlug.value}${props.projectSlug ? `-${props.projectSlug}` : ''}-${currentName.value}.md`
   a.click()
   URL.revokeObjectURL(url)
 }

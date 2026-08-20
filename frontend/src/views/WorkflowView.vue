@@ -112,7 +112,7 @@
       <input
         ref="docFileInputRef"
         type="file"
-        accept=".pdf,.docx,.txt,.csv,.xls,.xlsx,.pptx"
+        accept=".pdf,.docx,.txt,.csv,.xls,.xlsx,.pptx,.md"
         multiple
         class="hidden"
         @change="handleDocFileChange"
@@ -210,7 +210,7 @@
               ? 'border-blue-500 text-blue-500 bg-blue-50 dark:bg-blue-900/20'
               : 'border-slate-200 dark:border-slate-800 text-slate-400 hover:text-blue-500 hover:border-blue-500'"
             class="w-full py-3 border-2 border-dotted rounded-xl transition-all text-sm font-medium"
-          >+ 點擊或拖放文件 (PDF, Docx, TXT, CSV, XLS, XLSX, PPTX)</button>
+          >+ 點擊或拖放文件 (PDF, Docx, TXT, CSV, XLS, XLSX, PPTX, MD)</button>
         </div>
       </div>
     </div>
@@ -2262,7 +2262,7 @@ function handleDocFileChange(event) {
 
 function handleDocDrop(event) {
   isDragOver.value = false
-  const allowed = ['.pdf', '.docx', '.txt', '.csv', '.xls', '.xlsx', '.pptx']
+  const allowed = ['.pdf', '.docx', '.txt', '.csv', '.xls', '.xlsx', '.pptx', '.md']
   const files = Array.from(event.dataTransfer.files)
     .filter(f => allowed.some(ext => f.name.toLowerCase().endsWith(ext)))
   files.forEach(uploadDoc)

@@ -127,8 +127,8 @@
 
         <CustomSkillReportView
           v-else-if="currentPage === 'customSkillReport' && customSkillProject"
-          :project-slug="customSkillProject.slug || customSkillProject.id"
-          :project-name="customSkillProject.name || customSkillProject.title"
+          :project-slug="customSkillProject.slug ?? customSkillProject.id ?? ''"
+          :project-name="customSkillProject.name ?? customSkillProject.title ?? ''"
           :initial-skill-slug="customSkillReportSkillSlug"
           :initial-report-name="customSkillReportFilename"
           @skill-ready="handleSkillReady"
@@ -337,11 +337,17 @@ const breadcrumbs = computed(() => {
     { label: projectSupplementsProject.value.name || projectSupplementsProject.value.title, icon: 'project', page: 'reviewer' },
     { label: '補充資料' }
   ]
-  if (page === 'customSkillReport' && customSkillProject.value) return [
-    { label: '專案列表', page: 'reviewerOverview' },
-    { label: customSkillProject.value.name || customSkillProject.value.title, icon: 'project', page: 'reviewer' },
-    { label: '自訂技能' }
-  ]
+  if (page === 'customSkillReport' && customSkillProject.value) {
+    const hasProject = !!(customSkillProject.value.slug ?? customSkillProject.value.id)
+    const base = [{ label: '專案列表', page: 'reviewerOverview' }]
+    if (hasProject) {
+      base.push({ label: customSkillProject.value.name || customSkillProject.value.title, icon: 'project', page: 'reviewer' })
+    } else {
+      base.push({ label: '不指定專案', icon: 'project' })
+    }
+    base.push({ label: '自訂技能' })
+    return base
+  }
   if (page === 'skills') return [{ label: '技能管理' }]
   if (page === 'speakers') return [{ label: '聲紋管理' }]
   if (page === 'tasks') return [{ label: '任務管理' }]

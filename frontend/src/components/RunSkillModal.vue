@@ -27,12 +27,12 @@
                 </select>
               </div>
               <div>
-                <label class="block text-sm font-medium mb-1">專案</label>
+                <label class="block text-sm font-medium mb-1">專案（選填）</label>
                 <select
                   v-model="selectedProjectSlug"
                   class="w-full bg-slate-50 dark:bg-slate-800 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-sm outline-none"
                 >
-                  <option value="" disabled>選擇專案...</option>
+                  <option value="">不指定專案</option>
                   <option v-for="p in projects" :key="p.slug" :value="p.slug">{{ p.name || p.slug }}</option>
                 </select>
               </div>
@@ -47,8 +47,8 @@
               <div v-if="error" class="bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-300 text-xs px-3 py-2 rounded-xl">{{ error }}</div>
               <button
                 @click="run"
-                :disabled="!selectedSkillSlug || !selectedProjectSlug || isRunning"
-                :class="!selectedSkillSlug || !selectedProjectSlug || isRunning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'"
+                :disabled="!selectedSkillSlug || isRunning"
+                :class="!selectedSkillSlug || isRunning ? 'opacity-50 cursor-not-allowed' : 'hover:bg-blue-700'"
                 class="w-full bg-blue-600 text-white px-4 py-2.5 rounded-xl font-bold transition-colors flex items-center justify-center gap-2"
               >
                 <Loader2 v-if="isRunning" class="w-4 h-4 animate-spin" />
@@ -94,7 +94,7 @@
             </div>
             <div v-else class="flex-1 flex flex-col items-center justify-center text-slate-400 gap-2">
               <FileText class="w-10 h-10 opacity-20" />
-              <p class="text-sm">選擇技能與專案後點擊「執行」，或從左側選擇一筆歷史紀錄開啟</p>
+              <p class="text-sm">選擇技能後點擊「執行」（專案為選填），或從左側選擇一筆歷史紀錄開啟</p>
             </div>
           </div>
         </div>
@@ -141,7 +141,7 @@ watch(() => props.show, async (show) => {
 
 watch([selectedSkillSlug, selectedProjectSlug], () => {
   completedFilename.value = ''
-  if (selectedSkillSlug.value && selectedProjectSlug.value) fetchRuns()
+  if (selectedSkillSlug.value) fetchRuns()
   else runs.value = []
 })
 
@@ -185,8 +185,8 @@ function openReport(filename) {
 }
 
 async function run() {
-  if (!selectedSkillSlug.value || !selectedProjectSlug.value) return
-  const project = projects.value.find(p => p.slug === selectedProjectSlug.value)
+  if (!selectedSkillSlug.value) return
+  const project = selectedProjectSlug.value ? projects.value.find(p => p.slug === selectedProjectSlug.value) : null
 
   isRunning.value = true
   error.value = ''
@@ -196,8 +196,8 @@ async function run() {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        projectSlug: selectedProjectSlug.value,
-        projectName: project?.name || selectedProjectSlug.value,
+        projectSlug: selectedProjectSlug.value || '',
+        projectName: project?.name || selectedProjectSlug.value || '',
         instruction: instruction.value.trim(),
       }),
     })
